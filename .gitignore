@@ -1,0 +1,8 @@
+# Credentials
+.env
+
+# Backups (local only)
+backups/
+
+# OS
+.DS_Store
