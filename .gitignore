@@ -1,5 +1,6 @@
-# Credentials
+# Credentials (plaintext — never commit)
 .env
+# .env.sops is SOPS-encrypted and safe to commit
 
 # Backups (local only)
 backups/

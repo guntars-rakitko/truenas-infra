@@ -78,12 +78,27 @@ All configuration is applied via TrueNAS REST API using scripts in `scripts/`. T
 
 ---
 
+## Secrets — SOPS + age
+
+Credentials are encrypted with SOPS + age and committed as `.env.sops`. The plaintext `.env` is gitignored.
+
+- **Age private key location:** `~/Library/Application Support/sops/age/keys.txt`
+- **Encrypt:** `sops encrypt -i .env.sops`
+- **Decrypt to stdout:** `sops decrypt .env.sops`
+- **Edit in place:** `sops .env.sops` (opens in `$EDITOR`, re-encrypts on save)
+
+Same age key used across all infra repos (kube-infra, mikrotik-infra, truenas-infra).
+
+---
+
 ## File Structure
 
 ```
 CLAUDE.md
-.env                  # API credentials (not in Git)
-.env.example          # Template
+.sops.yaml            # SOPS encryption rules (age public key)
+.env                  # Plaintext credentials (not in Git, .gitignore'd)
+.env.sops             # SOPS-encrypted credentials (safe to commit)
+.env.example          # Template showing required variables
 scripts/
   (TBD — will contain API configuration scripts as requirements are defined)
 configure.sh          # Interactive menu or orchestrator (TBD)
