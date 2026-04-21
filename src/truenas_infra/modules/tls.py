@@ -223,6 +223,34 @@ def ensure_acme_cert(
 # ─── ensure_ui_certificate ───────────────────────────────────────────────────
 
 
+# ─── ensure_ui_https_redirect ────────────────────────────────────────────────
+
+
+def ensure_ui_https_redirect(cli: Any, *, enable: bool, apply: bool) -> Diff:
+    """Toggle the TrueNAS UI's HTTP→HTTPS redirect.
+
+    When enabled, `http://nas.w1.lv/` 301s to `https://nas.w1.lv/` instead
+    of serving plain HTTP. Good hygiene once we have a real cert — prevents
+    accidental plaintext credential submission.
+
+    Same restart-the-UI-server dance as `ensure_ui_certificate` — without
+    ui_restart, nginx doesn't pick up the new redirect rule.
+    """
+    current = cli.call("system.general.config")
+    current_value = bool(current.get("ui_httpsredirect"))
+
+    if current_value == enable:
+        return Diff.noop({"ui_httpsredirect": current_value})
+
+    if apply:
+        updated = cli.call("system.general.update", {"ui_httpsredirect": enable})
+        cli.call("system.general.ui_restart", 3)
+        return Diff.update(before={"ui_httpsredirect": current_value},
+                           after=updated)
+    return Diff.update(before={"ui_httpsredirect": current_value},
+                       after={"ui_httpsredirect": enable})
+
+
 def ensure_ui_certificate(cli: Any, *, cert_id: int, apply: bool) -> Diff:
     """Bind the TrueNAS web UI to the given cert id + reload the UI server.
 
@@ -325,5 +353,12 @@ def run(
     else:
         log.warning("ui_certificate_skipped",
                     reason="cert_id_unknown_after_ensure_acme_cert")
+
+    # 5. HTTP→HTTPS redirect. Only safe to enable once the cert exists
+    # and is bound — otherwise a plain-HTTP visitor gets redirected to a
+    # broken HTTPS endpoint.
+    redirect_diff = ensure_ui_https_redirect(cli, enable=True, apply=ctx.apply)
+    log.info("ui_https_redirect_ensured",
+             action=redirect_diff.action, changed=redirect_diff.changed)
 
     return 0

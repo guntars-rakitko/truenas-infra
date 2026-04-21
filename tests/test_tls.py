@@ -289,6 +289,43 @@ def test_ensure_ui_certificate_noop_when_already_bound() -> None:
     assert "system.general.update" not in names
 
 
+# ─── ensure_ui_https_redirect ────────────────────────────────────────────────
+
+
+def test_ensure_ui_https_redirect_enables_when_currently_off() -> None:
+    from truenas_infra.modules.tls import ensure_ui_https_redirect
+
+    cli = _mk_cli([
+        {"ui_httpsredirect": False},
+        {"ui_httpsredirect": True},
+        None,  # ui_restart
+    ])
+
+    diff = ensure_ui_https_redirect(cli, enable=True, apply=True)
+
+    assert diff.changed is True
+    assert diff.action == "update"
+    update = next(c for c in cli.call.call_args_list
+                  if c.args[0] == "system.general.update")
+    assert update.args[1]["ui_httpsredirect"] is True
+    # Redirect change also reloads the UI server — same reason as cert bind.
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "system.general.ui_restart" in names
+
+
+def test_ensure_ui_https_redirect_noop_when_already_on() -> None:
+    from truenas_infra.modules.tls import ensure_ui_https_redirect
+
+    cli = _mk_cli([{"ui_httpsredirect": True}])
+
+    diff = ensure_ui_https_redirect(cli, enable=True, apply=True)
+
+    assert diff.changed is False
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "system.general.update" not in names
+    assert "system.general.ui_restart" not in names
+
+
 # ─── run() orchestration ─────────────────────────────────────────────────────
 
 
@@ -337,6 +374,10 @@ def test_run_orchestrates_all_four_steps_on_fresh_install(tmp_path: Path) -> Non
         {"ui_certificate": {"id": 1, "name": "truenas_default"}},
         {"ui_certificate": {"id": 200}},
         None,  # system.general.ui_restart
+        # ensure_ui_https_redirect: config, update, ui_restart
+        {"ui_httpsredirect": False},
+        {"ui_httpsredirect": True},
+        None,  # system.general.ui_restart
     ])
 
     rc = run(cli, _Ctx(apply=True), only=None, config_path=cfg_file)
@@ -346,7 +387,9 @@ def test_run_orchestrates_all_four_steps_on_fresh_install(tmp_path: Path) -> Non
     assert "acme.dns.authenticator.create" in names
     # certificate.create called twice (once for CSR, once for ACME cert)
     assert sum(1 for n in names if n == "certificate.create") == 2
-    assert "system.general.update" in names
+    # system.general.update called twice — once for ui_certificate, once
+    # for ui_httpsredirect.
+    assert sum(1 for n in names if n == "system.general.update") == 2
 
 
 def test_run_is_fully_noop_when_everything_already_exists(tmp_path: Path) -> None:
@@ -377,6 +420,8 @@ def test_run_is_fully_noop_when_everything_already_exists(tmp_path: Path) -> Non
           "renew_days": 30}],
         # UI already bound to this cert
         {"ui_certificate": {"id": 200, "name": "w1-wildcard"}},
+        # HTTP→HTTPS redirect already on
+        {"ui_httpsredirect": True},
     ])
 
     rc = run(cli, _Ctx(apply=True), only=None, config_path=cfg_file)
