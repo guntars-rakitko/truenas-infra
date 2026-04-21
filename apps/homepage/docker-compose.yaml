@@ -39,6 +39,15 @@ services:
       - HOMEPAGE_ALLOWED_HOSTS=home.w1.lv,10.10.5.10
       # Log level: info keeps the log small; flip to debug when troubleshooting.
       - LOG_TARGETS=stdout
+      # Widget credentials — {{HOMEPAGE_VAR_*}} in services.yaml reads these
+      # at render time. Values come from apps/homepage/secrets.sops.yaml
+      # (SOPS-encrypted), rendered into this compose by apps._render_compose
+      # at phase apps --apply time.
+      - HOMEPAGE_VAR_TRUENAS_API_KEY=${HOMEPAGE_VAR_TRUENAS_API_KEY}
+      - HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY=${HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY}
+      - HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY=${HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY}
+      - HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY=${HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY}
+      - HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY=${HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY}
     # Internal DNS — without these, siteMonitor probes against *.w1.lv
     # hostnames hit NXDOMAIN (container uses Docker's embedded resolver
     # which forwards to /etc/resolv.conf; depending on host resolver

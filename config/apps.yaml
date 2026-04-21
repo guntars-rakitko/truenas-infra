@@ -60,7 +60,7 @@ apps:
   - name: homepage
     enabled: true
     compose: apps/homepage/docker-compose.yaml
-    secrets: null              # MVP: link cards + siteMonitor only, no widget API creds
+    secrets: apps/homepage/secrets.sops.yaml  # HOMEPAGE_VAR_* for widget API creds
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
     description: "Service-catalog dashboard (Homepage), declarative YAML-only"
 

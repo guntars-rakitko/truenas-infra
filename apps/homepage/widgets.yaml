@@ -1,13 +1,16 @@
 # Homepage top-bar info widgets.
 # https://gethomepage.dev/configs/service-widgets/
-#
-# Keeping this MVP-minimal. The `resources` widget (CPU/memory/disk from
-# inside the container) is intentionally NOT enabled — it reads the
-# systeminformation npm lib against /proc in the container, which reports
-# container-scoped numbers that don't match operator expectations and
-# produces frequent "API Error" renders on certain kernel / mount combos.
-# Real NAS host stats come from the TrueNAS widget (service-level, once
-# we plumb the API key — follow-up).
+
+# Container CPU + memory from /proc inside the homepage container.
+# Kept narrow — CPU and memory only, no `disk:` because the container's
+# filesystem view (post-bind-mount) produces numbers that don't match
+# NAS pool reality. Real NAS pool stats come from the TrueNAS widget on
+# the NAS card below.
+- resources:
+    label: Host
+    cpu: true
+    memory: true
+    expanded: true
 
 - datetime:
     text_size: xl

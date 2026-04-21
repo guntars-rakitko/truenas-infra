@@ -26,6 +26,9 @@
         # when Traefik is up. /ping would need --ping=true flag in compose;
         # /api works unauthenticated on Traefik v3 dashboards.
         siteMonitor: https://traefik-nas.w1.lv/api/http/routers
+        widget:
+          type: traefik
+          url: https://traefik-nas.w1.lv
 
     - MeshCentral:
         icon: meshcentral.png
@@ -45,6 +48,12 @@
         href: https://nas.w1.lv/
         description: "NAS management UI"
         siteMonitor: https://nas.w1.lv/
+        widget:
+          type: truenas
+          url: https://nas.w1.lv
+          key: "{{HOMEPAGE_VAR_TRUENAS_API_KEY}}"
+          enablePools: true   # show tank pool size + health
+          nasType: scale      # TrueNAS SCALE / Community Edition
 
     - PXE (netboot.xyz):
         icon: netbootxyz.png
@@ -64,12 +73,22 @@
         href: https://minio-prd.w1.lv/
         description: "S3 admin — prd (Velero / workloads)"
         siteMonitor: https://minio-prd.w1.lv/
+        widget:
+          type: minio
+          url: https://s3-prd.w1.lv:9000
+          accessKey: "{{HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY}}"
+          secretKey: "{{HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY}}"
 
     - MinIO dev Console:
         icon: minio.png
         href: https://minio-dev.w1.lv/
         description: "S3 admin — dev"
         siteMonitor: https://minio-dev.w1.lv/
+        widget:
+          type: minio
+          url: https://s3-dev.w1.lv:9000
+          accessKey: "{{HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY}}"
+          secretKey: "{{HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY}}"
 
     - MinIO prd S3:
         icon: minio.png
