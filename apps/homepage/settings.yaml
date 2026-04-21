@@ -24,9 +24,6 @@ layout:
   Storage:
     style: row
     columns: 3
-  System Nodes:
-    style: row
-    columns: 3
   Docs & Links:
     style: row
     columns: 3

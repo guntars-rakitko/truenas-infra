@@ -75,6 +75,34 @@
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
           fields: ["uptime", "cpuLoad", "memoryUsed"]
 
+    # ── K8s nodes (hardware layer via AMT) ──────────────────────
+    # 6 ASUS Q170S1 boxes consolidated into one card — each line
+    # shows "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl.w1.lv
+    # for rich per-node view (hardware info, network, power actions).
+    # When actual K8s clusters come up, a separate "Kubernetes" group
+    # will handle pod/node/ingress state at the cluster layer.
+    - K8s nodes:
+        icon: mdi-server-network
+        href: https://amtctl.w1.lv/
+        description: "6 ASUS Q170S1 (AMT hardware layer)"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/summary
+          refreshInterval: 15000
+          mappings:
+            - field: kub-prd-01
+              label: kub-prd-01
+            - field: kub-prd-02
+              label: kub-prd-02
+            - field: kub-prd-03
+              label: kub-prd-03
+            - field: kub-dev-01
+              label: kub-dev-01
+            - field: kub-dev-02
+              label: kub-dev-02
+            - field: kub-dev-03
+              label: kub-dev-03
+
     - NAS Traefik:
         icon: traefik.png
         href: https://traefik-nas.w1.lv/dashboard/
@@ -148,89 +176,6 @@
         href: "https://s3-dev.w1.lv:9000/"
         description: "S3 API (port 9000, data plane)"
         siteMonitor: "https://s3-dev.w1.lv:9000/minio/health/live"
-
-- System Nodes:
-    # 6 AMT-managed ASUS Q170S1 boxes — the physical hardware layer
-    # for our K8s clusters. Named "System Nodes" (not "Kubernetes") so
-    # a future "Kubernetes" group can render cluster-level info.
-    #
-    # Widget approach: customapi reads `power_badge` from amtctl which
-    # is pre-prefixed with 🟢/🟡/🔴 emoji based on AMT state (green=On,
-    # yellow=Soft-off/Sleep, red=Off/Unreachable). Homepage's built-in
-    # siteMonitor dot is binary only — this gets us a real 3-color
-    # signal inline on each card.
-    # Click-through → amtctl.w1.lv for full per-node view + actions.
-    - kub-prd-01:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "prd CP #1"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-prd-01/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
-
-    - kub-prd-02:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "prd CP #2"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-prd-02/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
-
-    - kub-prd-03:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "prd CP #3"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-prd-03/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
-
-    - kub-dev-01:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "dev CP #1"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-dev-01/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
-
-    - kub-dev-02:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "dev CP #2"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-dev-02/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
-
-    - kub-dev-03:
-        icon: mdi-server
-        href: https://amtctl.w1.lv/
-        description: "dev CP #3"
-        widget:
-          type: customapi
-          url: http://10.10.5.10:8000/api/nodes/kub-dev-03/power
-          refreshInterval: 15000
-          mappings:
-            - field: power_badge
-              label: Power
 
 - Docs & Links:
     - GitHub — truenas-infra:

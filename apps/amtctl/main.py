@@ -246,6 +246,27 @@ async def get_power(name: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/summary")
+async def summary() -> dict[str, str]:
+    """Flat summary for Homepage's customapi widget: one line per node.
+    Response is a dict keyed by node name (not an array) because
+    Homepage's customapi mappings are positional field-name accessors,
+    not array iterators — it can't loop over a JSON array. With this
+    shape the dashboard config explicitly names each node, which also
+    keeps render order deterministic.
+    """
+    out: dict[str, str] = {}
+    for name in sorted(_cache.keys()):
+        s = _cache[name]
+        power = s.get("power") or {}
+        state_name = power.get("state_name", "unreachable")
+        reachable = s.get("reachable", False)
+        badge = _power_badge(state_name, reachable)
+        ip = s.get("host", "?")
+        out[name] = f"{badge}  ·  {ip}"
+    return out
+
+
 @app.get("/api/nodes/{name}/status", responses={503: {}, 418: {}})
 async def get_status(name: str) -> JSONResponse:
     """Homepage-siteMonitor endpoint. Returns HTTP status based on node
