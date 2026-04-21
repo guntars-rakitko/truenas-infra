@@ -20,8 +20,19 @@ services:
     volumes:
       # All Homepage YAMLs (services, bookmarks, widgets, settings, etc.)
       # uploaded by phase apps via _ensure_homepage_config_via_ctx.
-      # Read-only: we never expect Homepage to self-modify its config.
-      - /mnt/tank/system/apps-config/homepage:/app/config:ro
+      #
+      # NOT mounted read-only. Homepage runs a first-boot bootstrap that
+      # wants write access to the config dir (creates a .lock marker,
+      # may seed missing files). With :ro the bootstrap failed silently
+      # and Homepage served its built-in "My First Group" demo config
+      # instead of our YAML — not the outcome we wanted.
+      #
+      # Safety against accidental overwrites: Homepage's bootstrap only
+      # seeds a file if it's absent. Our six files (services, bookmarks,
+      # widgets, settings, docker, kubernetes) are pre-uploaded by phase
+      # apps every run, so they're always present before the container
+      # starts (step 2a pre-ordering, same rationale as wiki/nginx.conf).
+      - /mnt/tank/system/apps-config/homepage:/app/config
     environment:
       # Required since v1.0 for any host other than localhost — prevents
       # host-header injection. List the hostnames we'll reach this app at.
