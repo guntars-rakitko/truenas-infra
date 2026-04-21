@@ -1,11 +1,11 @@
 {
-  "_comment": "MeshCentral config — uploaded to /mnt/tank/system/apps-config/meshcentral/data/config.json on the NAS. Cert/AliasPort pair teaches the server to accept the Origin header produced by browsers hitting https://10.10.5.10:4430/. Without this the container rejects every request with 'Invalid origin in HTTP request'.",
+  "_comment": "MeshCentral config — uploaded to /mnt/tank/system/apps-config/meshcentral/data/config.json. Behind the NAS mgmt-plane Traefik at https://mc.w1.lv/ — MeshCentral serves plain HTTP internally; Traefik terminates TLS using the wildcard *.w1.lv cert. `TlsOffload: '10.10.5.20'` tells MeshCentral it's proxied (generated URLs use https:// despite HTTP backend); `Cert` field is the public SNI name Traefik routes on.",
   "settings": {
-    "Cert": "10.10.5.10",
-    "Port": 443,
-    "AliasPort": 4430,
+    "Cert": "mc.w1.lv",
+    "Port": 80,
+    "AliasPort": 443,
     "RedirPort": 80,
-    "RedirAliasPort": 4480,
+    "TlsOffload": "10.10.5.20",
     "WebRTC": false,
     "SelfUpdate": false,
     "AgentPing": 60,
@@ -15,8 +15,8 @@
     "": {
       "Title": "NAS MeshCentral",
       "Title2": "AMT KVM",
-      "NewAccounts": true,
-      "CertUrl": "https://10.10.5.10:4430/"
+      "NewAccounts": false,
+      "CertUrl": "https://mc.w1.lv/"
     }
   }
 }

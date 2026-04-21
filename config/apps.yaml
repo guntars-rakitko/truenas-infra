@@ -34,6 +34,13 @@ apps:
     bind_ip: 10.10.5.10
     description: "Remote management + AMT KVM for the K8s nodes"
 
+  - name: traefik
+    enabled: true
+    compose: apps/traefik/docker-compose.yaml
+    secrets: null              # mounts the wildcard cert from /mnt/tank/system/tls
+    bind_ip: 10.10.5.20
+    description: "Mgmt-plane reverse proxy (mc/pxe/minio-*/traefik-nas)"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false

@@ -308,6 +308,8 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
             "id": 2, "description": "tls-rotate", "enabled": True,
             "command": expected_tls_cmd, "user": "root", "schedule": expected_hourly,
         }],
+        {"size": _P("apps/traefik/routes.yaml").stat().st_size,
+         "mode": 0o100644},                                      # filesystem.stat traefik routes
     ])
 
     rc = run(

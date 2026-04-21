@@ -41,20 +41,36 @@ src_key_sha=$(sha256sum "$SRC_KEY" | cut -d' ' -f1)
 dst_crt_sha=$(sha256sum "$DST_CRT" 2>/dev/null | cut -d' ' -f1 || echo "")
 dst_key_sha=$(sha256sum "$DST_KEY" 2>/dev/null | cut -d' ' -f1 || echo "")
 
-if [ "$src_crt_sha" = "$dst_crt_sha" ] && [ "$src_key_sha" = "$dst_key_sha" ]; then
-    log "cert on pool already matches /etc/certificates ($src_crt_sha — 8 chars: ${src_crt_sha:0:8}); no change"
+# MinIO's --certs-dir expects public.crt + private.key; the Traefik +
+# generic convention uses fullchain.pem + privkey.pem. We maintain both
+# naming conventions in the same dir so either container flavor can
+# bind-mount ro and just work.
+DST_CRT_MINIO="$DST_DIR/public.crt"
+DST_KEY_MINIO="$DST_DIR/private.key"
+
+# Noop check: ALL FOUR copies must already match src. If any name is
+# missing or has stale content, re-install.
+dst_minio_crt_sha=$(sha256sum "$DST_CRT_MINIO" 2>/dev/null | cut -d' ' -f1 || echo "")
+dst_minio_key_sha=$(sha256sum "$DST_KEY_MINIO" 2>/dev/null | cut -d' ' -f1 || echo "")
+
+if [ "$src_crt_sha" = "$dst_crt_sha" ] && [ "$src_key_sha" = "$dst_key_sha" ] \
+   && [ "$src_crt_sha" = "$dst_minio_crt_sha" ] && [ "$src_key_sha" = "$dst_minio_key_sha" ]; then
+    log "cert on pool already matches /etc/certificates (sha ${src_crt_sha:0:8}); no change"
     exit 0
 fi
 
-log "cert changed (src ${src_crt_sha:0:8} vs dst ${dst_crt_sha:0:8}); copying"
+log "cert changed or name missing (src ${src_crt_sha:0:8}); copying all four names"
 
-# Install with explicit perms. The private key is 0640 with group `docker`
-# (present on TrueNAS Apps host) — readable by containerized processes
-# running as the docker gid but not world-readable.
+# Install with explicit perms. Private key is 0640 with group `docker`
+# (present on TrueNAS Apps host) so containerized non-root processes
+# can read it via the docker gid but world can't.
 install -m 0644 "$SRC_CRT" "$DST_CRT"
-# Some gid lookups fail during early boot; chgrp best-effort.
 install -m 0640 "$SRC_KEY" "$DST_KEY"
-chgrp docker "$DST_KEY" 2>/dev/null || log "warning: chgrp docker on privkey failed — check group exists"
+install -m 0644 "$SRC_CRT" "$DST_CRT_MINIO"
+install -m 0640 "$SRC_KEY" "$DST_KEY_MINIO"
+# Best-effort chgrp — some gid lookups fail during early boot.
+chgrp docker "$DST_KEY" "$DST_KEY_MINIO" 2>/dev/null \
+    || log "warning: chgrp docker on privkey* failed — check group exists"
 
-log "exported cert ${CERT_NAME} → $DST_DIR"
+log "exported cert ${CERT_NAME} → $DST_DIR (fullchain.pem + privkey.pem + public.crt + private.key)"
 exit 10

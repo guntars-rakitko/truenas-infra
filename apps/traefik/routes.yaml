@@ -1,0 +1,69 @@
+# Traefik file-provider dynamic config.
+#
+# Lands at /mnt/tank/system/apps-config/traefik/routes.yaml via
+# ensure_file_on_nas (phase apps). Traefik watches the directory and
+# hot-reloads on change — no redeploy needed when adding a route.
+#
+# Pattern:
+#   <name>.w1.lv  →  HTTP backend URL  (plain HTTP inside mgmt VLAN)
+#   TLS terminated at Traefik using /etc/traefik/certs/fullchain.pem
+#   kept fresh by tls-rotate (sub-phase D).
+
+http:
+  routers:
+    mc:
+      rule: "Host(`mc.w1.lv`)"
+      service: meshcentral
+      entryPoints: [websecure]
+      tls: {}
+    pxe-ui:
+      rule: "Host(`pxe.w1.lv`)"
+      service: netboot-ui
+      entryPoints: [websecure]
+      tls: {}
+    minio-prd-console:
+      rule: "Host(`minio-prd.w1.lv`)"
+      service: minio-prd-console
+      entryPoints: [websecure]
+      tls: {}
+    minio-dev-console:
+      rule: "Host(`minio-dev.w1.lv`)"
+      service: minio-dev-console
+      entryPoints: [websecure]
+      tls: {}
+    # Traefik's own dashboard — NAS-side, distinct from any future
+    # kube-infra Traefik (traefik-prd / traefik-dev).
+    traefik-dashboard:
+      rule: "Host(`traefik-nas.w1.lv`)"
+      service: api@internal
+      entryPoints: [websecure]
+      tls: {}
+
+  services:
+    meshcentral:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.5.10:4480"
+    netboot-ui:
+      loadBalancer:
+        servers:
+          - url: "http://10.10.5.10:3000"
+    minio-prd-console:
+      loadBalancer:
+        servers:
+          # MinIO console binds to 10.10.5.10:9001 — mgmt VLAN only,
+          # unreachable from prd/dev workloads. Defense in depth beyond
+          # MinIO's own auth.
+          - url: "http://10.10.5.10:9001"
+    minio-dev-console:
+      loadBalancer:
+        servers:
+          # MinIO dev console on the same mgmt IP but a different host
+          # port (9011) — Docker port-mapping picks distinct host ports
+          # per container so they coexist on 10.10.5.10.
+          - url: "http://10.10.5.10:9011"
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/fullchain.pem
+      keyFile:  /etc/traefik/certs/privkey.pem

@@ -4,36 +4,26 @@ services:
     container_name: meshcentral
     restart: unless-stopped
     network_mode: bridge
+    # MeshCentral now serves plain HTTP internally on :4480. Traefik
+    # fronts it at https://mc.w1.lv/ (rules in apps/traefik/routes.yaml)
+    # and terminates TLS using the wildcard *.w1.lv cert. We drop the
+    # old :4430 HTTPS port + USE_SELFSIGNED_CERT — TrueNAS's ACME cert
+    # lives with Traefik, not here.
     ports:
-      # HTTPS web UI bound to the NAS management VLAN IP only.
-      - "10.10.5.10:4430:443"
-      # Plain HTTP — used by the installer/agent redirect. Harmless to
-      # expose on mgmt VLAN 5 since the router firewall blocks inbound
-      # from other VLANs (see mikrotik-infra INPUT chain).
-      - "10.10.5.10:4480:80"
+      - "10.10.5.10:4480:80"      # HTTP backend for Traefik → this container
     volumes:
       - /mnt/tank/system/apps-config/meshcentral/data:/opt/meshcentral/meshcentral-data
       - /mnt/tank/system/apps-config/meshcentral/backups:/opt/meshcentral/meshcentral-backups
       - /mnt/tank/system/apps-config/meshcentral/files:/opt/meshcentral/meshcentral-files
     environment:
-      # Shown in the web UI header + TLS cert SAN.
-      - HOSTNAME=meshcentral.nas.home.arpa
-      # Let MeshCentral self-sign the TLS cert on first boot. Swap to a
-      # real cert (and flip this off) once we have ACME DNS-01 wired up
-      # via `phase tls`.
-      - USE_SELFSIGNED_CERT=true
-      # Required only for the very first run — after the admin signs up
-      # (first account = admin by default), flip to false and redeploy.
-      - ALLOW_NEW_ACCOUNTS=true
-
-# Purpose: out-of-band KVM via Intel AMT for the K8s nodes on VLAN 5.
-# AMT endpoints currently reachable at 10.10.5.11-.16 on ports 16992
-# (HTTP SOAP) and 16994 (KVM). MeshCentral is agent-less for AMT — add
-# the endpoints under Settings → AMT Scanner, then click an entry to
-# launch KVM in-browser.
+      - HOSTNAME=mc.w1.lv
+      - ALLOW_NEW_ACCOUNTS=false
+# NOTE: MeshCentral is fronted by Traefik at https://mc.w1.lv/ — it
+# runs plain HTTP internally. `TlsOffload: true` + `Cert: mc.w1.lv` in
+# meshcentral-data/config.json tells it "you're behind a proxy"; see
+# apps/meshcentral/config.json (also uploaded by phase apps).
 #
-# Why self-hosted and not a laptop app:
-#   - Works from any browser on any device on VLAN 5 / WireGuard
-#   - Survives laptop reboots
-#   - Same lifecycle story as the rest of `phase apps` (GitOps, SOPS,
-#     reproducible rebuild)
+# Purpose unchanged: out-of-band KVM via Intel AMT for the K8s nodes.
+# AMT endpoints kub-{prd,dev}-0{1,2,3}.w1.lv resolve on the mgmt VLAN
+# (see config/dns.yaml). Add via MeshCentral's Intel AMT pane, then
+# click → Remote Desktop for browser KVM.

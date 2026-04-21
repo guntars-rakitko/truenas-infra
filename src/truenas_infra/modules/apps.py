@@ -491,6 +491,12 @@ TLS_EXPORT_SCRIPT_PATH = Path("apps/tls/tls-export.sh")
 TLS_ROTATE_SCRIPT_PATH = Path("apps/tls/tls-rotate.sh")
 TLS_REMOTE_DIR = "/mnt/tank/system/tls"
 
+# Traefik dynamic config — routers + services + TLS block. Committed in
+# the repo; uploaded to the container's file-provider directory so
+# Traefik hot-reloads on change.
+TRAEFIK_ROUTES_PATH = Path("apps/traefik/routes.yaml")
+TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
+
 
 def run(
     cli: Any,
@@ -541,7 +547,41 @@ def run(
     if only in (None, "tls"):
         _ensure_tls_rotate_via_ctx(cli, ctx, log)
 
+    # 6. Traefik routes.yaml — uploaded to the container's file-provider
+    # directory. Traefik file-watches and hot-reloads on change, no app
+    # redeploy needed for route edits.
+    if only in (None, "traefik"):
+        _ensure_traefik_routes_via_ctx(cli, ctx, log)
+
     return 0
+
+
+def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    if not TRAEFIK_ROUTES_PATH.exists():
+        log.warning("traefik_routes_skipped",
+                    reason="source_missing", path=str(TRAEFIK_ROUTES_PATH))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    remote = f"{TRAEFIK_CONFIG_REMOTE_DIR}/routes.yaml"
+    diff = ensure_file_on_nas(
+        cli, _upload,
+        local_path=TRAEFIK_ROUTES_PATH, remote_path=remote,
+        mode=0o644, apply=ctx.apply,
+    )
+    log.info("traefik_routes_ensured", path=remote,
+             action=diff.action, changed=diff.changed)
 
 
 def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

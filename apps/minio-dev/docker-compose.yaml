@@ -5,13 +5,19 @@ services:
     restart: unless-stopped
     network_mode: bridge
     ports:
-      - "10.10.15.10:9000:9000"     # S3 API
-      - "10.10.15.10:9001:9001"     # Web console
+      # S3 API on dev VLAN (data plane). HTTPS, wildcard *.w1.lv cert.
+      # Native S3 port :9000; :443 on 10.10.15.10 reserved for future.
+      - "10.10.15.10:9000:9000"
+      # Console on mgmt VLAN IP — port :9011 distinguishes it from
+      # minio-prd's :9001 (same mgmt IP, different host port).
+      # Traefik routes https://minio-dev.w1.lv/ → http://10.10.5.10:9011.
+      - "10.10.5.10:9011:9001"
     volumes:
       - /mnt/tank/kube/dev/velero:/data
+      - /mnt/tank/system/tls:/root/.minio/certs:ro
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-      - MINIO_SERVER_URL=http://10.10.15.10:9000
-      - MINIO_BROWSER_REDIRECT_URL=http://10.10.15.10:9001
+      - MINIO_SERVER_URL=https://s3-dev.w1.lv:9000
+      - MINIO_BROWSER_REDIRECT_URL=https://minio-dev.w1.lv/
     command: server /data --console-address ":9001"

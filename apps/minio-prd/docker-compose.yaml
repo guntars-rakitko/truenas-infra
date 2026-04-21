@@ -5,13 +5,30 @@ services:
     restart: unless-stopped
     network_mode: bridge
     ports:
-      - "10.10.10.10:9000:9000"     # S3 API
-      - "10.10.10.10:9001:9001"     # Web console
+      # S3 API on prd VLAN (data plane). HTTPS, wildcard *.w1.lv cert.
+      # Port stays :9000 (native S3 port); :443 on 10.10.10.10 is
+      # deliberately reserved for future data-plane services.
+      - "10.10.10.10:9000:9000"
+      # Console on mgmt VLAN IP (mgmt plane). Plain HTTP; Traefik
+      # terminates TLS at https://minio-prd.w1.lv/ via routes.yaml.
+      # Distinct host port (:9001) so prd console coexists with dev
+      # console (:9011) on the same mgmt IP.
+      - "10.10.5.10:9001:9001"
     volumes:
       - /mnt/tank/kube/prd/velero:/data
+      # Wildcard cert — kept fresh by the hourly tls-rotate cronjob.
+      - /mnt/tank/system/tls:/root/.minio/certs:ro
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-      - MINIO_SERVER_URL=http://10.10.10.10:9000
-      - MINIO_BROWSER_REDIRECT_URL=http://10.10.10.10:9001
+      # Public S3 endpoint — clients (Velero) talk to this with a valid
+      # LE chain (no -insecure flag needed).
+      - MINIO_SERVER_URL=https://s3-prd.w1.lv:9000
+      # Browser console lives behind Traefik — portless URL on mgmt.
+      - MINIO_BROWSER_REDIRECT_URL=https://minio-prd.w1.lv/
+    # tls-export.sh installs both the generic (fullchain.pem/privkey.pem)
+    # AND MinIO-conventional (public.crt/private.key) names under
+    # /mnt/tank/system/tls. MinIO's --certs-dir default is
+    # /root/.minio/certs which is exactly this bind-mount — it picks up
+    # public.crt + private.key on startup. No entrypoint gymnastics.
     command: server /data --console-address ":9001"

@@ -1,0 +1,44 @@
+services:
+  traefik:
+    image: traefik:v3.2
+    container_name: traefik
+    restart: unless-stopped
+    # Bind ONLY to the mgmt-VLAN sub-IP 10.10.5.20. The NAS's primary
+    # 10.10.5.10 already hosts the TrueNAS UI on :443; Traefik lives
+    # on its own address so we can keep both portless URLs side by side
+    # without port-swapping games on the TrueNAS UI.
+    network_mode: bridge
+    ports:
+      - "10.10.5.20:443:443"
+      - "10.10.5.20:80:80"         # HTTP entry point for HTTPS redirect
+      - "10.10.5.20:8080:8080"     # Internal dashboard (also exposed on :443 via traefik-nas.w1.lv)
+    volumes:
+      # Wildcard cert — hot-reloaded via file-watch when tls-rotate
+      # updates these files.
+      - /mnt/tank/system/tls:/etc/traefik/certs:ro
+      # File-provider dynamic config (routers + services + TLS block).
+      # Re-synced on every `phase apps --apply` by the ensure_file_on_nas
+      # path — edit apps/traefik/routes.yaml and re-apply.
+      - /mnt/tank/system/apps-config/traefik:/etc/traefik/dynamic:ro
+    command:
+      # Entry points
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # HTTP → HTTPS redirect (applied to every router on :web)
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true
+      # File provider — watches /etc/traefik/dynamic for changes
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      # Dashboard + API — available via traefik-nas.w1.lv (routed in routes.yaml)
+      - --api.dashboard=true
+      # Logs
+      - --log.level=INFO
+      - --accesslog=true
+
+# Policy: this Traefik fronts mgmt-plane web UIs on the NAS only. When
+# kube-infra gets its own Traefik(s) (prd + dev clusters), name them
+# traefik-prd / traefik-dev per the convention in truenas-infra
+# config/dns.yaml. Different IPs, different clusters, same hostname
+# discipline.
