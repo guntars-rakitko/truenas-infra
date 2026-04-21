@@ -1,14 +1,17 @@
 # Homepage top-bar info widgets.
 # https://gethomepage.dev/configs/service-widgets/
 
-# Top-bar `resources` widget intentionally omitted.
-# Homepage v1.12 only supports `resources` as a top-bar/group-header
-# widget — not as a per-service card widget inside a group. The user's
-# ask to "put host stats in the NAS widget" therefore isn't directly
-# expressible. Best substitute: the TrueNAS widget on the `nas.w1.lv`
-# card (services.yaml) already shows System Load, Uptime, Alerts, and
-# `tank` pool free space — covers the same ground as a generic CPU/
-# memory gauge, in the right place.
+# NAS host CPU + memory. Homepage's `resources` widget reads /proc
+# inside the homepage container — but in TrueNAS Docker /proc is
+# un-namespaced, so cpu/memory numbers reflect the real NAS host, not
+# the container. Labeled "NAS" so it's visually grouped with the NAS
+# section below. (Homepage doesn't allow resources inside a service
+# card, hence the top bar — but logically this IS the NAS resources.)
+- resources:
+    label: NAS
+    cpu: true
+    memory: true
+    expanded: true
 
 - datetime:
     text_size: xl
