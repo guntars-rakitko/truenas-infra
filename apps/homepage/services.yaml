@@ -17,6 +17,13 @@
         description: "Router / firewall / DHCP / DNS"
         siteMonitor: http://10.10.0.1/
         ping: 10.10.0.1
+        widget:
+          type: mikrotik
+          # HTTP not HTTPS: :443 on the router is closed in our config.
+          # The REST API lives at /rest and takes HTTP basic auth.
+          url: http://10.10.0.1
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
 
     - NAS Traefik:
         icon: traefik.png
@@ -73,22 +80,16 @@
         href: https://minio-prd.w1.lv/
         description: "S3 admin — prd (Velero / workloads)"
         siteMonitor: https://minio-prd.w1.lv/
-        widget:
-          type: minio
-          url: https://s3-prd.w1.lv:9000
-          accessKey: "{{HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY}}"
-          secretKey: "{{HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY}}"
+        # No widget: — Homepage v1.12 removed the native `minio` widget
+        # type (gethomepage.dev/widgets/services/minio/ returns 404).
+        # Live stats would need a customapi widget hitting MinIO's
+        # Prometheus endpoint; not worth it until we instrument anyway.
 
     - MinIO dev Console:
         icon: minio.png
         href: https://minio-dev.w1.lv/
         description: "S3 admin — dev"
         siteMonitor: https://minio-dev.w1.lv/
-        widget:
-          type: minio
-          url: https://s3-dev.w1.lv:9000
-          accessKey: "{{HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY}}"
-          secretKey: "{{HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY}}"
 
     - MinIO prd S3:
         icon: minio.png

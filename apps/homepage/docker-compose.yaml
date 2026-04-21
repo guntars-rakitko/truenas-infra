@@ -48,6 +48,8 @@ services:
       - HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY=${HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY}
       - HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY=${HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY}
       - HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY=${HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY}
+      - HOMEPAGE_VAR_MIKROTIK_USER=${HOMEPAGE_VAR_MIKROTIK_USER}
+      - HOMEPAGE_VAR_MIKROTIK_PASS=${HOMEPAGE_VAR_MIKROTIK_PASS}
     # Internal DNS — without these, siteMonitor probes against *.w1.lv
     # hostnames hit NXDOMAIN (container uses Docker's embedded resolver
     # which forwards to /etc/resolv.conf; depending on host resolver
