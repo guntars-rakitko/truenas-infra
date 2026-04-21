@@ -32,9 +32,9 @@ records:
   - name: minio-dev.w1.lv
     address: 10.10.5.20
     comment: MinIO dev console (via Traefik)
-  - name: traefik-mgmt.w1.lv
+  - name: traefik-nas.w1.lv
     address: 10.10.5.20
-    comment: NAS mgmt Traefik dashboard (distinct from kube-infra traefik-{prd,dev})
+    comment: NAS Traefik dashboard (distinct from kube-infra traefik-{prd,dev})
 
   # ─── NAS infra plane (direct) ───────────────────────────────────────────
   - name: nas.w1.lv
