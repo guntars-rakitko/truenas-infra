@@ -290,6 +290,15 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
         if p.name != "docker-compose.yaml" and not p.name.endswith(".sops.yaml")
     }
     meshcentral_config_size = _P("apps/meshcentral/config.json").stat().st_size
+    # amtctl app code + config — helper globs apps/amtctl/** and uploads
+    # every file except docker-compose.yaml, secrets.sops.yaml, Dockerfile.
+    amtctl_file_sizes = {}
+    for p in sorted(_P("apps/amtctl").rglob("*")):
+        if not p.is_file():
+            continue
+        if p.name in ("docker-compose.yaml", "Dockerfile") or p.name.endswith(".sops.yaml"):
+            continue
+        amtctl_file_sizes[str(p.relative_to(_P("apps/amtctl")))] = p.stat().st_size
 
     # Cronjob.query for tls-rotate — pre-shaped to match expected command
     # so ensure_cronjob reports noop without needing a cronjob.update call.
@@ -312,6 +321,11 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
         ],
         # Step 2a: meshcentral config.json size-match → no upload.
         {"size": meshcentral_config_size, "mode": 0o100644},
+        # Step 2a: amtctl files (one stat per file, sorted rglob order).
+        *[
+            {"size": amtctl_file_sizes[path], "mode": 0o100644}
+            for path in sorted(amtctl_file_sizes)
+        ],
         [],                                                      # app.query
         {"id": "netboot-xyz"},                                   # app.create
         {"size": script_size, "mode": 0o100755},                # filesystem.stat script

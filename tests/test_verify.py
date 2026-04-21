@@ -131,6 +131,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
                             "traefik-nas.w1.lv": "10.10.5.20",
                             "wiki.w1.lv": "10.10.5.20",
                             "home.w1.lv": "10.10.5.20",
+                            "amtctl.w1.lv": "10.10.5.20",
                             "router.w1.lv": "10.10.0.1",
                             "sw-data.w1.lv": "10.10.0.2",
                             "sw-mgmt.w1.lv": "10.10.0.3",
@@ -156,7 +157,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        # apps (7 of them now — homepage added)
+        # apps (8 of them now — amtctl added)
         [{"name": "netboot-xyz", "state": "RUNNING"}],
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
@@ -164,6 +165,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
         [{"name": "homepage", "state": "RUNNING"}],
+        [{"name": "amtctl", "state": "RUNNING"}],
         # cert expiry
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
@@ -193,6 +195,7 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
         [{"name": "homepage", "state": "RUNNING"}],
+        [{"name": "amtctl", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 
@@ -343,6 +346,7 @@ def test_run_fails_when_a_new_app_is_missing(monkeypatch) -> None:
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
         [{"name": "homepage", "state": "RUNNING"}],
+        [{"name": "amtctl", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 

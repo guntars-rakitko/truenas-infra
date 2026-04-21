@@ -91,6 +91,10 @@ datasets:
     # Declarative YAML configs (services, bookmarks, widgets, settings,
     # docker, kubernetes) mounted read-only into the `homepage` app at
     # /app/config. Uploaded from apps/homepage/*.yaml by phase apps.
+  - name: tank/system/apps-config/amtctl
+    # AMT control sidecar — bind-mount target for code (amt.py, main.py,
+    # web/index.html) + config (nodes.yaml) + persistent venv. Populated
+    # by _ensure_amtctl_config_via_ctx in modules/apps.py.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.

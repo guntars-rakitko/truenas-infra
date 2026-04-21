@@ -1,0 +1,60 @@
+# amtctl — FastAPI sidecar for Intel AMT power control + status dashboard.
+#
+# Polls each of the 6 ASUS Q170S1 nodes' AMT over HTTP :16992 (WS-MAN,
+# digest auth) every 60s, caches results in-memory, exposes them to:
+#   - a static HTML dashboard at https://amtctl.w1.lv/
+#   - Homepage customapi widgets via /api/nodes/{name}/power
+#
+# AMT creds are shared across all 6 nodes. Injected via compose env
+# from apps/amtctl/secrets.sops.yaml (rendered by _render_compose).
+#
+# Image strategy: python:3.13-alpine base + runtime dependency install
+# into a persistent /venv bind mount. Avoids needing a registry for
+# our custom code, and first-run cost (~30s) is paid once per upgrade.
+# The Python source + web/ live on the pool and mount read-only at /app
+# so we can iterate without rebuilding or touching the container image.
+services:
+  amtctl:
+    image: python:3.13-alpine
+    container_name: amtctl
+    restart: unless-stopped
+    ports:
+      # Mgmt VLAN bind only — Traefik fronts amtctl.w1.lv.
+      - "10.10.5.10:8000:8000"
+    volumes:
+      # App code (amt.py, main.py, web/) — uploaded by
+      # _ensure_amtctl_config_via_ctx in modules/apps.py.
+      - /mnt/tank/system/apps-config/amtctl/code:/app:ro
+      # Inventory + (eventually) any operator-edited config.
+      - /mnt/tank/system/apps-config/amtctl/config:/config:ro
+      # Persistent venv so deps install once, reuse across restarts.
+      - /mnt/tank/system/apps-config/amtctl/venv:/venv
+    environment:
+      - AMTCTL_NODES_YAML=/config/nodes.yaml
+      - AMTCTL_AMT_USER=${AMTCTL_AMT_USER}
+      - AMTCTL_AMT_PASSWORD=${AMTCTL_AMT_PASSWORD}
+      - AMTCTL_POLL_INTERVAL=60
+      - PATH=/venv/bin:/usr/local/bin:/usr/bin:/bin
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ ! -x /venv/bin/uvicorn ]; then
+          echo "bootstrapping venv…"
+          python -m venv /venv
+          /venv/bin/pip install --no-cache-dir -q \
+            'fastapi==0.118.*' \
+            'uvicorn[standard]==0.35.*' \
+            'httpx==0.28.*' \
+            'PyYAML==6.0.*'
+          echo "venv ready"
+        fi
+        exec /venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge

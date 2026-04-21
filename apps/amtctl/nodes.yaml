@@ -1,0 +1,25 @@
+# Node inventory for the amtctl dashboard.
+# AMT endpoints — each ASUS Q170S1 node's ME firmware listens on
+# mgmt VLAN. Hostnames resolve via MikroTik DNS to 10.10.5.11..16.
+#
+# Role is descriptive only — drives the card subtitle in the UI.
+
+nodes:
+  - name: kub-prd-01
+    host: 10.10.5.11
+    role: "prd control-plane #1"
+  - name: kub-prd-02
+    host: 10.10.5.12
+    role: "prd control-plane #2"
+  - name: kub-prd-03
+    host: 10.10.5.13
+    role: "prd control-plane #3"
+  - name: kub-dev-01
+    host: 10.10.5.14
+    role: "dev control-plane #1"
+  - name: kub-dev-02
+    host: 10.10.5.15
+    role: "dev control-plane #2"
+  - name: kub-dev-03
+    host: 10.10.5.16
+    role: "dev control-plane #3"

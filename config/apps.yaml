@@ -64,6 +64,13 @@ apps:
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
     description: "Service-catalog dashboard (Homepage), declarative YAML-only"
 
+  - name: amtctl
+    enabled: true
+    compose: apps/amtctl/docker-compose.yaml
+    secrets: apps/amtctl/secrets.sops.yaml    # AMT admin user + password
+    bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts amtctl.w1.lv
+    description: "Intel AMT power control + status dashboard for K8s nodes"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false

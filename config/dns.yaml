@@ -48,6 +48,9 @@ records:
   - name: home.w1.lv
     address: 10.10.5.20
     comment: Homepage dashboard (via Traefik → 10.10.5.10:3001)
+  - name: amtctl.w1.lv
+    address: 10.10.5.20
+    comment: AMT power control dashboard (via Traefik → 10.10.5.10:8000)
 
   # ─── NAS infra plane (direct) ───────────────────────────────────────────
   - name: nas.w1.lv

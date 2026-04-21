@@ -60,6 +60,12 @@ http:
       service: homepage
       entryPoints: [websecure]
       tls: {}
+    # AMT control sidecar — K8s node power dashboard, wraps Intel AMT WS-MAN.
+    amtctl:
+      rule: "Host(`amtctl.w1.lv`)"
+      service: amtctl
+      entryPoints: [websecure]
+      tls: {}
 
   services:
     meshcentral:
@@ -98,6 +104,11 @@ http:
           # gethomepage/homepage in the `homepage` Custom App. Host port
           # 3001 (container 3000). Declarative-only, no Docker socket.
           - url: "http://10.10.5.10:3001"
+    amtctl:
+      loadBalancer:
+        servers:
+          # FastAPI in the `amtctl` Custom App. Host port 8000.
+          - url: "http://10.10.5.10:8000"
 
   # Reusable backend transport: skip-verify for NAS-loopback HTTPS hops
   # where the hostname in the URL doesn't match the *.w1.lv cert SAN

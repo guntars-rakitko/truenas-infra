@@ -519,6 +519,17 @@ HOMEPAGE_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/homepage"
 MESHCENTRAL_CONFIG_PATH = Path("apps/meshcentral/config.json")
 MESHCENTRAL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/meshcentral/data"
 
+# amtctl sidecar — FastAPI app that proxies Intel AMT WS-MAN for the 6
+# K8s nodes + serves a power-control HTML UI. The container is a plain
+# python:3.13-alpine image; our code (amt.py, main.py, web/) and config
+# (nodes.yaml) live on the pool and bind-mount into the container. So
+# "deploying" amtctl means uploading those files — there's no image to
+# build or push. The persistent /venv mount (bootstrapped by the
+# container's entrypoint) caches pip-installed deps across restarts.
+AMTCTL_LOCAL_DIR = Path("apps/amtctl")
+AMTCTL_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/code"
+AMTCTL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/config"
+
 
 def run(
     cli: Any,
@@ -555,6 +566,8 @@ def run(
         _ensure_homepage_config_via_ctx(cli, ctx, log)
     if only in (None, "meshcentral"):
         _ensure_meshcentral_config_via_ctx(cli, ctx, log)
+    if only in (None, "amtctl"):
+        _ensure_amtctl_config_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -704,6 +717,69 @@ def _ensure_meshcentral_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                 "run `midclt call app.stop meshcentral && midclt call "
                 "app.start meshcentral` to pick up the new values.",
         )
+
+
+def _ensure_amtctl_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload the amtctl app source + node inventory to the pool.
+
+    Layout on the pool:
+        .../apps-config/amtctl/code/   — Python + static UI (bind-mounted /app)
+            ├── amt.py
+            ├── main.py
+            └── web/index.html
+        .../apps-config/amtctl/config/ — runtime config (bind-mounted /config)
+            └── nodes.yaml
+
+    Globs apps/amtctl/ so new files (e.g. additional UI assets, a
+    requirements.txt) show up on the next phase-apps run without code
+    changes here.
+
+    Files NOT uploaded:
+      - docker-compose.yaml  (owned by ensure_custom_app)
+      - secrets.sops.yaml    (rendered into compose env by _render_compose)
+      - Dockerfile            (unused — runtime install approach; keeping
+                               the file for documentation + a possible
+                               future switch to registry-hosted image)
+    """
+    if not AMTCTL_LOCAL_DIR.is_dir():
+        log.warning("amtctl_config_skipped",
+                    reason="source_missing", path=str(AMTCTL_LOCAL_DIR))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    # App code: walk apps/amtctl/ and mirror structure under code/,
+    # skipping the "meta" files that belong to other concerns.
+    SKIP = {"docker-compose.yaml", "secrets.sops.yaml", "Dockerfile"}
+    for local in sorted(AMTCTL_LOCAL_DIR.rglob("*")):
+        if not local.is_file():
+            continue
+        if local.name in SKIP:
+            continue
+        rel = local.relative_to(AMTCTL_LOCAL_DIR).as_posix()
+        if rel == "nodes.yaml":
+            # nodes.yaml goes to the config dir (bind-mounted /config)
+            remote = f"{AMTCTL_CONFIG_REMOTE_DIR}/nodes.yaml"
+        else:
+            # Everything else → code dir (bind-mounted /app)
+            remote = f"{AMTCTL_CODE_REMOTE_DIR}/{rel}"
+        diff = ensure_file_on_nas(
+            cli, _upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("amtctl_file_ensured", path=remote,
+                 action=diff.action, changed=diff.changed)
 
 
 def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

@@ -149,16 +149,81 @@
         description: "S3 API (port 9000, data plane)"
         siteMonitor: "https://s3-dev.w1.lv:9000/minio/health/live"
 
-- Kubernetes:
-    - kub-prd (planned):
+- Kubernetes Nodes:
+    # 6 AMT-managed ASUS Q170S1 boxes. Each card polls the amtctl sidecar
+    # for real-time power state. Click-through goes to the amtctl dashboard
+    # (amtctl.w1.lv) for hardware / network detail + power action buttons.
+    - kub-prd-01:
         icon: kubernetes.png
-        href: https://kub-prd-01.w1.lv:16993/
-        description: "Prod cluster — 3 nodes (AMT link until cluster up)"
+        href: https://amtctl.w1.lv/
+        description: "prd CP #1"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-prd-01/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
 
-    - kub-dev (planned):
+    - kub-prd-02:
         icon: kubernetes.png
-        href: https://kub-dev-01.w1.lv:16993/
-        description: "Dev cluster — 3 nodes"
+        href: https://amtctl.w1.lv/
+        description: "prd CP #2"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-prd-02/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
+
+    - kub-prd-03:
+        icon: kubernetes.png
+        href: https://amtctl.w1.lv/
+        description: "prd CP #3"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-prd-03/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
+
+    - kub-dev-01:
+        icon: kubernetes.png
+        href: https://amtctl.w1.lv/
+        description: "dev CP #1"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-dev-01/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
+
+    - kub-dev-02:
+        icon: kubernetes.png
+        href: https://amtctl.w1.lv/
+        description: "dev CP #2"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-dev-02/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
+
+    - kub-dev-03:
+        icon: kubernetes.png
+        href: https://amtctl.w1.lv/
+        description: "dev CP #3"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/nodes/kub-dev-03/power
+          refreshInterval: 15000
+          mappings:
+            - field: power_state
+              label: Power
 
 - Docs & Links:
     - GitHub — truenas-infra:

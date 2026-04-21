@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>amtctl — AMT power control</title>
+  <style>
+    :root {
+      --bg: #0f172a; --card: #1e293b; --border: #334155;
+      --fg: #e2e8f0; --muted: #94a3b8;
+      --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+      --btn: #3b82f6; --btn-hover: #2563eb;
+      --btn-danger: #dc2626; --btn-danger-hover: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background: var(--bg); color: var(--fg); margin: 0; padding: 1.5rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    h1 { margin: 0 0 0.5rem 0; font-size: 1.4rem; }
+    .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+    .card-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);
+    }
+    .card-title { font-size: 1.1rem; font-weight: 600; }
+    .card-role { color: var(--muted); font-size: 0.85rem; }
+    .status-pill {
+      display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px;
+      font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+    }
+    .status-on { background: rgba(16, 185, 129, 0.15); color: var(--ok); }
+    .status-off { background: rgba(239, 68, 68, 0.15); color: var(--err); }
+    .status-sleep { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+    .status-unknown { background: rgba(148, 163, 184, 0.15); color: var(--muted); }
+    .section { margin: 0.75rem 0; }
+    .section h3 {
+      margin: 0 0 0.4rem 0; font-size: 0.75rem; text-transform: uppercase;
+      color: var(--muted); letter-spacing: 0.05em;
+    }
+    .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; }
+    .kv .k { color: var(--muted); }
+    .kv .v { color: var(--fg); word-break: break-all; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+    button {
+      background: var(--btn); color: white; border: 0; padding: 0.5rem 1rem;
+      border-radius: 6px; font-size: 0.85rem; cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover:not(:disabled) { background: var(--btn-hover); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.danger { background: var(--btn-danger); }
+    button.danger:hover:not(:disabled) { background: var(--btn-danger-hover); }
+    .unreachable { opacity: 0.5; }
+    .last-seen { color: var(--muted); font-size: 0.75rem; margin-top: 0.5rem; }
+    #status-bar {
+      position: fixed; bottom: 0; left: 0; right: 0; background: var(--card);
+      border-top: 1px solid var(--border); padding: 0.5rem 1rem; font-size: 0.8rem;
+      color: var(--muted); display: flex; justify-content: space-between;
+    }
+    .error { color: var(--err); font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>amtctl — AMT power control</h1>
+  <p class="subtitle">
+    Out-of-band management for the 6 K8s nodes via Intel AMT. Power state cached from background poll every 60s;
+    action buttons post to <code>/api/nodes/{name}/action</code> and force-refresh just that node.
+  </p>
+  <div id="grid" class="grid">Loading…</div>
+  <div id="status-bar">
+    <span id="status-text">—</span>
+    <span>
+      <button id="refresh-btn" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;">↻ Refresh</button>
+    </span>
+  </div>
+
+  <script>
+    const POLL_MS = 10000;  // UI re-fetch every 10s
+    let inflight = false;
+
+    function fmtBytes(n) {
+      if (!n) return "—";
+      const gib = n / (1024 ** 3);
+      return gib.toFixed(1) + " GiB";
+    }
+
+    function memSummary(mem) {
+      if (!mem || !mem.total_bytes) return "—";
+      const modules = mem.modules || [];
+      if (!modules.length) return fmtBytes(mem.total_bytes);
+      // Group modules by "Xgib Manufacturer Part" and count. E.g.
+      // "32 GiB (2× 16 GiB SK Hynix HMA82GS6JJR8N-VK)"
+      const groups = {};
+      for (const m of modules) {
+        const key = `${fmtBytes(m.capacity_bytes)} ${m.manufacturer || ""} ${m.part || ""}`.trim();
+        groups[key] = (groups[key] || 0) + 1;
+      }
+      const parts = Object.entries(groups).map(([k, n]) => `${n}× ${k}`);
+      return `${fmtBytes(mem.total_bytes)} (${parts.join(", ")})`;
+    }
+
+    function fmtAgo(sec) {
+      if (!sec) return "never";
+      if (sec < 60) return sec + "s ago";
+      if (sec < 3600) return Math.floor(sec / 60) + "m ago";
+      return Math.floor(sec / 3600) + "h ago";
+    }
+
+    function statusClass(powerName, reachable) {
+      if (!reachable) return "status-unknown";
+      if (!powerName) return "status-unknown";
+      if (powerName.startsWith("On")) return "status-on";
+      if (powerName.includes("Off")) return "status-off";
+      if (powerName.includes("Sleep") || powerName.includes("Hibernate")) return "status-sleep";
+      return "status-unknown";
+    }
+
+    function renderNode(n) {
+      const power = n.power || {};
+      const sys = n.system || {};
+      const set = n.settings || {};
+      const bios = n.bios || {};
+      const bb = n.baseboard || {};
+      const cpu = n.processor || {};
+      const mem = n.memory || {};
+      const net = n.network || {};
+      const time_ = n.time || {};
+
+      const powerName = power.state_name || "unknown";
+      const avail = power.available_names || [];
+      const reachable = !!n.reachable;
+      const isOn = powerName.startsWith("On");
+      const pillCls = statusClass(powerName, reachable);
+
+      // Action buttons — shown only when we have real power state signal
+      let actions = "";
+      if (reachable) {
+        if (!isOn) {
+          actions = `
+            <button onclick="act('${n.name}', 'on')">Power On</button>
+            <button onclick="act('${n.name}', 'on', 'pxe')">→ PXE</button>
+            <button onclick="act('${n.name}', 'on', 'bios')">→ BIOS Setup</button>
+          `;
+        } else {
+          actions = `
+            <button onclick="act('${n.name}', 'off_graceful')" class="">Graceful Off</button>
+            <button onclick="act('${n.name}', 'off_hard')" class="danger">Force Off</button>
+            <button onclick="act('${n.name}', 'reset')" class="danger">Reset</button>
+            <button onclick="act('${n.name}', 'reset', 'pxe')" class="danger">Reset → PXE</button>
+            <button onclick="act('${n.name}', 'reset', 'bios')" class="danger">Reset → BIOS</button>
+          `;
+        }
+      }
+
+      const errors = (n.errors || []).filter(e => e !== "not yet polled");
+
+      return `
+        <div class="card ${reachable ? "" : "unreachable"}">
+          <div class="card-header">
+            <div>
+              <span class="card-title">${n.name}</span>
+              <span class="card-role"> — ${n.role || ""}</span>
+            </div>
+            <span class="status-pill ${pillCls}">${powerName}</span>
+          </div>
+          ${errors.length ? `<div class="error">${errors.join(", ")}</div>` : ""}
+
+          <div class="section">
+            <h3>System</h3>
+            <div class="kv">
+              <div class="k">AMT hostname</div><div class="v">${set.hostname || "—"}</div>
+              <div class="k">OS FQDN</div><div class="v">${set.host_os_fqdn || "—"} <span style="color:var(--muted); font-size:0.75rem">(last reported by running OS)</span></div>
+              <div class="k">Domain</div><div class="v">${set.domain || "—"}</div>
+              <div class="k">Time sync</div><div class="v">${time_.sync_service ? (time_.enabled ? "running" : "configured") : "—"}</div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>Hardware</h3>
+            <div class="kv">
+              <div class="k">Baseboard</div><div class="v">${bb.manufacturer || ""} ${bb.product || "—"}</div>
+              <div class="k">BIOS</div><div class="v">${bios.vendor || ""} ${bios.version || "—"}</div>
+              <div class="k">CPU</div><div class="v">${cpu.label || "—"} <span style="color:var(--muted); font-size:0.75rem">(base clock; AMT doesn't expose live freq)</span></div>
+              <div class="k">Memory</div><div class="v">${memSummary(mem)}</div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>Network</h3>
+            <div class="kv">
+              <div class="k">IP</div><div class="v">${net.ip || "—"} ${net.dhcp_enabled ? "(DHCP)" : ""}</div>
+              <div class="k">MAC</div><div class="v">${net.mac || "—"}</div>
+              <div class="k">Link</div><div class="v">${net.link_up ? "up" : (reachable ? "down" : "—")}</div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>Actions</h3>
+            <div class="actions">${actions || '<span style="color:var(--muted)">unreachable — cannot control</span>'}</div>
+            ${reachable ? `<div style="color:var(--muted); font-size:0.75rem; margin-top:0.4rem">Available states: ${avail.join(", ")}</div>` : ""}
+          </div>
+
+          <div class="last-seen">polled ${fmtAgo(Math.floor(Date.now()/1000 - (n.polled_at || 0)))}</div>
+        </div>`;
+    }
+
+    async function refresh() {
+      if (inflight) return;
+      inflight = true;
+      document.getElementById("status-text").textContent = "fetching…";
+      try {
+        const r = await fetch("/api/nodes");
+        const nodes = await r.json();
+        document.getElementById("grid").innerHTML = nodes.map(renderNode).join("");
+        document.getElementById("status-text").textContent = `${nodes.filter(n => n.reachable).length}/${nodes.length} reachable — refreshed ${new Date().toLocaleTimeString()}`;
+      } catch (e) {
+        document.getElementById("status-text").textContent = `fetch error: ${e.message}`;
+      } finally {
+        inflight = false;
+      }
+    }
+
+    async function act(name, action, boot) {
+      if (!confirm(`${action}${boot ? ` (boot=${boot})` : ""} on ${name}?`)) return;
+      try {
+        const r = await fetch(`/api/nodes/${name}/action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, boot: boot || null }),
+        });
+        const res = await r.json();
+        if (!r.ok) {
+          alert(`Action failed: ${res.detail || JSON.stringify(res)}`);
+        } else {
+          document.getElementById("status-text").textContent = `${action} sent to ${name} (rv=${res.return_value}) — refreshing…`;
+          setTimeout(refresh, 4000);
+        }
+      } catch (e) {
+        alert(`Request failed: ${e.message}`);
+      }
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", refresh);
+    refresh();
+    setInterval(refresh, POLL_MS);
+  </script>
+</body>
+</html>
