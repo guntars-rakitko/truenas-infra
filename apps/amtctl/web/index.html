@@ -118,11 +118,11 @@
       }
       const rows = drives.map((d, i) => {
         const size = d.size_bytes ? fmtBytes(d.size_bytes) : "—";
-        const model = d.model && d.model.trim() ? d.model : "(model not exposed via AMT)";
+        const model = d.model && d.model.trim() && !d.model.startsWith("(") ? ` · ${d.model}` : "";
         const serial = d.serial ? ` · S/N ${d.serial}` : "";
         return `
           <div class="k">Drive ${i + 1}</div>
-          <div class="v">${size} · ${model}${serial}</div>`;
+          <div class="v">${size}${model}${serial}</div>`;
       }).join("");
       return `
         <div class="section">

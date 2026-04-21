@@ -466,7 +466,7 @@ class AMTClient:
                 if size_kb == 0:
                     continue
                 drives.append({
-                    "model": "(AMT doesn't expose vendor/serial)",
+                    "model": "",
                     "serial": "",
                     "size_bytes": size_kb * 1024,
                     "source": "CIM_MediaAccessDevice",
