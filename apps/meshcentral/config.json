@@ -1,11 +1,11 @@
 {
-  "_comment": "MeshCentral config — uploaded to /mnt/tank/system/apps-config/meshcentral/data/config.json. Behind the NAS mgmt-plane Traefik at https://mc.w1.lv/ — MeshCentral serves plain HTTP internally; Traefik terminates TLS using the wildcard *.w1.lv cert. `TlsOffload: '10.10.5.20'` tells MeshCentral it's proxied (generated URLs use https:// despite HTTP backend); `Cert` field is the public SNI name Traefik routes on.",
+  "_comment": "MeshCentral config — uploaded to /mnt/tank/system/apps-config/meshcentral/data/config.json. Behind the NAS mgmt-plane Traefik at https://mc.w1.lv/. MeshCentral serves plain HTTP on :80; Traefik terminates TLS with the wildcard *.w1.lv cert. `TlsOffload: true` = any proxy, `RedirPort: 0` = disable MC's internal HTTP->HTTPS redirect (Traefik does that). `Cert` is the SNI name Traefik routes on.",
   "settings": {
     "Cert": "mc.w1.lv",
     "Port": 80,
     "AliasPort": 443,
-    "RedirPort": 80,
-    "TlsOffload": "10.10.5.20",
+    "RedirPort": 0,
+    "TlsOffload": true,
     "WebRTC": false,
     "SelfUpdate": false,
     "AgentPing": 60,
