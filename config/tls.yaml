@@ -1,0 +1,35 @@
+# TLS / ACME configuration — consumed by modules/tls.py (phase 3).
+#
+# Issues one wildcard Let's Encrypt certificate for *.w1.lv via CloudFlare
+# DNS-01. TrueNAS renews automatically; see docs/tls-runbook.md for the
+# forced-renewal drill and staging→prod switch.
+
+# Zone we own and want the cert for.
+domain: w1.lv
+
+# Internal name for the CloudFlare DNS authenticator record in TrueNAS.
+authenticator_name: cloudflare-w1
+
+# Internal name for the CSR / cert pair.
+cert_name: w1-wildcard
+
+# Subject Alternative Names. Keep the apex (`w1.lv`) alongside the wildcard
+# so tooling that requests `w1.lv` literally still validates against our cert.
+sans:
+  - "*.w1.lv"
+  - "w1.lv"
+
+# ACME server. Production by default; flip to staging for the first bring-up
+# to confirm the pipeline before burning LE rate-limit quota on real certs.
+#   staging: https://acme-staging-v02.api.letsencrypt.org/directory
+#   prod:    https://acme-v02.api.letsencrypt.org/directory
+# Production Let's Encrypt. Staging URI was used once during initial
+# pipeline validation:
+#   https://acme-staging-v02.api.letsencrypt.org/directory
+# Flip BACK to staging if rate-limiting or rework is needed (staging has
+# much higher limits and identical protocol).
+acme_directory_uri: https://acme-v02.api.letsencrypt.org/directory
+
+# Trigger renewal this many days before expiration. Let's Encrypt certs are
+# 90 days; 30 gives comfortable buffer without burning quota on every cron.
+renew_days: 30

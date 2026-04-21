@@ -36,6 +36,10 @@ class RuntimeConfig:
     truenas_verify_ssl: bool
     log_level: str
     apply: bool  # global default; CLI --apply / --dry-run overrides
+    # CloudFlare API token used by phase tls for ACME DNS-01 validation.
+    # Scope: Zone:w1.lv:DNS:Edit + Zone:w1.lv:Zone:Read. Optional here so
+    # bringup phases 1-2 run without it; phase tls errors if empty.
+    cloudflare_api_token: str = ""
 
     @classmethod
     def from_env(cls) -> RuntimeConfig:
@@ -45,4 +49,5 @@ class RuntimeConfig:
             truenas_verify_ssl=_bool_env("TRUENAS_VERIFY_SSL", default=False),
             log_level=_env("LOG_LEVEL", default="INFO"),
             apply=_bool_env("APPLY", default=False),
+            cloudflare_api_token=_env("CLOUDFLARE_API_TOKEN", default=""),
         )

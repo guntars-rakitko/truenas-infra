@@ -82,6 +82,40 @@ If the installer didn't already prompt. There's a banner at the top of the UI if
 
 ---
 
+## Step 7 — CloudFlare API token (for phase 3 TLS, DNS-01 wildcard)
+
+TrueNAS's built-in ACME client needs a CloudFlare API token to publish
+`_acme-challenge.w1.lv` TXT records during wildcard cert issuance. Create
+it once, paste into `.env.sops`, done.
+
+1. Log in to [dash.cloudflare.com](https://dash.cloudflare.com).
+2. Top-right avatar → **My Profile → API Tokens → Create Token**.
+3. Choose **Create Custom Token** (NOT "Edit zone DNS" template — too broad).
+4. Fill in:
+   - **Token name**: `truenas-acme-w1lv`
+   - **Permissions** (add two rows):
+     - `Zone` / `Zone` / `Read`
+     - `Zone` / `DNS` / `Edit`
+   - **Zone Resources**: `Include` / `Specific zone` / **`w1.lv`**
+   - **TTL** (optional but recommended): set expiry ~1 year out for a rotation reminder
+5. **Continue to Summary → Create Token**. CloudFlare shows the token **once** — copy it immediately.
+6. `sops .env.sops` → add (or fill in the empty `CLOUDFLARE_API_TOKEN=` line from `.env.example`):
+   ```
+   CLOUDFLARE_API_TOKEN=<paste>
+   ```
+   Save. SOPS re-encrypts on save.
+7. Verify:
+   ```sh
+   source <(sops decrypt .env.sops) && \
+     curl -fs -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+       https://api.cloudflare.com/client/v4/user/tokens/verify | jq .status
+   ```
+   Should return `"active"`.
+
+The same token will also be used by `kube-infra` cert-manager later (stored there as a separate SOPS copy). Rotate it by creating a new one, updating both SOPS copies, then revoking the old one in CloudFlare.
+
+---
+
 ## Sanity check before running scripts
 
 From your laptop:
