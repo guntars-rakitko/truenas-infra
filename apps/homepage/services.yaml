@@ -76,15 +76,15 @@
           fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     # ── K8s nodes (hardware layer via AMT) ──────────────────────
-    # 6 ASUS Q170S1 boxes consolidated into one card — each line
-    # shows "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl.w1.lv
-    # for rich per-node view (hardware info, network, power actions).
+    # Split prd / dev into two cards, 3 rows each. Each line shows
+    # "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl.w1.lv for
+    # rich per-node view (hardware info, network, power actions).
     # When actual K8s clusters come up, a separate "Kubernetes" group
     # will handle pod/node/ingress state at the cluster layer.
-    - K8s nodes:
+    - K8s prd nodes:
         icon: mdi-server-network
         href: https://amtctl.w1.lv/
-        description: "6 ASUS Q170S1 (AMT hardware layer)"
+        description: "3× ASUS Q170S1 (prd)"
         widget:
           type: customapi
           url: http://10.10.5.10:8000/api/summary
@@ -96,6 +96,16 @@
               label: kub-prd-02
             - field: kub-prd-03
               label: kub-prd-03
+
+    - K8s dev nodes:
+        icon: mdi-server-network
+        href: https://amtctl.w1.lv/
+        description: "3× ASUS Q170S1 (dev)"
+        widget:
+          type: customapi
+          url: http://10.10.5.10:8000/api/summary
+          refreshInterval: 15000
+          mappings:
             - field: kub-dev-01
               label: kub-dev-01
             - field: kub-dev-02
