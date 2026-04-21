@@ -90,7 +90,12 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_service(cli, service_name="nfs"),
         check_service(cli, service_name="cifs"),
         check_service(cli, service_name="ups"),
+        # Every Custom App we deploy in phase apps gets a state check.
+        # Order matches config/apps.yaml.
         check_app(cli, app_name="netboot-xyz"),
+        check_app(cli, app_name="minio-prd"),
+        check_app(cli, app_name="minio-dev"),
+        check_app(cli, app_name="meshcentral"),
     ]
 
     failed: list[CheckResult] = []

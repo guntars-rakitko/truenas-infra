@@ -125,8 +125,11 @@ def test_run_returns_zero_when_all_pass() -> None:
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         # ups service
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        # netboot app
+        # apps (4 of them: netboot-xyz, minio-prd, minio-dev, meshcentral)
         [{"name": "netboot-xyz", "state": "RUNNING"}],
+        [{"name": "minio-prd", "state": "RUNNING"}],
+        [{"name": "minio-dev", "state": "RUNNING"}],
+        [{"name": "meshcentral", "state": "RUNNING"}],
     ])
 
     rc = run(cli, _Ctx(apply=False), only=None)
@@ -145,8 +148,36 @@ def test_run_returns_nonzero_when_any_fail() -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        # app
+        # apps
         [{"name": "netboot-xyz", "state": "RUNNING"}],
+        [{"name": "minio-prd", "state": "RUNNING"}],
+        [{"name": "minio-dev", "state": "RUNNING"}],
+        [{"name": "meshcentral", "state": "RUNNING"}],
+    ])
+
+    rc = run(cli, _Ctx(apply=False), only=None)
+    assert rc != 0
+
+
+def test_run_fails_when_a_new_app_is_missing() -> None:
+    """Regression coverage: a MinIO instance not being in RUNNING should
+    fail the verify matrix (previously only netboot-xyz was checked)."""
+    from truenas_infra.modules.verify import run
+
+    cli = _mk_cli([
+        [{"name": "tank", "status": "ONLINE", "healthy": True}],
+        [{"name": n} for n in (
+            "tank/kube/prd", "tank/kube/dev",
+            "tank/media", "tank/shared/general", "tank/system",
+        )],
+        [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
+        [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
+        [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
+        [{"name": "netboot-xyz", "state": "RUNNING"}],
+        # minio-prd CRASHED
+        [{"name": "minio-prd", "state": "CRASHED"}],
+        [{"name": "minio-dev", "state": "RUNNING"}],
+        [{"name": "meshcentral", "state": "RUNNING"}],
     ])
 
     rc = run(cli, _Ctx(apply=False), only=None)
