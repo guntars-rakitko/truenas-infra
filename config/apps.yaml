@@ -1,0 +1,49 @@
+# Declarative app registry.
+# Consumed by modules/apps.py.
+#
+# Each entry points at a compose file under apps/<name>/docker-compose.yaml.
+# Secrets live alongside as apps/<name>/secrets.sops.yaml; rendered to
+# apps/<name>/.env at apply time by scripts/render-env.py.
+
+apps:
+  - name: netboot-xyz
+    enabled: true
+    compose: apps/netboot-xyz/docker-compose.yaml
+    secrets: null              # no secrets needed
+    bind_ip: 10.10.5.10
+    description: "PXE/TFTP + HTTP + UI for Talos and netboot.xyz menu"
+
+  - name: minio-prd
+    enabled: true
+    compose: apps/minio-prd/docker-compose.yaml
+    secrets: apps/minio-prd/secrets.sops.yaml
+    bind_ip: 10.10.10.10
+    description: "S3 backend for prd Velero backups"
+
+  - name: minio-dev
+    enabled: true
+    compose: apps/minio-dev/docker-compose.yaml
+    secrets: apps/minio-dev/secrets.sops.yaml
+    bind_ip: 10.10.15.10
+    description: "S3 backend for dev Velero backups"
+
+  - name: meshcentral
+    enabled: true
+    compose: apps/meshcentral/docker-compose.yaml
+    secrets: null              # first user becomes admin on initial browse
+    bind_ip: 10.10.5.10
+    description: "Remote management + AMT KVM for the K8s nodes"
+
+  # --- Deferred (media tier, out of scope for initial bring-up) ---
+  - name: plex
+    enabled: false
+    compose: apps/plex/docker-compose.yaml
+    secrets: apps/plex/secrets.sops.yaml
+    bind_ip: 10.10.20.10
+    description: "Plex Media Server"
+  - name: qbittorrent
+    enabled: false
+    compose: apps/qbittorrent/docker-compose.yaml
+    secrets: null
+    bind_ip: 10.10.20.10
+    description: "qBittorrent Web UI"

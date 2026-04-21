@@ -1,0 +1,22 @@
+{
+  "_comment": "MeshCentral config — uploaded to /mnt/tank/system/apps-config/meshcentral/data/config.json on the NAS. Cert/AliasPort pair teaches the server to accept the Origin header produced by browsers hitting https://10.10.5.10:4430/. Without this the container rejects every request with 'Invalid origin in HTTP request'.",
+  "settings": {
+    "Cert": "10.10.5.10",
+    "Port": 443,
+    "AliasPort": 4430,
+    "RedirPort": 80,
+    "RedirAliasPort": 4480,
+    "WebRTC": false,
+    "SelfUpdate": false,
+    "AgentPing": 60,
+    "AllowLoginToken": true
+  },
+  "domains": {
+    "": {
+      "Title": "NAS MeshCentral",
+      "Title2": "AMT KVM",
+      "NewAccounts": true,
+      "CertUrl": "https://10.10.5.10:4430/"
+    }
+  }
+}
