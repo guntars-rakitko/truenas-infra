@@ -283,22 +283,35 @@
 
     async function act(name, action, boot) {
       if (!confirm(`${action}${boot ? ` (boot=${boot})` : ""} on ${name}?`)) return;
+      let r;
       try {
-        const r = await fetch(`/api/nodes/${name}/action`, {
+        r = await fetch(`/api/nodes/${name}/action`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action, boot: boot || null }),
         });
-        const res = await r.json();
-        if (!r.ok) {
-          alert(`Action failed: ${res.detail || JSON.stringify(res)}`);
-        } else {
-          document.getElementById("status-text").textContent = `${action} sent to ${name} (rv=${res.return_value}) — refreshing…`;
-          setTimeout(refresh, 4000);
-        }
       } catch (e) {
-        alert(`Request failed: ${e.message}`);
+        // True network error (DNS, connection refused, offline, etc).
+        alert(`Network error — could not reach amtctl: ${e.message}`);
+        return;
       }
+
+      // Read body as text first so we can show something useful even
+      // if it isn't JSON (502 HTML from Traefik, proxy errors, etc.
+      // Safari's cryptic "string did not match the expected pattern"
+      // is r.json() choking on non-JSON — this path dodges it).
+      const text = await r.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = { raw: text }; }
+
+      if (!r.ok) {
+        const msg = body.detail || body.raw || JSON.stringify(body);
+        alert(`Action failed (HTTP ${r.status}):\n\n${msg.slice(0, 400)}\n\nTry again — some AMT ops are flaky on first call.`);
+        return;
+      }
+      document.getElementById("status-text").textContent =
+        `${action} sent to ${name} (rv=${body.return_value}) — refreshing…`;
+      setTimeout(refresh, 4000);
     }
 
     document.getElementById("refresh-btn").addEventListener("click", refresh);

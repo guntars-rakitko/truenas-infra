@@ -581,15 +581,18 @@ class AMTClient:
         if action not in ACTION_POWER_STATE:
             raise ValueError(f"unknown action: {action}")
 
-        # Step 1: set boot override
+        # Step 1: set boot override — only when the operator actually
+        # asked for one. For plain "Power On" / "Reset" (boot=None or
+        # "default") we leave the existing BIOS boot order alone. This
+        # halves the round-trip count (avoiding the flaky Get+Put on
+        # AMT_BootSettingData) and matches what most operators expect:
+        # "Power On" = "power up as if I pressed the button".
         if boot == "bios":
             await self._set_boot_setting(biossetup=True)
         elif boot in ("pxe", "cd", "disk", "diagnostic"):
             await self._set_boot_setting(biossetup=False)
             await self._change_boot_order(BOOT_SOURCES[boot])
-        elif boot in (None, "default"):
-            # Still reset boot settings to a known-safe state
-            await self._set_boot_setting(biossetup=False)
+        # boot is None or "default" → skip. Use whatever the BIOS has.
 
         # Step 2: request power state
         state = ACTION_POWER_STATE[action]

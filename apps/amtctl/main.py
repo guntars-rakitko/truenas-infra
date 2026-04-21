@@ -297,8 +297,11 @@ async def post_action(
         raise HTTPException(400, "action required (on/off_graceful/off_hard/reset/power_cycle)")
     node = next(n for n in _nodes if n["name"] == name)
     host = node["host"]
+    # Bumped to 60s — AMT's internal PT60S op timeout plus a little buffer.
+    # Previous 30s was tight enough that a slow AMT response could blow
+    # past httpx before AMT finished, leaving the request half-done.
     try:
-        async with AMTClient(host, AMT_USER, AMT_PASSWORD, timeout=30.0) as c:
+        async with AMTClient(host, AMT_USER, AMT_PASSWORD, timeout=60.0) as c:
             result = await c.power_action(action, boot)
     except AMTError as e:
         log.warning("action %s on %s failed: %s", action, name, e)
