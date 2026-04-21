@@ -57,9 +57,6 @@ sanboot --keep http://10.10.5.10:8080/bios-config/bios-apply.img
 
 ## Setup — one-time, per bios-config release
 
-Prereq: `phase apps` has already run — `custom.ipxe` is live and
-includes the `bios-apply` menu item.
-
 ### 1. Build the image locally
 
 In the sibling `bios-config` clone:
@@ -71,7 +68,7 @@ cd ~/Documents/github/bios-config
 
 This emits `build/bios-apply.img` (~16 MB FAT16) built from the
 committed `scripts/settings.txt`, `scripts/startup.nsh`, and
-`tools/bin/{shellx64.efi,setup_var.efi}`. QEMU smoke test:
+`tools/bin/{shellx64.efi,setup_var.efi}`. Optional QEMU smoke test:
 
 ```sh
 qemu-system-x86_64 \
@@ -83,28 +80,39 @@ qemu-system-x86_64 \
 ```
 
 (Copy `/opt/homebrew/share/qemu/edk2-i386-vars.fd` to
-`/tmp/ovmf-vars.fd` once to seed a blank vars file.)
+`/tmp/ovmf-vars.fd` once to seed a blank vars file. QEMU will report
+`Error writing variable: No variable with specified name found` — that
+is expected, the `Setup` NVRAM variable only exists on real Q170S1
+firmware.)
 
-### 2. Make the target directory on the NAS
+### 2. Upload + activate via phase apps
 
-SSH to the NAS:
-
-```sh
-ssh admin@10.10.5.10
-sudo mkdir -p /mnt/tank/system/pxe/assets/bios-config
-sudo chown admin:admin /mnt/tank/system/pxe/assets/bios-config
-```
-
-### 3. Copy the image onto the NAS
-
-From the laptop:
+Back in `truenas-infra`:
 
 ```sh
-scp ~/Documents/github/bios-config/build/bios-apply.img \
-    admin@10.10.5.10:/mnt/tank/system/pxe/assets/bios-config/bios-apply.img
+cd ~/Documents/github/truenas-infra
+./manage.sh phase apps --apply
 ```
 
-### 4. Smoke-test the HTTP serve
+`phase apps` does three things for this flow (see
+`src/truenas_infra/modules/apps.py::_ensure_netboot_menu_files_via_ctx`):
+
+1. Re-uploads `apps/netboot-xyz/custom.ipxe` — keeps the menu entry in sync.
+2. Re-uploads `../bios-config/build/bios-apply.img` (if present locally)
+   to `/mnt/tank/system/pxe/assets/bios-config/bios-apply.img` via the
+   TrueNAS REST API (filesystem.put). **No SSH needed.**
+3. Logs a sha256 prefix of the uploaded image so you can eyeball diffs
+   between runs.
+
+The image upload overwrites the remote file unconditionally on every
+`--apply` because the FAT image is a fixed 16 MB regardless of the
+embedded scripts' content — the default size-based idempotency can't
+tell "startup.nsh changed" from "nothing changed". Dry-run
+(`./manage.sh phase apps`, no --apply) reports `would_upload changed=True`
+with a "dry-run — size-based idempotency unreliable" note, so the
+distinction is explicit.
+
+### 3. Smoke-test the HTTP serve
 
 From anywhere on the mgmt VLAN:
 
@@ -136,15 +144,17 @@ canonical BIOS config (bios-config MVP)".
 
 Same cadence as Talos PXE images:
 
-1. Edit `bios-config/scripts/settings.txt` (add a new line in the
-   `VAR_NAME:OFFSET=VALUE` syntax) and / or `scripts/startup.nsh`.
+1. Edit `bios-config/scripts/startup.nsh` (MVP: inline CLI args to
+   `setup_var.efi` — `settings.txt` is human-readable reference only;
+   see the "Why CLI args, not stdin" note in
+   `bios-config/scripts/startup.nsh` for why).
 2. Commit in `bios-config`.
 3. Rebuild locally: `./tools/build-bios-apply-img.sh`.
-4. Re-scp per step 3 above.
+4. Re-upload via `cd truenas-infra && ./manage.sh phase apps --apply`.
 5. Re-run the node via amtctl → PXE → bios-apply.
 
-No changes to `truenas-infra` are required per settings iteration.
-This repo only cares about the custom.ipxe menu + image location.
+No source changes to `truenas-infra` are required per settings
+iteration — phase apps just picks up the newer `.img`.
 
 ## Operating notes
 
@@ -177,4 +187,6 @@ Short backlog item on `modules/apps.py`:
    c. Diffs SHA-256 and swaps the file in place.
 2. `cronjob.create` registration mirroring `talos-updater`.
 
-Once that ships, steps 1–3 of the manual setup go away.
+Once that ships, the operator only runs `./tools/build-bios-apply-img.sh`
+on their laptop and the NAS auto-ingests. For now, step 2 above
+(`./manage.sh phase apps --apply`) is the single manual push.
