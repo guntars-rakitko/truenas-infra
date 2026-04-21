@@ -79,17 +79,51 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 
 ## Planned Services
 
-| Service | Purpose | Bound to |
+| Service | Purpose | Browser URL / endpoint |
 |---|---|---|
-| NFS (prd) | Longhorn backup target for the prd Kube cluster | VLAN 10 (10.10.10.10) |
-| NFS (dev) | Longhorn backup target for the dev Kube cluster | VLAN 15 (10.10.15.10) |
-| MinIO (prd) | S3 backend for Velero prd cluster backups | VLAN 10 (10.10.10.10) |
-| MinIO (dev) | S3 backend for Velero dev cluster backups | VLAN 15 (10.10.15.10) |
-| PXE / TFTP server | netboot.xyz + Talos OS images for bare-metal boot (all 6 Kube nodes) | VLAN 5 (10.10.5.10) |
-| NUT server | UPS monitoring (2x APC Smart-UPS); all Kube nodes run NUT client for graceful shutdown | VLAN 5 (10.10.5.10) |
-| Plex | Media server | VLAN 20 (10.10.20.10) |
-| Torrent client | Downloads | VLAN 20 (10.10.20.10) |
-| SMB general share | Home file storage | VLAN 20 (10.10.20.10) |
+| TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
+| MeshCentral | AMT KVM into K8s nodes | https://mc.w1.lv/ (via Traefik) |
+| netboot.xyz UI | PXE menu management | https://pxe.w1.lv/ (via Traefik) |
+| MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
+| MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
+| MinIO prd S3 API | Velero backup store | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Velero backup store | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| Traefik dashboard | Proxy ops view | https://traefik-nas.w1.lv/dashboard/ |
+| NFS (prd) | Longhorn backups | 10.10.10.10 (NFS, service-level bindip) |
+| NFS (dev) | Longhorn backups | 10.10.15.10 |
+| PXE / TFTP server | netboot.xyz + Talos | 10.10.5.10:69/udp, :8080 (HTTP assets) |
+| NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
+| SMB general share | Home file storage | 10.10.20.10 |
+| Plex / Torrent | (deferred) | VLAN 20 |
+
+All browser-facing services serve a valid Let's Encrypt `*.w1.lv` cert.
+See `docs/tls-runbook.md` for rotation + recovery.
+
+### Policy for adding new services
+
+Decision tree — **apply every time you add an HTTPS endpoint on this network**:
+
+1. **Admin / mgmt UI a human opens in a browser?**
+   → Expose through Traefik at `10.10.5.20:443`. Backend plain HTTP on
+     mgmt-VLAN IP. Portless URL `<name>.w1.lv`. Add DNS record (via
+     `mikrotik-infra/manage.sh` option 15) pointing at `10.10.5.20`.
+     Add a route in `apps/traefik/routes.yaml`.
+2. **Data-plane API a machine consumes (S3, gRPC, K8s API, …)?**
+   → Bind directly on the service's own VLAN IP using its **native
+     port** (`:443` on data-VLAN IPs is reserved for future growth).
+     Mount wildcard cert from `/mnt/tank/system/tls/`. DNS record
+     points at the service VLAN IP.
+3. **Fundamental infra-plane UI (TrueNAS, MikroTik, switch)?**
+   → Leave on the device's native port, **never proxy**. These must
+     remain reachable when Traefik is down.
+4. **Internet-facing?**
+   → Not in scope today. When needed: separate public DNS record on
+     CloudFlare, CloudFlare Tunnel or dedicated ingress — NOT through
+     mgmt-VLAN Traefik.
+
+Hostname convention: `<role>.w1.lv` for singletons, `<role>-<env>.w1.lv`
+for multi-instance (minio-prd, traefik-nas), `<role>-<NN>` for per-box
+(kub-prd-01). All lowercase, hyphen-separated.
 
 ---
 
