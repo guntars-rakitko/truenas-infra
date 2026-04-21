@@ -51,6 +51,8 @@ edit the matching wiki page in the same commit set.
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
 | `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
+| `apps/netboot-xyz/custom.ipxe` (new menu entry) | `docs/runbooks/bios-apply-pxe-setup.md` (if cross-repo flow changes) |
+| `docs/bios-apply-pxe-setup.md` | _Auto-synced_ → `docs/runbooks/bios-apply-pxe-setup.md` |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
 | `.env.sops` / `.env.example` (add/remove var) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
 | "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |
