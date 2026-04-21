@@ -485,6 +485,21 @@ NETBOOT_CUSTOM_IPXE_PATH = Path("apps/netboot-xyz/custom.ipxe")
 NETBOOT_CONFIG_MENUS_DIR = "/mnt/tank/system/pxe/config/menus"
 NETBOOT_ASSETS_DIR = "/mnt/tank/system/pxe/assets"
 
+# bios-config PXE bios-apply image — built in the sibling `bios-config`
+# repo by `./tools/build-bios-apply-img.sh`; uploaded here so
+# `sanboot http://10.10.5.10:8080/bios-config/bios-apply.img` from
+# custom.ipxe (the bios-apply menu entry) serves a valid image.
+#
+# Operator flow:
+#   1. cd ~/Documents/github/bios-config && ./tools/build-bios-apply-img.sh
+#   2. cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+# The phase is a no-op if the local image hasn't changed (size-based
+# idempotency in ensure_file_on_nas). If the sibling checkout isn't
+# present, the upload is skipped silently (phase apps keeps working
+# for operators who don't have bios-config checked out locally).
+BIOS_APPLY_LOCAL_PATH = Path("../bios-config/build/bios-apply.img")
+BIOS_APPLY_REMOTE_PATH = "/mnt/tank/system/pxe/assets/bios-config/bios-apply.img"
+
 # TLS export + rotate scripts (phase apps ships them to the pool; the
 # hourly cronjob runs them when TrueNAS auto-renews the wildcard cert).
 TLS_EXPORT_SCRIPT_PATH = Path("apps/tls/tls-export.sh")
@@ -897,6 +912,40 @@ def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     log.info("netboot_custom_ipxe_ensured",
              path=f"{NETBOOT_ASSETS_DIR}/custom.ipxe",
              action=custom_diff.action, changed=custom_diff.changed)
+
+    # bios-config bios-apply.img (optional; sibling repo build artefact).
+    # No-op when the sibling repo isn't checked out at ../bios-config —
+    # keeps phase apps working for operators who don't use bios-config.
+    #
+    # NOTE ON IDEMPOTENCY: the default `ensure_file_on_nas` compares sizes
+    # only, which is useless here — the FAT image is fixed at 16 MB even
+    # when contents change. Since the image is small (~16 MB) and rebuilds
+    # are rare (operator-driven, not cronjob), we just always re-upload
+    # and log noop vs update via local mtime comparison. Safer than
+    # trying to compute a remote hash.
+    bios_img = BIOS_APPLY_LOCAL_PATH.resolve()
+    if not bios_img.is_file():
+        log.info("bios_apply_img_skipped",
+                 reason="sibling build artefact not present",
+                 expected_local=str(bios_img))
+    elif not ctx.apply:
+        log.info("bios_apply_img_ensured",
+                 path=BIOS_APPLY_REMOTE_PATH,
+                 action="would_upload", changed=True,
+                 local_size=bios_img.stat().st_size,
+                 note="dry-run — size-based idempotency unreliable for this artefact")
+    else:
+        import hashlib
+        local_sha = hashlib.sha256(bios_img.read_bytes()).hexdigest()[:16]
+        _upload(
+            local_path=bios_img, remote_path=BIOS_APPLY_REMOTE_PATH,
+            mode=0o644,
+        )
+        log.info("bios_apply_img_ensured",
+                 path=BIOS_APPLY_REMOTE_PATH,
+                 action="uploaded", changed=True,
+                 local_size=bios_img.stat().st_size,
+                 local_sha256=local_sha)
 
 
 def _ensure_talos_updater_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
