@@ -28,12 +28,39 @@ services:
       - HOMEPAGE_ALLOWED_HOSTS=home.w1.lv,10.10.5.10
       # Log level: info keeps the log small; flip to debug when troubleshooting.
       - LOG_TARGETS=stdout
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+    # Internal DNS — without these, siteMonitor probes against *.w1.lv
+    # hostnames hit NXDOMAIN (container uses Docker's embedded resolver
+    # which forwards to /etc/resolv.conf; depending on host resolver
+    # order, internal names may not resolve). 10.10.0.1 is MikroTik.
+    dns:
+      - 10.10.0.1
+      - 1.1.1.1
+    dns_search:
+      - w1.lv
+    # Belt-and-braces — static host entries so siteMonitor works even if
+    # DNS has a hiccup, and to avoid a container→host→container hairpin
+    # for services that live on the same NAS (nas, wiki, minio consoles,
+    # PXE, MeshCentral all resolve to 10.10.5.10).
+    extra_hosts:
+      # Direct infra
+      - "nas.w1.lv:10.10.5.10"
+      # NAS Traefik (admin-plane fan-out)
+      - "traefik-nas.w1.lv:10.10.5.20"
+      - "mc.w1.lv:10.10.5.20"
+      - "pxe.w1.lv:10.10.5.20"
+      - "minio-prd.w1.lv:10.10.5.20"
+      - "minio-dev.w1.lv:10.10.5.20"
+      - "wiki.w1.lv:10.10.5.20"
+      - "home.w1.lv:10.10.5.20"
+      # MinIO S3 data plane (direct)
+      - "s3-prd.w1.lv:10.10.10.10"
+      - "s3-dev.w1.lv:10.10.15.10"
+    # Intentionally no `healthcheck:` — the Homepage ghcr.io/gethomepage
+    # image doesn't ship wget and is minimal by design. TrueNAS uses the
+    # absence of a failing healthcheck as the "running" signal; if we
+    # defined one that always fails (wget: not found → exit 127), the app
+    # gets marked DEPLOYING forever and may be auto-restarted.
+    # Restart policy above handles the "container crashed" case anyway.
     networks:
       - default
 

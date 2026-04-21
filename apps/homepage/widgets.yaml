@@ -1,18 +1,13 @@
 # Homepage top-bar info widgets.
 # https://gethomepage.dev/configs/service-widgets/
 #
-# These render in the header strip. Keeping this MVP-minimal — richer
-# service-specific widgets (TrueNAS pool stats, MinIO bucket sizes,
-# Traefik router health) land in a follow-up pass that adds credential
-# plumbing via secrets.sops.yaml.
-
-- resources:
-    label: "Container"
-    cpu: true
-    memory: true
-    disk: /app/config
-    units: metric
-    expanded: true
+# Keeping this MVP-minimal. The `resources` widget (CPU/memory/disk from
+# inside the container) is intentionally NOT enabled — it reads the
+# systeminformation npm lib against /proc in the container, which reports
+# container-scoped numbers that don't match operator expectations and
+# produces frequent "API Error" renders on certain kernel / mount combos.
+# Real NAS host stats come from the TrueNAS widget (service-level, once
+# we plumb the API key — follow-up).
 
 - datetime:
     text_size: xl
