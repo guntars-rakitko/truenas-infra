@@ -24,7 +24,7 @@ layout:
   Storage:
     style: row
     columns: 3
-  Kubernetes Nodes:
+  System Nodes:
     style: row
     columns: 3
   Docs & Links:

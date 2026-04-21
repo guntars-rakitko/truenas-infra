@@ -149,10 +149,18 @@
         description: "S3 API (port 9000, data plane)"
         siteMonitor: "https://s3-dev.w1.lv:9000/minio/health/live"
 
-- Kubernetes Nodes:
-    # 6 AMT-managed ASUS Q170S1 boxes. Each card polls the amtctl sidecar
-    # for real-time power state. Click-through goes to the amtctl dashboard
-    # (amtctl.w1.lv) for hardware / network detail + power action buttons.
+- System Nodes:
+    # 6 AMT-managed ASUS Q170S1 boxes — the physical hardware of our K8s
+    # clusters. Called "System Nodes" (not "Kubernetes") so when we stand
+    # up the actual clusters later, a separate "Kubernetes" group can show
+    # K8s-layer info (pod count, node Ready state, API server health)
+    # independent of AMT/hardware.
+    #
+    # Each card polls amtctl's /api/nodes/{name}/power every 15s. The
+    # `power_badge` field is pre-prefixed with 🟢/🟡/🔴/⚪ for an at-a-
+    # glance color cue (Homepage customapi doesn't do color mappings on
+    # values natively — this is the emoji workaround).
+    # Click-through → amtctl.w1.lv for the rich per-node view + actions.
     - kub-prd-01:
         icon: kubernetes.png
         href: https://amtctl.w1.lv/
@@ -162,7 +170,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-prd-01/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
     - kub-prd-02:
@@ -174,7 +182,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-prd-02/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
     - kub-prd-03:
@@ -186,7 +194,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-prd-03/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
     - kub-dev-01:
@@ -198,7 +206,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-dev-01/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
     - kub-dev-02:
@@ -210,7 +218,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-dev-02/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
     - kub-dev-03:
@@ -222,7 +230,7 @@
           url: http://10.10.5.10:8000/api/nodes/kub-dev-03/power
           refreshInterval: 15000
           mappings:
-            - field: power_state
+            - field: power_badge
               label: Power
 
 - Docs & Links:

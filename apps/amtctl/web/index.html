@@ -94,19 +94,47 @@
       return gib.toFixed(1) + " GiB";
     }
 
-    function memSummary(mem) {
-      if (!mem || !mem.total_bytes) return "—";
-      const modules = mem.modules || [];
-      if (!modules.length) return fmtBytes(mem.total_bytes);
-      // Group modules by "Xgib Manufacturer Part" and count. E.g.
-      // "32 GiB (2× 16 GiB SK Hynix HMA82GS6JJR8N-VK)"
-      const groups = {};
-      for (const m of modules) {
-        const key = `${fmtBytes(m.capacity_bytes)} ${m.manufacturer || ""} ${m.part || ""}`.trim();
-        groups[key] = (groups[key] || 0) + 1;
+    function memRows(mem) {
+      if (!mem || !mem.modules || !mem.modules.length) {
+        return `<div class="k">Memory</div><div class="v">—</div>`;
       }
-      const parts = Object.entries(groups).map(([k, n]) => `${n}× ${k}`);
-      return `${fmtBytes(mem.total_bytes)} (${parts.join(", ")})`;
+      // One kv row per DIMM — "Memory (BANK 0)" → "16 GiB SK Hynix HMA82GS6JJR8N-VK"
+      return mem.modules.map((m, i) => {
+        const label = m.bank ? `Memory (${m.bank})` : `Memory ${i + 1}`;
+        const pieces = [fmtBytes(m.capacity_bytes)];
+        if (m.manufacturer) pieces.push(m.manufacturer);
+        if (m.part) pieces.push(m.part);
+        return `<div class="k">${label}</div><div class="v">${pieces.join(" ")}</div>`;
+      }).join("");
+    }
+
+    function storageSection(drives) {
+      if (!drives || !drives.length) {
+        return `
+          <div class="section">
+            <h3>Storage</h3>
+            <div class="kv"><div class="k">—</div><div class="v" style="color:var(--muted)">no drives reported by AMT (Q170S1 firmware may not enumerate NVMe/SATA)</div></div>
+          </div>`;
+      }
+      const rows = drives.map((d, i) => {
+        const size = d.size_bytes ? fmtBytes(d.size_bytes) : "—";
+        const model = d.model && d.model.trim() ? d.model : "(unknown)";
+        const serial = d.serial || "—";
+        return `
+          <div class="k">Drive ${i + 1}</div>
+          <div class="v">${size} · ${model} <span style="color:var(--muted); font-size:0.75rem">S/N ${serial}</span></div>`;
+      }).join("");
+      return `
+        <div class="section">
+          <h3>Storage</h3>
+          <div class="kv">${rows}</div>
+        </div>`;
+    }
+
+    function fmtEpoch(epoch) {
+      if (!epoch) return "—";
+      const d = new Date(epoch * 1000);
+      return d.toISOString().replace("T", " ").replace(/\..+/, "") + " UTC";
     }
 
     function fmtAgo(sec) {
@@ -179,9 +207,10 @@
             <h3>System</h3>
             <div class="kv">
               <div class="k">AMT hostname</div><div class="v">${set.hostname || "—"}</div>
-              <div class="k">OS FQDN</div><div class="v">${set.host_os_fqdn || "—"} <span style="color:var(--muted); font-size:0.75rem">(last reported by running OS)</span></div>
               <div class="k">Domain</div><div class="v">${set.domain || "—"}</div>
+              <div class="k">OS FQDN</div><div class="v">${set.host_os_fqdn || "—"}</div>
               <div class="k">Time sync</div><div class="v">${time_.sync_service ? (time_.enabled ? "running" : "configured") : "—"}</div>
+              <div class="k">ME clock</div><div class="v">${fmtEpoch(n.amt_time && n.amt_time.epoch)}</div>
             </div>
           </div>
 
@@ -190,17 +219,21 @@
             <div class="kv">
               <div class="k">Baseboard</div><div class="v">${bb.manufacturer || ""} ${bb.product || "—"}</div>
               <div class="k">BIOS</div><div class="v">${bios.vendor || ""} ${bios.version || "—"}</div>
-              <div class="k">CPU</div><div class="v">${cpu.label || "—"} <span style="color:var(--muted); font-size:0.75rem">(base clock; AMT doesn't expose live freq)</span></div>
-              <div class="k">Memory</div><div class="v">${memSummary(mem)}</div>
+              <div class="k">CPU</div><div class="v">${cpu.label || "—"}</div>
+              ${memRows(mem)}
             </div>
           </div>
+
+          ${storageSection(n.storage)}
 
           <div class="section">
             <h3>Network</h3>
             <div class="kv">
-              <div class="k">IP</div><div class="v">${net.ip || "—"} ${net.dhcp_enabled ? "(DHCP)" : ""}</div>
-              <div class="k">MAC</div><div class="v">${net.mac || "—"}</div>
               <div class="k">Link</div><div class="v">${net.link_up ? "up" : (reachable ? "down" : "—")}</div>
+              <div class="k">MAC</div><div class="v">${net.mac || "—"}</div>
+              <div class="k">IP</div><div class="v">${net.ip || "—"} ${net.dhcp_enabled ? "(DHCP)" : ""}</div>
+              <div class="k">Gateway / mask</div><div class="v">${net.gateway || "—"}${net.subnet_mask ? " / " + net.subnet_mask : ""}</div>
+              <div class="k">DNS</div><div class="v">${[net.primary_dns, net.secondary_dns].filter(x => x).join(", ") || "—"}</div>
             </div>
           </div>
 

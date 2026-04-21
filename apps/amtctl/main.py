@@ -128,6 +128,25 @@ async def get_node(name: str) -> dict[str, Any]:
     return _cache[name]
 
 
+def _power_badge(state_name: str, reachable: bool) -> str:
+    """Prefix the power state with a colored emoji dot so Homepage's
+    customapi widget renders a visual cue inline. Homepage doesn't
+    support color mappings natively — this is the emoji workaround."""
+    if not reachable:
+        return "🔴 Unreachable"
+    if state_name.startswith("On"):
+        return "🟢 " + state_name
+    if "Off - Soft" in state_name or "Soft" in state_name:
+        # Soft-off means AC present, ME alive, just OS shutdown. Yellow,
+        # not red — actionable (Power On works), not "dead".
+        return "🟡 " + state_name
+    if "Sleep" in state_name or "Hibernate" in state_name:
+        return "🟡 " + state_name
+    if state_name.startswith("Off"):
+        return "🔴 " + state_name
+    return "⚪ " + state_name  # unknown intermediate state
+
+
 @app.get("/api/nodes/{name}/power")
 async def get_power(name: str) -> dict[str, Any]:
     """Homepage-customapi-friendly shape: simple flat JSON, few fields."""
@@ -135,10 +154,13 @@ async def get_power(name: str) -> dict[str, Any]:
         raise HTTPException(404, f"unknown node: {name}")
     s = _cache[name]
     power = s.get("power") or {}
+    state_name = power.get("state_name", "unreachable")
+    reachable = s.get("reachable", False)
     return {
         "node": name,
-        "reachable": s.get("reachable", False),
-        "power_state": power.get("state_name", "unreachable"),
+        "reachable": reachable,
+        "power_state": state_name,
+        "power_badge": _power_badge(state_name, reachable),
         "last_seen_ago_s": int(time.time() - s.get("polled_at", 0)),
     }
 

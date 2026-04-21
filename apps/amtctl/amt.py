@@ -361,21 +361,117 @@ class AMTClient:
         return {"total_bytes": total_bytes, "dimm_count": len(items), "modules": modules}
 
     async def get_network(self) -> dict[str, Any]:
+        """AMT network settings — IP, MAC, link state, subnet, DNS.
+        DNS values may come from DHCP lease (then only populated when
+        DHCP is enabled and has leased); we surface what AMT reports."""
         uri = "http://intel.com/wbem/wscim/1/amt-schema/1/AMT_EthernetPortSettings"
         raw = await self._enum_raw(uri)
-        # MAC is in <MACAddress> as hex bytes
-        mac_m = re.search(r"<[a-z0-9]+:MACAddress>([^<]+)</", raw)
-        ip_m = re.search(r"<[a-z0-9]+:IPAddress>([^<]+)</", raw)
-        gw_m = re.search(r"<[a-z0-9]+:DefaultGateway>([^<]+)</", raw)
-        dhcp_m = re.search(r"<[a-z0-9]+:DHCPEnabled>([^<]+)</", raw)
-        link_m = re.search(r"<[a-z0-9]+:LinkIsUp>([^<]+)</", raw)
+
+        def _extract(tag: str) -> str:
+            m = re.search(rf"<[a-z0-9]+:{tag}>([^<]+)</", raw)
+            return m.group(1) if m else ""
+
+        def _bool(tag: str) -> bool:
+            v = _extract(tag)
+            return v.lower() == "true" if v else False
+
         return {
-            "mac": mac_m.group(1) if mac_m else "",
-            "ip": ip_m.group(1) if ip_m else "",
-            "gateway": gw_m.group(1) if gw_m else "",
-            "dhcp_enabled": dhcp_m and dhcp_m.group(1).lower() == "true",
-            "link_up": link_m and link_m.group(1).lower() == "true",
+            "mac": _extract("MACAddress"),
+            "ip": _extract("IPAddress"),
+            "gateway": _extract("DefaultGateway"),
+            "subnet_mask": _extract("SubnetMask"),
+            "primary_dns": _extract("PrimaryDNS"),
+            "secondary_dns": _extract("SecondaryDNS"),
+            "dhcp_enabled": _bool("DHCPEnabled"),
+            "link_up": _bool("LinkIsUp"),
         }
+
+    async def get_storage(self) -> list[dict[str, Any]]:
+        """Storage drives exposed via AMT. Intel AMT doesn't have a
+        dedicated storage schema; it typically surfaces drives under
+        CIM_PhysicalMedia (the physical unit) and CIM_MediaAccessDevice
+        (the logical access path). We try both and merge by serial
+        number where possible. May return empty on boards where the
+        storage controller doesn't report through AMT."""
+        drives: list[dict[str, Any]] = []
+
+        # CIM_PhysicalMedia gives size, manufacturer, part, serial
+        try:
+            items = await self._enum_pull(
+                "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PhysicalMedia"
+            )
+            for m in items:
+                capacity = int(m.get("Capacity", 0) or 0)
+                if capacity == 0:
+                    # Skip non-storage media entries (some AMT boards list
+                    # other physical packages here too — e.g. BIOS flash)
+                    continue
+                drives.append({
+                    "model": m.get("Manufacturer", "") + " " + m.get("Model", "").strip(),
+                    "serial": m.get("SerialNumber", ""),
+                    "size_bytes": capacity,
+                    "tag": m.get("Tag", ""),
+                    "source": "CIM_PhysicalMedia",
+                })
+        except AMTError:
+            pass
+
+        # Fallback: CIM_DiskDrive (fewer fields but universal on AMT 11+)
+        if not drives:
+            try:
+                items = await self._enum_pull(
+                    "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_DiskDrive"
+                )
+                for d in items:
+                    drives.append({
+                        "model": d.get("ElementName", ""),
+                        "serial": d.get("DeviceID", ""),
+                        "size_bytes": 0,  # CIM_DiskDrive doesn't report size
+                        "tag": "",
+                        "source": "CIM_DiskDrive",
+                    })
+            except AMTError:
+                pass
+
+        return drives
+
+    async def get_amt_time(self) -> dict[str, Any]:
+        """Current clock in the Intel ME firmware. AMT exposes this via
+        method invocation (not a settable class field) —
+        AMT_TimeSynchronizationService.GetLowAccuracyTimeSynch returns
+        Ta0 = seconds since Unix epoch in UTC."""
+        uri = "http://intel.com/wbem/wscim/1/amt-schema/1/AMT_TimeSynchronizationService"
+        action_url = f"{uri}/GetLowAccuracyTimeSynch"
+        mid = f"uuid:{uuid.uuid4()}"
+        envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+  xmlns:wsa="{_WSA}" xmlns:wsman="{_WSMAN}">
+  <s:Header>
+    <wsa:Action s:mustUnderstand="true">{action_url}</wsa:Action>
+    <wsa:To s:mustUnderstand="true">{self.url}</wsa:To>
+    <wsman:ResourceURI s:mustUnderstand="true">{uri}</wsman:ResourceURI>
+    <wsa:MessageID s:mustUnderstand="true">{mid}</wsa:MessageID>
+    <wsa:ReplyTo><wsa:Address>{_ANON}</wsa:Address></wsa:ReplyTo>
+    <wsman:SelectorSet>
+      <wsman:Selector Name="SystemCreationClassName">CIM_ComputerSystem</wsman:Selector>
+      <wsman:Selector Name="SystemName">Intel(r) AMT</wsman:Selector>
+      <wsman:Selector Name="CreationClassName">AMT_TimeSynchronizationService</wsman:Selector>
+      <wsman:Selector Name="Name">Intel(r) AMT Time Synchronization Service</wsman:Selector>
+    </wsman:SelectorSet>
+    <wsman:OperationTimeout>{self._wsman_timeout}</wsman:OperationTimeout>
+  </s:Header>
+  <s:Body><p:GetLowAccuracyTimeSynch_INPUT xmlns:p="{uri}"/></s:Body>
+</s:Envelope>"""
+        assert self._client is not None
+        r = await self._client.post(self.url, data=envelope, auth=self._auth)
+        if r.status_code != 200:
+            return {}
+        # Response has <Ta0> with epoch seconds
+        m = re.search(r"<[a-z0-9]+:Ta0>(\d+)</", r.text)
+        if not m:
+            return {}
+        epoch = int(m.group(1))
+        return {"epoch": epoch}
 
     async def full_status(self) -> dict[str, Any]:
         """Pull everything the dashboard needs in a single call. Returns
@@ -398,10 +494,12 @@ class AMTClient:
             ("network", self.get_network),
             ("settings", self.get_general_settings),
             ("time", self.get_time),
+            ("amt_time", self.get_amt_time),
             ("bios", self.get_bios),
             ("baseboard", self.get_baseboard),
             ("processor", self.get_processor),
             ("memory", self.get_memory),
+            ("storage", self.get_storage),
         ]:
             try:
                 result[field] = await fn()
