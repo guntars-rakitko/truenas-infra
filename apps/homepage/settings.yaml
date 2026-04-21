@@ -1,0 +1,39 @@
+# Homepage global settings.
+# https://gethomepage.dev/configs/settings/
+
+title: "w1.lv homelab"
+description: "Internal homelab dashboard"
+startUrl: "https://home.w1.lv/"
+
+# Clean black/slate theme — matches the MkDocs wiki vibe.
+theme: dark
+color: slate
+headerStyle: clean
+hideVersion: true
+
+# Pin the layout — Homepage defaults to auto-ordering otherwise. Keeping
+# this declarative means the dashboard renders identically across
+# reloads and matches the sort operators expect.
+layout:
+  Infrastructure:
+    style: row
+    columns: 3
+  NAS:
+    style: row
+    columns: 3
+  Storage:
+    style: row
+    columns: 3
+  Kubernetes:
+    style: row
+    columns: 2
+  Docs & Links:
+    style: row
+    columns: 3
+  Media (planned):
+    style: row
+    columns: 2
+
+# Treat service cards with an offline siteMonitor as visibly red (not
+# just grey). Makes "half the stack is down" instantly obvious.
+statusStyle: dot

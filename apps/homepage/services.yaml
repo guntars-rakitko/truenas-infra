@@ -1,0 +1,128 @@
+# Homepage service catalog — declarative.
+# https://gethomepage.dev/configs/services/
+#
+# Each entry becomes a card. `siteMonitor` does an HTTP probe for up/down
+# indicator; no credentials required. `widget:` stanzas that call service
+# APIs (MinIO, TrueNAS, Traefik) are intentionally held out of MVP to
+# avoid credential plumbing — added in a follow-up pass.
+#
+# ⚠️ WIKI MIRROR: Adding/removing a service here ALSO requires updating:
+#   wiki/docs/architecture/hostnames.md  (admin / data / infra plane tables)
+#   wiki/docs/reference/links.md         (dashboards table)
+
+- Infrastructure:
+    - MikroTik Router:
+        icon: mikrotik.png
+        href: http://10.10.0.1/
+        description: "Router / firewall / DHCP / DNS"
+        siteMonitor: http://10.10.0.1/
+        ping: 10.10.0.1
+
+    - NAS Traefik:
+        icon: traefik.png
+        href: https://traefik-nas.w1.lv/dashboard/
+        description: "Mgmt-plane reverse proxy"
+        siteMonitor: https://traefik-nas.w1.lv/ping
+
+    - MeshCentral:
+        icon: meshcentral.png
+        href: https://mc.w1.lv/
+        description: "AMT / KVM management (6 nodes)"
+        siteMonitor: https://mc.w1.lv/
+
+- NAS:
+    - TrueNAS:
+        icon: truenas-scale.png
+        href: https://nas.w1.lv/
+        description: "NAS management UI"
+        siteMonitor: https://nas.w1.lv/
+
+    - PXE (netboot.xyz):
+        icon: netbootxyz.png
+        href: https://pxe.w1.lv/
+        description: "PXE menu admin + Talos images"
+        siteMonitor: https://pxe.w1.lv/
+
+    - Internal Wiki:
+        icon: mkdocs.png
+        href: https://wiki.w1.lv/
+        description: "Homelab + GIKS docs"
+        siteMonitor: https://wiki.w1.lv/
+
+- Storage:
+    - MinIO prd Console:
+        icon: minio.png
+        href: https://minio-prd.w1.lv/
+        description: "S3 admin — prd (Velero / workloads)"
+        siteMonitor: https://minio-prd.w1.lv/
+
+    - MinIO dev Console:
+        icon: minio.png
+        href: https://minio-dev.w1.lv/
+        description: "S3 admin — dev"
+        siteMonitor: https://minio-dev.w1.lv/
+
+    - MinIO prd S3:
+        icon: minio.png
+        href: "https://s3-prd.w1.lv:9000/"
+        description: "S3 API (port 9000, data plane)"
+        siteMonitor: "https://s3-prd.w1.lv:9000/minio/health/live"
+
+    - MinIO dev S3:
+        icon: minio.png
+        href: "https://s3-dev.w1.lv:9000/"
+        description: "S3 API (port 9000, data plane)"
+        siteMonitor: "https://s3-dev.w1.lv:9000/minio/health/live"
+
+- Kubernetes:
+    - kub-prd (planned):
+        icon: kubernetes.png
+        href: https://kub-prd-01.w1.lv:16993/
+        description: "Prod cluster — 3 nodes (AMT link until cluster up)"
+
+    - kub-dev (planned):
+        icon: kubernetes.png
+        href: https://kub-dev-01.w1.lv:16993/
+        description: "Dev cluster — 3 nodes"
+
+- Docs & Links:
+    - GitHub — truenas-infra:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/truenas-infra
+        description: "NAS API config"
+
+    - GitHub — mikrotik-infra:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/mikrotik-infra
+        description: "Router / switches / VLANs"
+
+    - GitHub — kube-infra:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/kube-infra
+        description: "Talos + Kubernetes"
+
+    - GitHub — bios-config:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/bios-config
+        description: "ASUS Q170S1 BIOS settings"
+
+    - GitHub — wiki:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/wiki
+        description: "This internal wiki (source)"
+
+    - Anthropic docs:
+        icon: anthropic-light.png
+        href: https://docs.claude.com/claude-code
+        description: "Claude Code reference"
+
+- Media (planned):
+    - Plex (deferred):
+        icon: plex.png
+        href: '#'
+        description: "apps.yaml enabled:false — media tier post-RMA"
+
+    - qBittorrent (deferred):
+        icon: qbittorrent.png
+        href: '#'
+        description: "apps.yaml enabled:false — media tier post-RMA"

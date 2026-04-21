@@ -1,0 +1,42 @@
+# Homepage — declarative-only service dashboard at https://home.w1.lv/.
+#
+# Aggregates every homelab service into a single admin-plane view. No
+# Docker-socket auto-discovery (that pattern would require mounting
+# /var/run/docker.sock = root on the host). Services are enumerated
+# explicitly in apps/homepage/services.yaml, same way Traefik routes
+# live in routes.yaml.
+#
+# Fronted by NAS Traefik: home.w1.lv → http://10.10.5.10:3001. Mgmt VLAN
+# only; workloads on prd/dev can't route here.
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v1.12.3
+    container_name: homepage
+    restart: unless-stopped
+    ports:
+      # Mgmt VLAN bind. Host :3001 clear of every existing service on
+      # 10.10.5.10 (:3000 netboot-ui, :4480 meshcentral, :8088 wiki).
+      - "10.10.5.10:3001:3000"
+    volumes:
+      # All Homepage YAMLs (services, bookmarks, widgets, settings, etc.)
+      # uploaded by phase apps via _ensure_homepage_config_via_ctx.
+      # Read-only: we never expect Homepage to self-modify its config.
+      - /mnt/tank/system/apps-config/homepage:/app/config:ro
+    environment:
+      # Required since v1.0 for any host other than localhost — prevents
+      # host-header injection. List the hostnames we'll reach this app at.
+      - HOMEPAGE_ALLOWED_HOSTS=home.w1.lv,10.10.5.10
+      # Log level: info keeps the log small; flip to debug when troubleshooting.
+      - LOG_TARGETS=stdout
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge

@@ -1,0 +1,8 @@
+# Homepage Kubernetes integration — INTENTIONALLY EMPTY until kube-infra
+# stands up the clusters.
+#
+# When ready, populate with:
+#   mode: cluster   # or disabled
+# and mount a kubeconfig with a read-only ServiceAccount (per kube-infra's
+# CLAUDE.md "Wiki maintenance" table). Homepage will then auto-discover
+# Ingress resources and add cards for each.

@@ -1,0 +1,27 @@
+# Homepage top-bar info widgets.
+# https://gethomepage.dev/configs/service-widgets/
+#
+# These render in the header strip. Keeping this MVP-minimal — richer
+# service-specific widgets (TrueNAS pool stats, MinIO bucket sizes,
+# Traefik router health) land in a follow-up pass that adds credential
+# plumbing via secrets.sops.yaml.
+
+- resources:
+    label: "Container"
+    cpu: true
+    memory: true
+    disk: /app/config
+    units: metric
+    expanded: true
+
+- datetime:
+    text_size: xl
+    format:
+      timeStyle: short
+      dateStyle: short
+      hour12: false
+
+- search:
+    provider: custom
+    url: https://wiki.w1.lv/?q=
+    target: _blank

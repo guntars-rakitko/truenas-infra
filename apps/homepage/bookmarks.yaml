@@ -1,0 +1,30 @@
+# Homepage bookmarks — declarative side-rail links.
+# https://gethomepage.dev/configs/bookmarks/
+
+- Developer:
+    - Claude Code:
+        - abbr: CC
+          href: https://docs.claude.com/claude-code
+    - TrueNAS 25.10 API:
+        - abbr: TN
+          href: https://www.truenas.com/docs/api/
+    - Traefik v3 docs:
+        - abbr: TR
+          href: https://doc.traefik.io/traefik/
+    - MkDocs Material:
+        - abbr: MK
+          href: https://squidfunk.github.io/mkdocs-material/
+
+- External services:
+    - CloudFlare:
+        - abbr: CF
+          href: https://dash.cloudflare.com/
+    - Let's Encrypt:
+        - abbr: LE
+          href: https://letsencrypt.org/docs/
+    - BITE Latvia (LTE):
+        - abbr: LT
+          href: https://www.bite.lv/
+    - Beelink support:
+        - abbr: BE
+          href: https://www.bee-link.com/

@@ -244,6 +244,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_app(cli, app_name="meshcentral"),
         check_app(cli, app_name="traefik"),
         check_app(cli, app_name="wiki"),
+        check_app(cli, app_name="homepage"),
         # TLS + DNS checks (phase 3 added these)
         check_cert_expiry(cli, cert_name="w1-wildcard"),
     ]
@@ -270,6 +271,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         ("minio-dev.w1.lv", 443),
         ("traefik-nas.w1.lv", 443),
         ("wiki.w1.lv", 443),
+        ("home.w1.lv", 443),
         ("s3-prd.w1.lv", 9000),
         ("s3-dev.w1.lv", 9000),
     ]:

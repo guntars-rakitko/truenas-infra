@@ -1,0 +1,8 @@
+# Homepage Docker integration — INTENTIONALLY EMPTY.
+#
+# Auto-discovery via /var/run/docker.sock would give Homepage root-
+# equivalent access to the host. Declarative-only pattern (services
+# listed explicitly in services.yaml) matches the rest of this homelab's
+# GitOps-style management — routes in routes.yaml, DNS in dns.yaml.
+#
+# Do NOT enable Docker-socket mounting without a security review.

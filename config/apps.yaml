@@ -57,6 +57,13 @@ apps:
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies wiki.w1.lv here
     description: "Static internal wiki (MkDocs build served by nginx, pushed from wiki repo)"
 
+  - name: homepage
+    enabled: true
+    compose: apps/homepage/docker-compose.yaml
+    secrets: null              # MVP: link cards + siteMonitor only, no widget API creds
+    bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
+    description: "Service-catalog dashboard (Homepage), declarative YAML-only"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false

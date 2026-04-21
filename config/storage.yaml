@@ -87,6 +87,10 @@ datasets:
     # Static MkDocs build + nginx.conf mounted read-only into the `wiki`
     # Custom App. Content pushed from the operator laptop via the wiki
     # repo's `tools/deploy.sh` (rsync over SSH).
+  - name: tank/system/apps-config/homepage
+    # Declarative YAML configs (services, bookmarks, widgets, settings,
+    # docker, kubernetes) mounted read-only into the `homepage` app at
+    # /app/config. Uploaded from apps/homepage/*.yaml by phase apps.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.

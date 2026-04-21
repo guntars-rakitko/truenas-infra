@@ -503,6 +503,14 @@ TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
 WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
+# Homepage dashboard configs (services, bookmarks, widgets, settings,
+# docker, kubernetes). Mounted read-only into /app/config of the
+# `homepage` Custom App. All *.yaml files from apps/homepage/ are
+# uploaded EXCEPT docker-compose.yaml (ensure_custom_app owns that) and
+# *.sops.yaml (encrypted secrets stay on the laptop).
+HOMEPAGE_CONFIG_LOCAL_DIR = Path("apps/homepage")
+HOMEPAGE_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/homepage"
+
 
 def run(
     cli: Any,
@@ -528,11 +536,15 @@ def run(
     # container starts — otherwise Docker bind-mount creates an empty dir
     # in place of the file and the container crashes.
     #
-    # Currently only `wiki` has this constraint (nginx.conf is mounted as
-    # a file). Apps like traefik (directory mount), meshcentral (self-mkdir
-    # on first run), minio-{prd,dev} (uses env vars) don't need pre-ordering.
+    # `wiki` bind-mounts a specific nginx.conf file. `homepage` mounts a
+    # directory but Homepage refuses to start if services.yaml etc are
+    # missing, so we pre-upload those too. Apps like traefik (directory
+    # mount with graceful empty handling), meshcentral (self-mkdir on first
+    # run), minio-{prd,dev} (uses env vars) don't need pre-ordering.
     if only in (None, "wiki"):
         _ensure_wiki_config_via_ctx(cli, ctx, log)
+    if only in (None, "homepage"):
+        _ensure_homepage_config_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -633,6 +645,52 @@ def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     )
     log.info("wiki_config_ensured", path=remote,
              action=diff.action, changed=diff.changed)
+
+
+def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload every declarative YAML from apps/homepage/ to the pool so the
+    `homepage` Custom App can bind-mount /app/config read-only.
+
+    Skips:
+      - docker-compose.yaml  (owned by ensure_custom_app)
+      - *.sops.yaml          (encrypted secrets stay on the laptop; rendered
+                              into compose env vars by _render_compose if
+                              the app is configured with a secrets file)
+
+    Globs the directory so adding a new YAML file (e.g. a future
+    `proxmox.yaml` widget group) requires no code change here.
+    """
+    if not HOMEPAGE_CONFIG_LOCAL_DIR.is_dir():
+        log.warning("homepage_config_skipped",
+                    reason="source_missing", path=str(HOMEPAGE_CONFIG_LOCAL_DIR))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    for local in sorted(HOMEPAGE_CONFIG_LOCAL_DIR.glob("*.yaml")):
+        # Skip compose (apps loop owns it) and sops-encrypted secrets.
+        if local.name == "docker-compose.yaml":
+            continue
+        if local.name.endswith(".sops.yaml"):
+            continue
+        remote = f"{HOMEPAGE_CONFIG_REMOTE_DIR}/{local.name}"
+        diff = ensure_file_on_nas(
+            cli, _upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("homepage_config_ensured", path=remote,
+                 action=diff.action, changed=diff.changed)
 
 
 def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
