@@ -29,7 +29,7 @@ tls:
     export_path: docs/nas-internal-ca.pem
   acme:
     enable: false             # flip true once DNS provider is wired in
-    domain: nas-01.w1.lv
+    domain: nas.w1.lv
     challenge: dns-01
     # provider: cloudflare    # or route53, mikrotik-internal, etc.
     # email: admin@w1.lv

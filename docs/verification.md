@@ -55,5 +55,5 @@ serving everything it should, and nothing it shouldn't.
 
 | What | Command | Expected |
 |---|---|---|
-| Valid cert chain | `curl -I https://nas-01.w1.lv/` | 200, valid chain |
+| Valid cert chain | `curl -I https://nas.w1.lv/` | 200, valid chain |
 | Internal CA exported | `test -f docs/nas-internal-ca.pem && openssl x509 -in docs/nas-internal-ca.pem -noout -subject` | CN line printed |

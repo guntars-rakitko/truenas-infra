@@ -317,11 +317,11 @@ def test_ensure_global_network_updates_hostname_and_dns() -> None:
         "nameserver2": "",
         "nameserver3": "",
     }
-    cli = _mk_cli([live, {**live, "hostname": "nas-01", "domain": "w1.lv", "nameserver1": "10.10.0.1"}])
+    cli = _mk_cli([live, {**live, "hostname": "nas", "domain": "w1.lv", "nameserver1": "10.10.0.1"}])
 
     diff = ensure_global_network(
         cli,
-        hostname="nas-01",
+        hostname="nas",
         domain="w1.lv",
         dns=("10.10.0.1",),
         apply=True,
@@ -332,7 +332,7 @@ def test_ensure_global_network_updates_hostname_and_dns() -> None:
     assert call_names == ["network.configuration.config", "network.configuration.update"]
     update_call = next(c for c in cli.call.call_args_list if c.args[0] == "network.configuration.update")
     payload = update_call.args[1]
-    assert payload["hostname"] == "nas-01"
+    assert payload["hostname"] == "nas"
     assert payload["domain"] == "w1.lv"
     assert payload["nameserver1"] == "10.10.0.1"
 
@@ -342,7 +342,7 @@ def test_ensure_global_network_noop_when_match() -> None:
 
     live = {
         "id": 1,
-        "hostname": "nas-01",
+        "hostname": "nas",
         "domain": "w1.lv",
         "nameserver1": "10.10.0.1",
         "nameserver2": "",
@@ -350,7 +350,7 @@ def test_ensure_global_network_noop_when_match() -> None:
     }
     cli = _mk_cli([live])
 
-    diff = ensure_global_network(cli, hostname="nas-01", domain="w1.lv", dns=("10.10.0.1",), apply=True)
+    diff = ensure_global_network(cli, hostname="nas", domain="w1.lv", dns=("10.10.0.1",), apply=True)
 
     assert diff.changed is False
     call_names = [c.args[0] for c in cli.call.call_args_list]
@@ -434,6 +434,56 @@ def test_ensure_mgmt_interface_noop_when_already_static() -> None:
     assert "interface.update" not in call_names
 
 
+def test_ensure_mgmt_interface_adds_additional_ips() -> None:
+    """When additional_ips is supplied, each gets an alias entry alongside
+    the main ipv4 — e.g. 10.10.5.10 (primary) + 10.10.5.20 (Traefik)."""
+    from truenas_infra.modules.network import ensure_mgmt_interface
+
+    live = {
+        "id": "enp2s0", "name": "enp2s0", "type": "PHYSICAL",
+        "ipv4_dhcp": False, "ipv6_auto": False,
+        "aliases": [{"type": "INET", "address": "10.10.5.10", "netmask": 24}],
+    }
+    updated = {**live, "aliases": [
+        {"address": "10.10.5.10", "netmask": 24},
+        {"address": "10.10.5.20", "netmask": 24},
+    ]}
+    cli = _mk_cli([[live], updated])
+
+    diff = ensure_mgmt_interface(
+        cli, device="enp2s0", ipv4="10.10.5.10/24",
+        additional_ips=("10.10.5.20/24",), apply=True,
+    )
+
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "interface.update")
+    aliases = update.args[2]["aliases"]
+    addrs = [a["address"] for a in aliases]
+    assert "10.10.5.10" in addrs
+    assert "10.10.5.20" in addrs
+
+
+def test_ensure_mgmt_interface_noop_when_all_additional_ips_already_present() -> None:
+    from truenas_infra.modules.network import ensure_mgmt_interface
+
+    live = {
+        "id": "enp2s0", "name": "enp2s0", "type": "PHYSICAL",
+        "ipv4_dhcp": False, "ipv6_auto": False,
+        "aliases": [
+            {"type": "INET", "address": "10.10.5.10", "netmask": 24},
+            {"type": "INET", "address": "10.10.5.20", "netmask": 24},
+        ],
+    }
+    cli = _mk_cli([[live]])
+
+    diff = ensure_mgmt_interface(
+        cli, device="enp2s0", ipv4="10.10.5.10/24",
+        additional_ips=("10.10.5.20/24",), apply=True,
+    )
+
+    assert diff.changed is False
+
+
 # ─── run() orchestration ─────────────────────────────────────────────────────
 
 
@@ -473,7 +523,7 @@ def _write_network_yaml(path: Path) -> None:
             dns:
               servers: [10.10.0.1]
 
-            hostname: nas-01
+            hostname: nas
             domain: w1.lv
             """
         ).strip()
@@ -492,7 +542,7 @@ def test_run_creates_vlans_and_commits(tmp_path: Path, monkeypatch) -> None:
 
     trunk_live = {"id": "enp1s0", "name": "enp1s0", "type": "PHYSICAL", "ipv4_dhcp": True, "aliases": []}
     trunk_updated = {**trunk_live, "ipv4_dhcp": False}
-    net_global = {"id": 1, "hostname": "nas-01", "domain": "w1.lv",
+    net_global = {"id": 1, "hostname": "nas", "domain": "w1.lv",
                   "nameserver1": "10.10.0.1", "ipv4gateway": ""}
 
     # Mgmt NIC already static — no change there.
@@ -559,7 +609,7 @@ def test_run_skips_commit_when_nothing_changes(tmp_path: Path) -> None:
     v15 = _existing_vlan(name="vlan15", vid=15, ipv4="10.10.15.10")
     v20 = _existing_vlan(name="vlan20", vid=20, ipv4="10.10.20.10")
     # All-already-matches fixtures — second test.
-    net_global = {"id": 1, "hostname": "nas-01", "domain": "w1.lv",
+    net_global = {"id": 1, "hostname": "nas", "domain": "w1.lv",
                   "nameserver1": "10.10.0.1", "ipv4gateway": "10.10.5.1"}
 
     mgmt_live = {

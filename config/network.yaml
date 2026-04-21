@@ -19,6 +19,11 @@ nics:
     ipv4: 10.10.5.10/24
     gateway: 10.10.5.1    # router interface on VLAN 5
     mtu: 1500
+    # Extra IPs bound alongside the primary. Each hosts its own :443 so
+    # we can run multiple mgmt HTTPS services on this single VLAN without
+    # collisions. 10.10.5.20 is the Traefik reverse proxy.
+    additional_ips:
+      - 10.10.5.20/24
 
   # Trunk NIC (tagged VLANs 10/15/20).
   # Physical interface itself has no IP; sub-interfaces below.
@@ -47,6 +52,9 @@ dns:
 ntp:
   servers: [10.10.0.1]
 
-# Hostname / domain.
-hostname: nas-01
+# Hostname / domain. Singleton-role naming: just `nas` (not `nas-01`).
+# The host's self-reported hostname matches the canonical DNS name
+# `nas.w1.lv` — keeps $HOSTNAME / SSH banner / mDNS consistent with the
+# outward-facing URL.
+hostname: nas
 domain: w1.lv

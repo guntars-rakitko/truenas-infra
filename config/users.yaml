@@ -30,5 +30,5 @@ ssh:
 email_alerts:
   # System alert destination.
   admin_email: ""  # TODO: fill in, e.g. guntars+nas@rakitko.lv
-  from_email: "nas-01@w1.lv"
+  from_email: "nas@w1.lv"
   # SMTP config: set later if using SendGrid/AWS SES/self-hosted.

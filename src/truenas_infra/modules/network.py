@@ -44,6 +44,10 @@ class MgmtSpec:
     ipv4: str
     gateway: str = ""
     mtu: int = 1500
+    # Extra IP aliases to bind on the mgmt interface (e.g. 10.10.5.20 for
+    # Traefik). Each in CIDR form; primary ipv4 is implicit, these are in
+    # addition. Sorting-independent — order doesn't matter.
+    additional_ips: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,7 @@ def load_network_config(path: Path) -> NetworkConfig:
         ipv4=mgmt_raw.get("ipv4", ""),
         gateway=mgmt_raw.get("gateway", ""),
         mtu=int(mgmt_raw.get("mtu", 1500)),
+        additional_ips=tuple(mgmt_raw.get("additional_ips") or ()),
     )
 
     dns_raw = raw.get("dns") or {}
@@ -100,12 +105,23 @@ def _alias_from_cidr(cidr: str) -> dict[str, Any]:
 
 
 def _aliases_match(live: list[dict[str, Any]], desired: dict[str, Any]) -> bool:
-    """The live alias list (INET entries) matches the single desired v4 alias."""
+    """Kept for backward compat — single-alias check."""
+    return _aliases_match_set(live, [desired])
+
+
+def _aliases_match_set(
+    live: list[dict[str, Any]], desired: list[dict[str, Any]],
+) -> bool:
+    """The live alias list (INET entries) matches the set of desired v4 aliases.
+
+    Order-independent — each desired alias must be present, nothing extra.
+    """
     inet = [a for a in live if a.get("type") == "INET"]
-    if len(inet) != 1:
+    if len(inet) != len(desired):
         return False
-    a = inet[0]
-    return a.get("address") == desired["address"] and int(a.get("netmask", 0)) == desired["netmask"]
+    live_pairs = {(a.get("address"), int(a.get("netmask", 0))) for a in inet}
+    desired_pairs = {(d["address"], int(d["netmask"])) for d in desired}
+    return live_pairs == desired_pairs
 
 
 def ensure_vlan_interface(
@@ -338,27 +354,35 @@ def ensure_global_network(
 
 
 def ensure_mgmt_interface(
-    cli: Any, *, device: str, ipv4: str, apply: bool
+    cli: Any, *, device: str, ipv4: str, apply: bool,
+    additional_ips: tuple[str, ...] = (),
 ) -> Diff:
     """Configure the mgmt NIC with a static IPv4 (CIDR) and IPv6 auto off.
 
     Required before `ensure_ui_bindip` can pin the UI to that IPv4 —
     TrueNAS rejects UI addresses that aren't statically assigned.
+
+    `additional_ips` — extra /24 aliases to bind alongside the primary.
+    Used to host services on the mgmt VLAN that need their own :443
+    (e.g. Traefik on 10.10.5.20) without stealing from the NAS's own
+    10.10.5.10:443 (TrueNAS UI).
     """
     existing = cli.call("interface.query", [["name", "=", device]])
     if not existing:
         raise RuntimeError(f"Mgmt interface {device!r} not found.")
     live = existing[0]
 
-    desired_alias = _alias_from_cidr(ipv4)
+    desired_aliases = [_alias_from_cidr(ipv4)] + [
+        _alias_from_cidr(cidr) for cidr in additional_ips
+    ]
 
     changes: dict[str, Any] = {}
     if live.get("ipv4_dhcp"):
         changes["ipv4_dhcp"] = False
     if live.get("ipv6_auto"):
         changes["ipv6_auto"] = False
-    if not _aliases_match(live.get("aliases") or [], desired_alias):
-        changes["aliases"] = [desired_alias]
+    if not _aliases_match_set(live.get("aliases") or [], desired_aliases):
+        changes["aliases"] = desired_aliases
 
     if not changes:
         return Diff.noop(live)
@@ -434,10 +458,12 @@ def run(
     log.info("trunk_parent_ensured", device=cfg.trunk.device, action=diff.action, changed=diff.changed)
     pending = pending or diff.changed
 
-    # 2. Mgmt NIC — static IPv4 (required before ui_address can pin to it).
+    # 2. Mgmt NIC — static IPv4 + any additional IP aliases (Traefik etc).
     #    This is a low-risk config change — same IP, just changing DHCP → static.
     diff = ensure_mgmt_interface(
-        cli, device=cfg.mgmt.device, ipv4=cfg.mgmt.ipv4, apply=ctx.apply,
+        cli, device=cfg.mgmt.device, ipv4=cfg.mgmt.ipv4,
+        additional_ips=cfg.mgmt.additional_ips,
+        apply=ctx.apply,
     )
     log.info(
         "mgmt_interface_ensured",
