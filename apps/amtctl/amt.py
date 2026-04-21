@@ -323,11 +323,33 @@ class AMTClient:
         }
 
     async def get_processor(self) -> dict[str, Any]:
-        """CPU info. Note: AMT's CurrentClockSpeed is the BIOS-reported
-        BASE clock — not live frequency. MaxClockSpeed is a spec-table
-        ceiling unrelated to the real turbo-boost max. Brand string
-        (e.g. "Intel Core i7-7700T") is NOT exposed; we map family +
-        speed to a readable label via CPU_FAMILY_NAMES."""
+        """CPU info. The full brand string ("Intel(R) Core(TM) i7-7700T
+        CPU @ 2.90GHz") lives on **CIM_Chip.Version**, not CIM_Processor
+        where you'd expect it — this is what MeshCentral uses.
+        CurrentClockSpeed is BIOS base clock, not live frequency.
+
+        We combine:
+            CIM_Chip.Version       — SKU string (primary label)
+            CIM_Processor.Family   — numeric family code (fallback if SKU absent)
+            CIM_Processor.Stepping — silicon stepping (diagnostic)
+        """
+        # Primary source: CIM_Chip → full brand string
+        chip_sku = ""
+        chip_manufacturer = ""
+        try:
+            chips = await self._enum_pull(
+                "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Chip"
+            )
+            for c in chips:
+                # We want the Processor Chip, not other Chip entries (if any)
+                if "Processor" in c.get("ElementName", "") or c.get("Tag", "").startswith("CPU"):
+                    chip_sku = c.get("Version", "")
+                    chip_manufacturer = c.get("Manufacturer", "")
+                    break
+        except AMTError:
+            pass
+
+        # Fallback source: CIM_Processor (always present, has clock/family)
         uri = "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_Processor"
         items = await self._enum_pull(uri)
         p = items[0] if items else {}
@@ -335,14 +357,24 @@ class AMTClient:
         speed = int(p.get("CurrentClockSpeed", 0) or 0)
         family_name = CPU_FAMILY_NAMES.get(family, f"Family {family}")
         speed_ghz = speed / 1000.0 if speed else 0.0
-        label = f"{family_name} @ {speed_ghz:.1f} GHz" if speed else family_name
+
+        # Prefer the SKU label; fall back to family+clock
+        if chip_sku:
+            label = chip_sku
+        elif speed:
+            label = f"{family_name} @ {speed_ghz:.1f} GHz"
+        else:
+            label = family_name
+
         return {
+            "sku": chip_sku,                     # full brand string from CIM_Chip
+            "manufacturer": chip_manufacturer,
             "element_name": p.get("ElementName", ""),
             "speed_mhz": speed,
             "family": family,
             "family_name": family_name,
             "stepping": p.get("Stepping", ""),
-            "label": label,  # e.g. "Intel Core i7 @ 2.9 GHz"
+            "label": label,
         }
 
     async def get_memory(self) -> dict[str, Any]:
@@ -387,15 +419,21 @@ class AMTClient:
         }
 
     async def get_storage(self) -> list[dict[str, Any]]:
-        """Storage drives exposed via AMT. Intel AMT doesn't have a
-        dedicated storage schema; it typically surfaces drives under
-        CIM_PhysicalMedia (the physical unit) and CIM_MediaAccessDevice
-        (the logical access path). We try both and merge by serial
-        number where possible. May return empty on boards where the
-        storage controller doesn't report through AMT."""
+        """Storage enumeration via AMT.
+
+        Unfortunate reality on Q170S1 / ME 11.x: per-drive detail
+        (CIM_PhysicalMedia / CIM_DiskDrive) is NOT exposed. All we get
+        is an aggregate CIM_MediaAccessDevice with MaxMediaSize (in KB)
+        — a single "what's the biggest writable surface this box can
+        see" number, with no vendor / serial / per-drive split.
+
+        Returns a list of drive-ish dicts. Empty when even the aggregate
+        is absent. The UI renders an empty state gracefully.
+        """
         drives: list[dict[str, Any]] = []
 
-        # CIM_PhysicalMedia gives size, manufacturer, part, serial
+        # Primary: CIM_PhysicalMedia (populated on some servers with real
+        # RAID controllers — empty on consumer-class Q170S1 boards)
         try:
             items = await self._enum_pull(
                 "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PhysicalMedia"
@@ -403,37 +441,54 @@ class AMTClient:
             for m in items:
                 capacity = int(m.get("Capacity", 0) or 0)
                 if capacity == 0:
-                    # Skip non-storage media entries (some AMT boards list
-                    # other physical packages here too — e.g. BIOS flash)
                     continue
                 drives.append({
-                    "model": m.get("Manufacturer", "") + " " + m.get("Model", "").strip(),
+                    "model": (m.get("Manufacturer", "") + " " + m.get("Model", "")).strip(),
                     "serial": m.get("SerialNumber", ""),
                     "size_bytes": capacity,
-                    "tag": m.get("Tag", ""),
                     "source": "CIM_PhysicalMedia",
                 })
         except AMTError:
             pass
 
-        # Fallback: CIM_DiskDrive (fewer fields but universal on AMT 11+)
-        if not drives:
-            try:
-                items = await self._enum_pull(
-                    "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_DiskDrive"
-                )
-                for d in items:
-                    drives.append({
-                        "model": d.get("ElementName", ""),
-                        "serial": d.get("DeviceID", ""),
-                        "size_bytes": 0,  # CIM_DiskDrive doesn't report size
-                        "tag": "",
-                        "source": "CIM_DiskDrive",
-                    })
-            except AMTError:
-                pass
+        if drives:
+            return drives
+
+        # Fallback: CIM_MediaAccessDevice — aggregate-only, no per-drive
+        # detail but gives a single size figure for "what storage AMT
+        # is aware of" on this box.
+        try:
+            items = await self._enum_pull(
+                "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_MediaAccessDevice"
+            )
+            for m in items:
+                size_kb = int(m.get("MaxMediaSize", 0) or 0)
+                if size_kb == 0:
+                    continue
+                drives.append({
+                    "model": "(AMT doesn't expose vendor/serial)",
+                    "serial": "",
+                    "size_bytes": size_kb * 1024,
+                    "source": "CIM_MediaAccessDevice",
+                })
+        except AMTError:
+            pass
 
         return drives
+
+    async def get_firmware(self) -> dict[str, Any]:
+        """Intel ME / AMT firmware version. Pulled from CIM_SoftwareIdentity
+        which enumerates multiple firmware components (Flash, Netstack,
+        AMTApps, ...); they all carry the same VersionString so we take
+        the first one."""
+        items = await self._enum_pull(
+            "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_SoftwareIdentity"
+        )
+        for i in items:
+            v = i.get("VersionString", "")
+            if v:
+                return {"me_version": v}
+        return {}
 
     async def get_amt_time(self) -> dict[str, Any]:
         """Current clock in the Intel ME firmware. AMT exposes this via
@@ -500,6 +555,7 @@ class AMTClient:
             ("processor", self.get_processor),
             ("memory", self.get_memory),
             ("storage", self.get_storage),
+            ("firmware", self.get_firmware),
         ]:
             try:
                 result[field] = await fn()

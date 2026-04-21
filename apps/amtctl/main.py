@@ -60,6 +60,56 @@ def _load_nodes() -> list[dict[str, str]]:
     return data.get("nodes") or []
 
 
+# Ports we check in parallel to answer "is this node's OS actually
+# serving on the network?" — AMT's PowerState=On means "CPU has power",
+# NOT "OS is booted and responsive". Any open port here → OS alive.
+# Covers:
+#   22    SSH — generic Linux / provisioning systems
+#   50000 Talos machined API (Talos nodes)
+#   50001 Talos apid
+#   6443  Kubernetes API (control-plane nodes once cluster is up)
+#   10250 kubelet (any K8s node)
+# Add more per-node via `os_probe_ports: [...]` in nodes.yaml.
+_DEFAULT_OS_PROBE_PORTS = [22, 50000, 50001, 6443, 10250]
+
+
+async def _os_alive(host: str, ports: list[int], timeout: float = 1.2) -> tuple[bool, int | None]:
+    """Return (alive, first-open-port). Probes all ports concurrently;
+    returns on first success. All failing → (False, None). Total wall
+    time ≈ single `timeout` even with a dead host."""
+
+    async def _try_port(p: int) -> int | None:
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, p), timeout=timeout
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+            return p
+        except (asyncio.TimeoutError, OSError):
+            return None
+
+    tasks = [asyncio.create_task(_try_port(p)) for p in ports]
+    try:
+        for coro in asyncio.as_completed(tasks):
+            port = await coro
+            if port is not None:
+                # Cancel the remaining probes — first success wins
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                return True, port
+    finally:
+        # Ensure cancellation propagates cleanly
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+    return False, None
+
+
 async def _poll_one(node: dict[str, str]) -> tuple[str, dict[str, Any]]:
     name = node["name"]
     host = node["host"]
@@ -71,6 +121,19 @@ async def _poll_one(node: dict[str, str]) -> tuple[str, dict[str, Any]]:
     except Exception as e:  # noqa: BLE001 — last-ditch catch, log and continue
         log.exception("unexpected error polling %s", host)
         status = {"host": host, "reachable": False, "errors": [f"internal: {type(e).__name__}: {e}"]}
+    # Secondary probe: TCP-connect a set of common "OS is serving"
+    # ports. AMT PowerState=On tells us the CPU is powered, NOT that
+    # the OS is running. Having any of these ports respond is a strong
+    # signal the OS is alive and networking. See _DEFAULT_OS_PROBE_PORTS.
+    probe_ports = node.get("os_probe_ports") or _DEFAULT_OS_PROBE_PORTS
+    # Use node's hostname (DNS-resolves to OS-side IP) when provided;
+    # otherwise default to <name>.w1.lv (mirrors our AMT naming).
+    probe_host = node.get("os_hostname") or f"{name}.w1.lv"
+    alive, which_port = await _os_alive(probe_host, probe_ports)
+    status["os_alive"] = alive
+    status["os_alive_port"] = which_port  # which port responded (for UI)
+    status["os_probe_host"] = probe_host
+    status["os_probe_ports"] = probe_ports
     status["name"] = name
     status["role"] = node.get("role", "")
     status["polled_at"] = time.time()
@@ -128,23 +191,43 @@ async def get_node(name: str) -> dict[str, Any]:
     return _cache[name]
 
 
-def _power_badge(state_name: str, reachable: bool) -> str:
-    """Prefix the power state with a colored emoji dot so Homepage's
-    customapi widget renders a visual cue inline. Homepage doesn't
-    support color mappings natively — this is the emoji workaround."""
+def _classify(state_name: str, reachable: bool, os_alive: bool) -> str:
+    """Condense the 3-way state we actually care about into a single
+    class string: 'on' / 'on-no-os' / 'off' / 'sleep' / 'unreachable'.
+    Used by both the emoji badge and the HTTP-status endpoint."""
     if not reachable:
-        return "🔴 Unreachable"
+        return "unreachable"
     if state_name.startswith("On"):
-        return "🟢 " + state_name
-    if "Off - Soft" in state_name or "Soft" in state_name:
-        # Soft-off means AC present, ME alive, just OS shutdown. Yellow,
-        # not red — actionable (Power On works), not "dead".
-        return "🟡 " + state_name
-    if "Sleep" in state_name or "Hibernate" in state_name:
-        return "🟡 " + state_name
+        return "on" if os_alive else "on-no-os"
+    if any(k in state_name for k in ("Soft", "Sleep", "Hibernate")):
+        return "sleep"
     if state_name.startswith("Off"):
+        return "off"
+    return "unknown"
+
+
+def _power_badge(state_name: str, reachable: bool, os_alive: bool) -> str:
+    """Prefix state with a colored emoji dot for Homepage's customapi widget.
+    Homepage can't do color mappings natively — emoji workaround.
+
+      🟢 running        = AMT On AND OS port open (really running)
+      🟡 On (no OS)     = AMT On but OS port closed (POST loop / stuck)
+      🟡 Off - Soft     = Soft-off / Sleep / Hibernate (AC, ME alive)
+      🔴 Off - Hard     = Hard off (S5)
+      🔴 Unreachable   = AMT not answering
+    """
+    cls = _classify(state_name, reachable, os_alive)
+    if cls == "unreachable":
+        return "🔴 Unreachable"
+    if cls == "on":
+        return "🟢 Running"
+    if cls == "on-no-os":
+        return "🟡 Powered (no OS)"
+    if cls == "sleep":
+        return "🟡 " + state_name
+    if cls == "off":
         return "🔴 " + state_name
-    return "⚪ " + state_name  # unknown intermediate state
+    return "⚪ " + state_name
 
 
 @app.get("/api/nodes/{name}/power")
@@ -156,13 +239,49 @@ async def get_power(name: str) -> dict[str, Any]:
     power = s.get("power") or {}
     state_name = power.get("state_name", "unreachable")
     reachable = s.get("reachable", False)
+    os_alive = s.get("os_alive", False)
     return {
         "node": name,
         "reachable": reachable,
+        "os_alive": os_alive,
         "power_state": state_name,
-        "power_badge": _power_badge(state_name, reachable),
+        "power_badge": _power_badge(state_name, reachable, os_alive),
         "last_seen_ago_s": int(time.time() - s.get("polled_at", 0)),
     }
+
+
+@app.get("/api/nodes/{name}/status", responses={503: {}, 418: {}})
+async def get_status(name: str) -> JSONResponse:
+    """Homepage-siteMonitor endpoint. Returns HTTP status based on node
+    class so Homepage renders a colored dot in the card's upper-right:
+
+      200 — OS is alive (AMT On + SSH port open)
+      418 — AMT On but OS not responding (POST/stuck) or sleeping
+      503 — AMT unreachable OR hard off
+
+    Homepage's siteMonitor is binary (2xx = green, anything else = red)
+    so 418 still shows red — but the status endpoint distinguishes
+    cases in case we later wire a richer UI element. The amtctl
+    dashboard card renders full 3-color state.
+    """
+    if name not in _cache:
+        raise HTTPException(404, f"unknown node: {name}")
+    s = _cache[name]
+    power = s.get("power") or {}
+    state_name = power.get("state_name", "unreachable")
+    reachable = s.get("reachable", False)
+    os_alive = s.get("os_alive", False)
+    cls = _classify(state_name, reachable, os_alive)
+    if cls == "on":
+        code = 200
+    elif cls in ("on-no-os", "sleep"):
+        code = 418  # I'm a teapot — semantically "powered but not serving"
+    else:
+        code = 503
+    return JSONResponse(
+        status_code=code,
+        content={"node": name, "class": cls, "state": state_name, "reachable": reachable, "os_alive": os_alive},
+    )
 
 
 @app.post("/api/nodes/{name}/action")

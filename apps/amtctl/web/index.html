@@ -109,20 +109,20 @@
     }
 
     function storageSection(drives) {
+      // Empty state: don't clutter — just omit the section entirely.
+      // (AMT on Q170S1 doesn't enumerate per-drive model/serial; only an
+      // aggregate "MediaAccessDevice" size. MeshCentral gets richer data
+      // via its legacy Asset SOAP interface — we don't speak that yet.)
       if (!drives || !drives.length) {
-        return `
-          <div class="section">
-            <h3>Storage</h3>
-            <div class="kv"><div class="k">—</div><div class="v" style="color:var(--muted)">no drives reported by AMT (Q170S1 firmware may not enumerate NVMe/SATA)</div></div>
-          </div>`;
+        return "";
       }
       const rows = drives.map((d, i) => {
         const size = d.size_bytes ? fmtBytes(d.size_bytes) : "—";
-        const model = d.model && d.model.trim() ? d.model : "(unknown)";
-        const serial = d.serial || "—";
+        const model = d.model && d.model.trim() ? d.model : "(model not exposed via AMT)";
+        const serial = d.serial ? ` · S/N ${d.serial}` : "";
         return `
           <div class="k">Drive ${i + 1}</div>
-          <div class="v">${size} · ${model} <span style="color:var(--muted); font-size:0.75rem">S/N ${serial}</span></div>`;
+          <div class="v">${size} · ${model}${serial}</div>`;
       }).join("");
       return `
         <div class="section">
@@ -144,12 +144,23 @@
       return Math.floor(sec / 3600) + "h ago";
     }
 
-    function statusClass(powerName, reachable) {
+    function statusClass(powerName, reachable, osAlive) {
       if (!reachable) return "status-unknown";
       if (!powerName) return "status-unknown";
-      if (powerName.startsWith("On")) return "status-on";
+      if (powerName.startsWith("On")) {
+        // AMT says "On" but OS port closed → yellow ("powered but stuck"),
+        // not green. This catches the kub-prd-03 case where CPU has power
+        // but POST never completed.
+        return osAlive ? "status-on" : "status-sleep";
+      }
+      // Soft-off, Sleep, Hibernate are all "AC present, ME alive" — yellow
+      // (actionable: Power On works), not red (dead). Must match BEFORE
+      // the generic "Off" check below.
+      if (powerName.includes("Soft") || powerName.includes("Sleep") ||
+          powerName.includes("Hibernate") || powerName.includes("Power Cycle")) {
+        return "status-sleep";
+      }
       if (powerName.includes("Off")) return "status-off";
-      if (powerName.includes("Sleep") || powerName.includes("Hibernate")) return "status-sleep";
       return "status-unknown";
     }
 
@@ -167,8 +178,14 @@
       const powerName = power.state_name || "unknown";
       const avail = power.available_names || [];
       const reachable = !!n.reachable;
+      const osAlive = !!n.os_alive;
       const isOn = powerName.startsWith("On");
-      const pillCls = statusClass(powerName, reachable);
+      const pillCls = statusClass(powerName, reachable, osAlive);
+      // Compose a pill label that reflects the OS-alive distinction
+      let pillLabel = powerName;
+      if (reachable && isOn) {
+        pillLabel = osAlive ? "ON · OS UP" : "ON · NO OS";
+      }
 
       // Action buttons — shown only when we have real power state signal
       let actions = "";
@@ -199,7 +216,7 @@
               <span class="card-title">${n.name}</span>
               <span class="card-role"> — ${n.role || ""}</span>
             </div>
-            <span class="status-pill ${pillCls}">${powerName}</span>
+            <span class="status-pill ${pillCls}">${pillLabel}</span>
           </div>
           ${errors.length ? `<div class="error">${errors.join(", ")}</div>` : ""}
 
@@ -209,7 +226,7 @@
               <div class="k">AMT hostname</div><div class="v">${set.hostname || "—"}</div>
               <div class="k">Domain</div><div class="v">${set.domain || "—"}</div>
               <div class="k">OS FQDN</div><div class="v">${set.host_os_fqdn || "—"}</div>
-              <div class="k">Time sync</div><div class="v">${time_.sync_service ? (time_.enabled ? "running" : "configured") : "—"}</div>
+              <div class="k">OS reachable</div><div class="v">${reachable ? (osAlive ? "yes (port " + n.os_alive_port + " open)" : "no (" + (n.os_probe_ports || []).join("/") + " all closed)") : "—"}</div>
               <div class="k">ME clock</div><div class="v">${fmtEpoch(n.amt_time && n.amt_time.epoch)}</div>
             </div>
           </div>
@@ -219,6 +236,7 @@
             <div class="kv">
               <div class="k">Baseboard</div><div class="v">${bb.manufacturer || ""} ${bb.product || "—"}</div>
               <div class="k">BIOS</div><div class="v">${bios.vendor || ""} ${bios.version || "—"}</div>
+              <div class="k">ME firmware</div><div class="v">${(n.firmware && n.firmware.me_version) || "—"}</div>
               <div class="k">CPU</div><div class="v">${cpu.label || "—"}</div>
               ${memRows(mem)}
             </div>
