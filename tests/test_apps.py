@@ -279,6 +279,16 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
     # already-uploaded (avoids a live upload attempt during the test).
     boot_cfg_size = _P("apps/netboot-xyz/boot.cfg").stat().st_size
     custom_ipxe_size = _P("apps/netboot-xyz/custom.ipxe").stat().st_size
+    tls_export_size = _P("apps/tls/tls-export.sh").stat().st_size
+    tls_rotate_size = _P("apps/tls/tls-rotate.sh").stat().st_size
+
+    # Cronjob.query for tls-rotate — pre-shaped to match expected command
+    # so ensure_cronjob reports noop without needing a cronjob.update call.
+    from truenas_infra.modules.apps import _tls_rotate_cronjob_command
+    expected_tls_cmd = _tls_rotate_cronjob_command(
+        "/mnt/tank/system/tls/tls-rotate.sh"
+    )
+    expected_hourly = {"minute": "0", "hour": "*", "dom": "*", "month": "*", "dow": "*"}
 
     cli = _mk_cli([
         {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},  # docker.config (noop)
@@ -292,6 +302,12 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
         }],
         {"size": boot_cfg_size, "mode": 0o100644},              # filesystem.stat boot.cfg
         {"size": custom_ipxe_size, "mode": 0o100644},           # filesystem.stat custom.ipxe
+        {"size": tls_export_size, "mode": 0o100755},            # filesystem.stat tls-export
+        {"size": tls_rotate_size, "mode": 0o100755},            # filesystem.stat tls-rotate
+        [{                                                       # cronjob.query tls-rotate
+            "id": 2, "description": "tls-rotate", "enabled": True,
+            "command": expected_tls_cmd, "user": "root", "schedule": expected_hourly,
+        }],
     ])
 
     rc = run(
@@ -501,6 +517,79 @@ def test_ensure_talos_updater_uploads_script_and_registers_short_cronjob(tmp_pat
     # diffs is a list/tuple with per-artifact results for logging.
     assert len(diffs) == 3  # script, schematic, cronjob
     assert all(d.changed for d in diffs)
+
+
+# ─── TLS rotate cronjob ──────────────────────────────────────────────────────
+
+
+def test_tls_rotate_cronjob_command_wraps_in_bash() -> None:
+    """Same cronjob.run gotcha as talos-updater: must wrap in /bin/bash -c
+    so `>>` and `2>&1` actually redirect."""
+    from truenas_infra.modules.apps import _tls_rotate_cronjob_command
+
+    cmd = _tls_rotate_cronjob_command("/mnt/tank/system/tls/tls-rotate.sh")
+    assert cmd.startswith("/bin/bash -c "), cmd
+    assert "/mnt/tank/system/tls/tls-rotate.sh" in cmd
+    assert "tls-rotate.log" in cmd
+    assert "2>&1" in cmd
+    assert len(cmd) <= 1024, f"must fit TrueNAS cronjob.command cap, got {len(cmd)}"
+
+
+def test_ensure_tls_rotate_uploads_both_scripts_and_registers_hourly_cronjob(
+    tmp_path: Path,
+) -> None:
+    """phase apps uploads tls-export.sh + tls-rotate.sh to /mnt/tank/system/tls/
+    and registers an hourly cronjob pointing at tls-rotate.sh."""
+    from truenas_api_client.exc import ClientException
+    from truenas_infra.modules.apps import ensure_tls_rotate
+
+    export = tmp_path / "tls-export.sh"
+    export.write_bytes(b"#!/bin/sh\n# export\n")
+    rotate = tmp_path / "tls-rotate.sh"
+    rotate.write_bytes(b"#!/bin/sh\n# rotate\n")
+
+    # Sequenced mock: filesystem.stat raises (file missing → upload),
+    # cronjob.query returns [], cronjob.create returns the created job.
+    calls = iter([
+        ClientException("missing"),                         # filesystem.stat export
+        ClientException("missing"),                         # filesystem.stat rotate
+        [],                                                 # cronjob.query
+        {"id": 99, "description": "tls-rotate"},            # cronjob.create
+    ])
+    def _side_effect(*a, **kw):
+        v = next(calls)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    cli = MagicMock()
+    cli.call.side_effect = _side_effect
+
+    uploads: list = []
+    def fake_upload(**kw):
+        uploads.append(kw)
+
+    diffs = ensure_tls_rotate(
+        cli, fake_upload,
+        export_path=export,
+        rotate_path=rotate,
+        remote_dir="/mnt/tank/system/tls",
+        apply=True,
+    )
+
+    # Two uploads, both 0755.
+    assert len(uploads) == 2
+    modes = {u["remote_path"]: u["mode"] for u in uploads}
+    assert modes["/mnt/tank/system/tls/tls-export.sh"] == 0o755
+    assert modes["/mnt/tank/system/tls/tls-rotate.sh"] == 0o755
+
+    # Hourly cronjob (minute=0, * hour/day/month/dow).
+    create = next(c for c in cli.call.call_args_list if c.args[0] == "cronjob.create")
+    payload = create.args[1]
+    assert payload["description"] == "tls-rotate"
+    assert payload["schedule"]["minute"] == "0"
+    assert payload["schedule"]["hour"] == "*"
+    assert "/mnt/tank/system/tls/tls-rotate.sh" in payload["command"]
+    assert len(diffs) == 3  # export + rotate + cronjob
 
 
 def test_ensure_netboot_menu_files_uploads_boot_cfg_and_custom_ipxe(tmp_path: Path) -> None:

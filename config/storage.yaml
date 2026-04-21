@@ -82,6 +82,10 @@ datasets:
   - name: tank/system/apps-config/nut
   - name: tank/system/apps-config/talos-updater
   - name: tank/system/apps-config/meshcentral
+  - name: tank/system/apps-config/traefik
+  - name: tank/system/tls
+    # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
+    # containers (Traefik, MinIO prd+dev) can bind-mount read-only.
 
 # Storage tasks.
 scrub:

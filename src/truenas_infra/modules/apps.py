@@ -299,6 +299,62 @@ def _talos_updater_cronjob_command(
     return f'/bin/bash -c "{env} /bin/sh {script_path} >> {log_path} 2>&1"'
 
 
+def _tls_rotate_cronjob_command(script_path: str) -> str:
+    """Same /bin/bash -c wrap as the talos-updater cronjob.
+
+    Runs tls-rotate.sh hourly; it internally calls tls-export.sh (which
+    diffs SHA-256 and copies on change) and `app.redeploy`s cert-consuming
+    apps when the cert file actually changed.
+    """
+    log_path = str(Path(script_path).parent / "tls-rotate.log")
+    return f'/bin/bash -c "/bin/bash {script_path} >> {log_path} 2>&1"'
+
+
+def ensure_tls_rotate(
+    cli: Any,
+    upload_fn: Any,
+    *,
+    export_path: Path,
+    rotate_path: Path,
+    remote_dir: str,
+    apply: bool,
+) -> tuple[Diff, ...]:
+    """Deploy the cert export + rotation scripts and register the hourly
+    cronjob that drives them.
+
+    Three artifacts:
+    - `tls-export.sh`: diff /etc/certificates/w1-wildcard vs pool, exit 10
+      on change.
+    - `tls-rotate.sh`: wraps export, app.redeploy on change.
+    - Cronjob: `0 * * * *` runs tls-rotate.sh.
+
+    Reuses `ensure_file_on_nas` (size-based idempotency) and
+    `ensure_cronjob` (update-when-differs).
+    """
+    remote_export = f"{remote_dir.rstrip('/')}/{export_path.name}"
+    remote_rotate = f"{remote_dir.rstrip('/')}/{rotate_path.name}"
+
+    export_diff = ensure_file_on_nas(
+        cli, upload_fn,
+        local_path=export_path, remote_path=remote_export,
+        mode=0o755, apply=apply,
+    )
+    rotate_diff = ensure_file_on_nas(
+        cli, upload_fn,
+        local_path=rotate_path, remote_path=remote_rotate,
+        mode=0o755, apply=apply,
+    )
+    cron_diff = ensure_cronjob(
+        cli,
+        description="tls-rotate",
+        command=_tls_rotate_cronjob_command(remote_rotate),
+        schedule={"minute": "0", "hour": "*", "dom": "*", "month": "*", "dow": "*"},
+        user="root",
+        apply=apply,
+    )
+    return (export_diff, rotate_diff, cron_diff)
+
+
 # ─── Talos updater config ────────────────────────────────────────────────────
 
 
@@ -429,6 +485,12 @@ NETBOOT_CUSTOM_IPXE_PATH = Path("apps/netboot-xyz/custom.ipxe")
 NETBOOT_CONFIG_MENUS_DIR = "/mnt/tank/system/pxe/config/menus"
 NETBOOT_ASSETS_DIR = "/mnt/tank/system/pxe/assets"
 
+# TLS export + rotate scripts (phase apps ships them to the pool; the
+# hourly cronjob runs them when TrueNAS auto-renews the wildcard cert).
+TLS_EXPORT_SCRIPT_PATH = Path("apps/tls/tls-export.sh")
+TLS_ROTATE_SCRIPT_PATH = Path("apps/tls/tls-rotate.sh")
+TLS_REMOTE_DIR = "/mnt/tank/system/tls"
+
 
 def run(
     cli: Any,
@@ -472,7 +534,50 @@ def run(
     if only in (None, "netboot-xyz"):
         _ensure_netboot_menu_files_via_ctx(cli, ctx, log)
 
+    # 5. TLS cert export + rotation scripts. Ships to /mnt/tank/system/tls/
+    # and registers the hourly cronjob. Depends on phase tls having already
+    # issued the wildcard cert (the scripts assume /etc/certificates/
+    # w1-wildcard.{crt,key} exist).
+    if only in (None, "tls"):
+        _ensure_tls_rotate_via_ctx(cli, ctx, log)
+
     return 0
+
+
+def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    if not TLS_EXPORT_SCRIPT_PATH.exists() or not TLS_ROTATE_SCRIPT_PATH.exists():
+        log.warning("tls_rotate_skipped",
+                    export_exists=TLS_EXPORT_SCRIPT_PATH.exists(),
+                    rotate_exists=TLS_ROTATE_SCRIPT_PATH.exists())
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    export_diff, rotate_diff, cron_diff = ensure_tls_rotate(
+        cli, _upload,
+        export_path=TLS_EXPORT_SCRIPT_PATH,
+        rotate_path=TLS_ROTATE_SCRIPT_PATH,
+        remote_dir=TLS_REMOTE_DIR,
+        apply=ctx.apply,
+    )
+    log.info("tls_export_script_ensured",
+             path=f"{TLS_REMOTE_DIR}/tls-export.sh",
+             action=export_diff.action, changed=export_diff.changed)
+    log.info("tls_rotate_script_ensured",
+             path=f"{TLS_REMOTE_DIR}/tls-rotate.sh",
+             action=rotate_diff.action, changed=rotate_diff.changed)
+    log.info("tls_rotate_cronjob_ensured",
+             action=cron_diff.action, changed=cron_diff.changed)
 
 
 def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
