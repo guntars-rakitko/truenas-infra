@@ -497,6 +497,12 @@ TLS_REMOTE_DIR = "/mnt/tank/system/tls"
 TRAEFIK_ROUTES_PATH = Path("apps/traefik/routes.yaml")
 TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 
+# Wiki nginx server config — static, mounted read-only into the `wiki`
+# Custom App. The site/ content itself is pushed by wiki/tools/deploy.sh
+# from the operator laptop (rsync over SSH), not by this phase.
+WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
+WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
+
 
 def run(
     cli: Any,
@@ -516,6 +522,17 @@ def run(
 
     # 2. Load app config (only enabled apps).
     cfg = load_apps_config(config_path or DEFAULT_CONFIG_PATH)
+
+    # 2a. PRE-APP config file uploads. Any app that bind-mounts a named file
+    # (not just a directory) needs the source file present BEFORE the
+    # container starts — otherwise Docker bind-mount creates an empty dir
+    # in place of the file and the container crashes.
+    #
+    # Currently only `wiki` has this constraint (nginx.conf is mounted as
+    # a file). Apps like traefik (directory mount), meshcentral (self-mkdir
+    # on first run), minio-{prd,dev} (uses env vars) don't need pre-ordering.
+    if only in (None, "wiki"):
+        _ensure_wiki_config_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -553,6 +570,9 @@ def run(
     if only in (None, "traefik"):
         _ensure_traefik_routes_via_ctx(cli, ctx, log)
 
+    # (Wiki nginx.conf was already uploaded in step 2a, before the apps
+    # loop, so the container bind-mount finds the file on first start.)
+
     return 0
 
 
@@ -581,6 +601,37 @@ def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         mode=0o644, apply=ctx.apply,
     )
     log.info("traefik_routes_ensured", path=remote,
+             action=diff.action, changed=diff.changed)
+
+
+def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload apps/wiki/nginx.conf to the pool so the `wiki` Custom App can
+    bind-mount it read-only. Site content (site/) is pushed separately from
+    the wiki repo via rsync and is NOT this phase's concern."""
+    if not WIKI_NGINX_CONF_PATH.exists():
+        log.warning("wiki_config_skipped",
+                    reason="source_missing", path=str(WIKI_NGINX_CONF_PATH))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    remote = f"{WIKI_CONFIG_REMOTE_DIR}/nginx.conf"
+    diff = ensure_file_on_nas(
+        cli, _upload,
+        local_path=WIKI_NGINX_CONF_PATH, remote_path=remote,
+        mode=0o644, apply=ctx.apply,
+    )
+    log.info("wiki_config_ensured", path=remote,
              action=diff.action, changed=diff.changed)
 
 

@@ -35,6 +35,9 @@ records:
   - name: traefik-nas.w1.lv
     address: 10.10.5.20
     comment: NAS Traefik dashboard (distinct from kube-infra traefik-{prd,dev})
+  - name: wiki.w1.lv
+    address: 10.10.5.20
+    comment: Internal wiki (MkDocs via Traefik → nginx on 10.10.5.10:8088)
 
   # ─── NAS infra plane (direct) ───────────────────────────────────────────
   - name: nas.w1.lv

@@ -129,6 +129,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
                             "kub-dev-02.w1.lv": "10.10.5.15",
                             "kub-dev-03.w1.lv": "10.10.5.16",
                             "traefik-nas.w1.lv": "10.10.5.20",
+                            "wiki.w1.lv": "10.10.5.20",
                         }.get(host))
     monkeypatch.setattr(verify, "_tls_handshake_cert",
                         lambda host, port, timeout: {
@@ -149,12 +150,13 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        # apps (5 of them now — traefik added)
+        # apps (6 of them now — wiki added)
         [{"name": "netboot-xyz", "state": "RUNNING"}],
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "meshcentral", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
+        [{"name": "wiki", "state": "RUNNING"}],
         # cert expiry
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
@@ -182,6 +184,7 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "meshcentral", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
+        [{"name": "wiki", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 
@@ -330,6 +333,7 @@ def test_run_fails_when_a_new_app_is_missing(monkeypatch) -> None:
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "meshcentral", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
+        [{"name": "wiki", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 

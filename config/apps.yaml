@@ -41,6 +41,13 @@ apps:
     bind_ip: 10.10.5.20
     description: "Mgmt-plane reverse proxy (mc/pxe/minio-*/traefik-nas)"
 
+  - name: wiki
+    enabled: true
+    compose: apps/wiki/docker-compose.yaml
+    secrets: null              # static HTML, no credentials
+    bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies wiki.w1.lv here
+    description: "Static internal wiki (MkDocs build served by nginx, pushed from wiki repo)"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false

@@ -38,6 +38,13 @@ http:
       service: api@internal
       entryPoints: [websecure]
       tls: {}
+    # Internal wiki — MkDocs static site served by nginx on mgmt VLAN.
+    # Content pushed from the wiki repo's tools/deploy.sh (rsync).
+    wiki:
+      rule: "Host(`wiki.w1.lv`)"
+      service: wiki
+      entryPoints: [websecure]
+      tls: {}
 
   services:
     meshcentral:
@@ -62,6 +69,12 @@ http:
           # port (9011) — Docker port-mapping picks distinct host ports
           # per container so they coexist on 10.10.5.10.
           - url: "http://10.10.5.10:9011"
+    wiki:
+      loadBalancer:
+        servers:
+          # nginx:alpine in the `wiki` Custom App. Host port 8088 chosen
+          # clear of every other service bound on 10.10.5.10.
+          - url: "http://10.10.5.10:8088"
 
 tls:
   certificates:

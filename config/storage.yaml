@@ -83,6 +83,10 @@ datasets:
   - name: tank/system/apps-config/talos-updater
   - name: tank/system/apps-config/meshcentral
   - name: tank/system/apps-config/traefik
+  - name: tank/system/apps-config/wiki
+    # Static MkDocs build + nginx.conf mounted read-only into the `wiki`
+    # Custom App. Content pushed from the operator laptop via the wiki
+    # repo's `tools/deploy.sh` (rsync over SSH).
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.

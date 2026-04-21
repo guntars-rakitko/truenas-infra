@@ -281,6 +281,7 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
     custom_ipxe_size = _P("apps/netboot-xyz/custom.ipxe").stat().st_size
     tls_export_size = _P("apps/tls/tls-export.sh").stat().st_size
     tls_rotate_size = _P("apps/tls/tls-rotate.sh").stat().st_size
+    wiki_nginx_size = _P("apps/wiki/nginx.conf").stat().st_size
 
     # Cronjob.query for tls-rotate — pre-shaped to match expected command
     # so ensure_cronjob reports noop without needing a cronjob.update call.
@@ -292,6 +293,9 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
 
     cli = _mk_cli([
         {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},  # docker.config (noop)
+        # Step 2a: wiki nginx.conf size-match → no upload (runs BEFORE apps loop
+        # because nginx bind-mounts the file, must exist before container starts).
+        {"size": wiki_nginx_size, "mode": 0o100644},            # filesystem.stat wiki nginx.conf
         [],                                                      # app.query
         {"id": "netboot-xyz"},                                   # app.create
         {"size": script_size, "mode": 0o100755},                # filesystem.stat script
