@@ -131,6 +131,11 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
                             "traefik-nas.w1.lv": "10.10.5.20",
                             "wiki.w1.lv": "10.10.5.20",
                             "home.w1.lv": "10.10.5.20",
+                            "router.w1.lv": "10.10.0.1",
+                            "sw-data.w1.lv": "10.10.0.2",
+                            "sw-mgmt.w1.lv": "10.10.0.3",
+                            "wifi.w1.lv": "10.10.0.4",
+                            "lte.w1.lv": "10.10.0.5",
                         }.get(host))
     monkeypatch.setattr(verify, "_tls_handshake_cert",
                         lambda host, port, timeout: {

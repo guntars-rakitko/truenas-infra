@@ -11,24 +11,61 @@
 #   wiki/docs/reference/links.md         (dashboards table)
 
 - Infrastructure:
+    # ─── MikroTik devices (all 5, REST API via firewall carve-out) ──
     - MikroTik Router:
         icon: mikrotik.png
-        href: http://10.10.0.1/
-        description: "Router / firewall / DHCP / DNS"
-        siteMonitor: http://10.10.0.1/
-        ping: 10.10.0.1
-        # Widget disabled. Homepage's mikrotik widget correctly tries
-        # http://10.10.0.1/rest/system/resource with valid creds, but
-        # the call hangs from the Homepage container: the NAS Docker
-        # bridge can reach mgmt VLAN (TrueNAS + Traefik widgets work
-        # fine) but cross-VLAN to base-vlan 99 (10.10.0.0/24) times out.
-        # Same REST call works from a VLAN-5 laptop — the difference is
-        # the NAS's routing table for traffic originating in a bridge
-        # NAT vs. a "real" VLAN-5 host. Not worth untangling routing now.
-        # Re-enable by adding `widget: {type: mikrotik, url, username,
-        # password}` once the container can reach 10.10.0.1; may need
-        # RouterOS to expose the REST API on its 10.10.5.1 mgmt-VLAN
-        # interface, or a NAS-side route explicitly through 10.10.5.1.
+        href: http://router.w1.lv/
+        description: "RB5009 — router / firewall / DHCP / DNS"
+        siteMonitor: http://router.w1.lv/
+        widget:
+          type: mikrotik
+          url: http://router.w1.lv
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+
+    - Switch (CRS310 — data):
+        icon: mikrotik.png
+        href: http://sw-data.w1.lv/
+        description: "CRS310-8G+2S+ — 2.5G traffic + 10G uplinks"
+        siteMonitor: http://sw-data.w1.lv/
+        widget:
+          type: mikrotik
+          url: http://sw-data.w1.lv
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+
+    - Switch (CRS326 — mgmt):
+        icon: mikrotik.png
+        href: http://sw-mgmt.w1.lv/
+        description: "CRS326-24G-2S+ — 1G mgmt + 10G SFP+"
+        siteMonitor: http://sw-mgmt.w1.lv/
+        widget:
+          type: mikrotik
+          url: http://sw-mgmt.w1.lv
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+
+    - WiFi AP (cAP ax):
+        icon: mikrotik.png
+        href: http://wifi.w1.lv/
+        description: "cAP ax dual-band WiFi 6 (CAP mode)"
+        siteMonitor: http://wifi.w1.lv/
+        widget:
+          type: mikrotik
+          url: http://wifi.w1.lv
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+
+    - LTE Modem (LMT 5G):
+        icon: mikrotik.png
+        href: http://lte.w1.lv/
+        description: "LMT 5G — WAN uplink via BITE Latvia"
+        siteMonitor: http://lte.w1.lv/
+        widget:
+          type: mikrotik
+          url: http://lte.w1.lv
+          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
+          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
 
     - NAS Traefik:
         icon: traefik.png

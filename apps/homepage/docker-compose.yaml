@@ -77,6 +77,14 @@ services:
       # MinIO S3 data plane (direct)
       - "s3-prd.w1.lv:10.10.10.10"
       - "s3-dev.w1.lv:10.10.15.10"
+      # MikroTik devices — base-vlan (needs firewall carve-out, see
+      # mikrotik-infra/configs/01-config-router.rsc "accept nas homepage
+      # widget to ..." rules).
+      - "router.w1.lv:10.10.0.1"
+      - "sw-data.w1.lv:10.10.0.2"
+      - "sw-mgmt.w1.lv:10.10.0.3"
+      - "wifi.w1.lv:10.10.0.4"
+      - "lte.w1.lv:10.10.0.5"
     # Intentionally no `healthcheck:` — the Homepage ghcr.io/gethomepage
     # image doesn't ship wget and is minimal by design. TrueNAS uses the
     # absence of a failing healthcheck as the "running" signal; if we

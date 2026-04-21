@@ -82,6 +82,28 @@ records:
     address: 10.10.5.16
     comment: kub-dev-03 AMT (mgmt NIC)
 
+  # ─── MikroTik device admin FQDNs (base-vlan 99) ─────────────────────────
+  # Used by the Homepage `mikrotik` widget to poll each device's REST API.
+  # Requires a narrow firewall carve-out on MikroTik (see
+  # mikrotik-infra/configs/01-config-router.rsc — "accept nas homepage
+  # widget to ..." rules) since mgmt-vlan (NAS) normally cannot reach
+  # base-vlan admin services.
+  - name: router.w1.lv
+    address: 10.10.0.1
+    comment: MikroTik RB5009 router (primary)
+  - name: sw-data.w1.lv
+    address: 10.10.0.2
+    comment: CRS310 traffic switch (2.5G, K8s data + NAS trunk)
+  - name: sw-mgmt.w1.lv
+    address: 10.10.0.3
+    comment: CRS326 mgmt switch (1G, K8s mgmt + home)
+  - name: wifi.w1.lv
+    address: 10.10.0.4
+    comment: cAP ax WiFi access point (CAP mode)
+  - name: lte.w1.lv
+    address: 10.10.0.5
+    comment: LMT 5G LTE modem (WAN backup)
+
   # ─── Pre-existing, do NOT touch ─────────────────────────────────────────
   - name: ntp.w1.lv
     address: 10.10.0.1
