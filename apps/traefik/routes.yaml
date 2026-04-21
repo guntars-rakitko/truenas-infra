@@ -4,6 +4,15 @@
 # ensure_file_on_nas (phase apps). Traefik watches the directory and
 # hot-reloads on change — no redeploy needed when adding a route.
 #
+# ⚠️  WIKI MIRROR: Adding/removing a route here ALSO requires updating:
+#       wiki/docs/architecture/hostnames.md  (admin plane table)
+#       wiki/docs/reference/links.md         (internal dashboards)
+#       config/dns.yaml                      (new *.w1.lv → 10.10.5.20 record)
+#       mikrotik-infra/configs/dns.yaml      (mirrored DNS)
+#     Then: ./manage.sh phase apps --apply (re-uploads this file) &&
+#           cd ~/Documents/github/mikrotik-infra && ./manage.sh (option 15) &&
+#           cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+#
 # Pattern:
 #   <name>.w1.lv  →  HTTP backend URL  (plain HTTP inside mgmt VLAN)
 #   TLS terminated at Traefik using /etc/traefik/certs/fullchain.pem

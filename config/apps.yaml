@@ -4,6 +4,15 @@
 # Each entry points at a compose file under apps/<name>/docker-compose.yaml.
 # Secrets live alongside as apps/<name>/secrets.sops.yaml; rendered to
 # apps/<name>/.env at apply time by scripts/render-env.py.
+#
+# ⚠️  WIKI MIRROR: Adding/removing a Custom App here ALSO requires updating:
+#       wiki/docs/architecture/hostnames.md           (if it exposes a hostname)
+#       wiki/docs/architecture/tls-split-horizon.md   (if it's admin or data plane)
+#       wiki/docs/reference/links.md                  (if it has a browser URL)
+#       apps/traefik/routes.yaml                      (if it's admin-plane, needs a route)
+#       config/dns.yaml                               (if it needs a new DNS record)
+#       src/truenas_infra/modules/verify.py           (+ check_app(...), + tls_https probe)
+#     Then: ./manage.sh phase apps --apply && cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
 
 apps:
   - name: netboot-xyz

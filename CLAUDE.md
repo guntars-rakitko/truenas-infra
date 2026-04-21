@@ -22,14 +22,50 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 | [`guntars-rakitko/mikrotik-infra`](https://github.com/guntars-rakitko/mikrotik-infra) | Router, switches, WiFi, LTE, VLANs, firewall, DHCP/DNS |
 | [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, NFS), MinIO, PXE server, NUT server, media apps (this repo) |
 | [`guntars-rakitko/bios-config`](https://github.com/guntars-rakitko/bios-config) | ASUS Q170S1 BIOS settings (AMT, PXE, power, security) |
+| [`guntars-rakitko/wiki`](https://github.com/guntars-rakitko/wiki) | Internal MkDocs wiki at [wiki.w1.lv](https://wiki.w1.lv/) — mirrors docs from all above |
 
 **Always read the CLAUDE.md of every related repo before making cross-cutting changes.** Common shared concerns:
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
 - **PXE / NUT / MinIO services** — live here on the NAS; referenced by `kube-infra` and `bios-config`
 - **Secrets** — same age key across all repos (see SOPS section)
+- **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
-Local clones live at `/Users/gunrak/Documents/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config}`.
+Local clones live at `/Users/gunrak/Documents/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
+
+---
+
+## Wiki maintenance
+
+The homelab wiki at https://wiki.w1.lv/ contains **hand-written topic
+pages** that synthesize data across repos. They do not update
+automatically. When you change any of the sources below in this repo,
+edit the matching wiki page in the same commit set.
+
+| Change in this repo | Update in `wiki/` |
+|---|---|
+| `CLAUDE.md` (this file) | _Auto-synced_ — `sync-repos.sh` pulls `truenas-infra/CLAUDE.md` → `docs/projects/truenas-infra.md` |
+| `config/network.yaml` (NICs, sub-IPs, hostname) | `docs/architecture/ip-plan.md` (NAS static allocations table) |
+| `config/dns.yaml` (add/remove DNS record) | `docs/architecture/hostnames.md` (record inventory) |
+| `config/apps.yaml` (new Custom App) | `docs/architecture/hostnames.md`, `docs/reference/links.md` |
+| `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
+| `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
+| `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
+| `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
+| `.env.sops` / `.env.example` (add/remove var) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
+| "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |
+
+**Deploy the wiki** after the edit:
+
+```sh
+cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+```
+
+The verify matrix (`./manage.sh phase verify`) catches structural drift
+(DNS resolution, TLS SAN coverage, cert expiry, app state) for
+anything added to `config/dns.yaml`. It does **not** catch prose drift
+in the wiki (stale IPs in commentary, outdated VLAN descriptions) —
+that's operator responsibility.
 
 ---
 

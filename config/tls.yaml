@@ -3,6 +3,12 @@
 # Issues one wildcard Let's Encrypt certificate for *.w1.lv via CloudFlare
 # DNS-01. TrueNAS renews automatically; see docs/tls-runbook.md for the
 # forced-renewal drill and staging→prod switch.
+#
+# ⚠️  WIKI MIRROR: Changing ACME directory, SANs, renew_days, or the
+#     authenticator/cert names here ALSO requires updating:
+#       wiki/docs/architecture/tls-split-horizon.md
+#       wiki/docs/runbooks/tls-rotation.md is auto-synced (docs/tls-runbook.md)
+#     Then: cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
 
 # Zone we own and want the cert for.
 domain: w1.lv

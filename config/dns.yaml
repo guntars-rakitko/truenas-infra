@@ -1,5 +1,12 @@
 # Declarative internal DNS records, applied to the MikroTik router.
 #
+# ⚠️  WIKI MIRROR: Adding/removing a record here ALSO requires updating:
+#     wiki/docs/architecture/hostnames.md  (inventory tables)
+#     wiki/docs/reference/links.md         (if the new host is a browser URL)
+#     mikrotik-infra/configs/dns.yaml      (keep in lockstep)
+#     mikrotik-infra/configs/01-config-router.rsc  (restore coherence)
+# Then: cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+#
 # Consumed by:
 #   - mikrotik-infra/manage.sh (option 15, "Sync DNS static records")
 #   - truenas-infra/modules/verify.py (check_dns_records)
