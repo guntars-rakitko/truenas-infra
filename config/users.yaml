@@ -1,0 +1,34 @@
+# Declarative user config.
+# Consumed by modules/users.py.
+# Passwords NOT stored here; live in `.env.sops` / `config/users.sops.yaml`.
+
+users:
+  - username: svc-automation
+    full_name: "Automation service account"
+    shell: /usr/sbin/nologin
+    sudo: false
+    # No ssh_keys — svc-automation authenticates via API key only.
+    # TrueNAS refuses sshpubkey for users whose home (/var/empty) isn't writable,
+    # and we don't give service accounts a real home.
+    #
+    # For operator SSH access: add a separate user (e.g. 'gunrak') with a home
+    # on `tank/system/homes` once phase 4 (pool) has run. Tracked under
+    # docs/plans/ — not part of phase 1.
+
+  # Note: NUT client credentials are NOT TrueNAS system users — they're
+  # managed inside the `ups` service (`monusers`) and handled in phase 8.
+
+groups: []
+
+# SSH service — lives with users because it depends on them (keys must be
+# installed before we can safely disable password auth).
+ssh:
+  enable: true
+  # Keep on during initial bring-up; flip to false once keys are verified.
+  password_auth: true
+
+email_alerts:
+  # System alert destination.
+  admin_email: ""  # TODO: fill in, e.g. guntars+nas@rakitko.lv
+  from_email: "nas-01@w1.lv"
+  # SMTP config: set later if using SendGrid/AWS SES/self-hosted.

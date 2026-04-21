@@ -1,0 +1,27 @@
+# Kernel boot args + (future) sysctl tunables.
+# Consumed by modules/tunables.py.
+#
+# IMPORTANT: kernel_extra_options takes effect only after a reboot.
+
+kernel:
+  # Power-management workarounds for Samsung PM981/PM9A1/980-series NVMe
+  # drives on the Beelink ME Mini 2. Without these, the drives' controllers
+  # drop off the PCIe bus under sustained write load, which ZFS reports as
+  # write errors even though the hardware is fine.
+  #
+  # Source: the nvme driver itself prints this exact suggestion to dmesg
+  # when the controllers fail to wake from D3cold.
+  extra_options:
+    - nvme_core.default_ps_max_latency_us=0   # disable NVMe APST
+    - pcie_aspm=off                             # disable PCIe Active State Power Management
+    - pcie_port_pm=off                          # disable PCIe port power management
+
+system:
+  # Timezone: UTC for consistent timestamps across infra + log correlation
+  timezone: UTC
+
+  # NTP servers: use the MikroTik router's internal NTP service (ntp.w1.lv
+  # resolves to 10.10.0.1 per mikrotik-infra/configs/01-config-router.rsc).
+  # This keeps time sync on the internal network and survives WAN outages.
+  ntp_servers:
+    - ntp.w1.lv

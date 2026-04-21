@@ -1,9 +1,28 @@
 # Credentials (plaintext — never commit)
 .env
-# .env.sops is SOPS-encrypted and safe to commit
+apps/*/.env
+apps/*/secrets.yaml
+# .env.sops and apps/*/secrets.sops.yaml are SOPS-encrypted and safe to commit
 
 # Backups (local only)
 backups/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+
+# uv
+.uv/
 
 # OS
 .DS_Store

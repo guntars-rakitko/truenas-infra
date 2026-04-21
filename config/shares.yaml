@@ -1,0 +1,47 @@
+# Declarative share config.
+# Consumed by modules/shares.py.
+#
+# NFS/SMB in TrueNAS 25.10 have service-wide bindip only; we layer per-share
+# CIDR ACLs for defence in depth.
+
+nfs:
+  service:
+    enable: true
+    # Service listens on prd and dev VLAN sub-iface IPs only.
+    bindip:
+      - 10.10.10.10
+      - 10.10.15.10
+  shares:
+    - name: longhorn-prd
+      path: /mnt/tank/kube/prd/longhorn
+      networks: [10.10.10.0/24]
+      maproot_user: nobody
+      maproot_group: nogroup
+    - name: longhorn-dev
+      path: /mnt/tank/kube/dev/longhorn
+      networks: [10.10.15.0/24]
+      maproot_user: nobody
+      maproot_group: nogroup
+
+smb:
+  service:
+    enable: true
+    bindip: [10.10.20.10]
+    # Workgroup / server name; tune later.
+    workgroup: HOME
+    server_string: "NAS01"
+  shares:
+    - name: general
+      path: /mnt/tank/shared/general
+      purpose: DEFAULT_SHARE
+      browsable: true
+      # Note: TrueNAS 25.10 removed per-share hostsallow/guestok from the
+      # sharing.smb.create schema. Per-VLAN isolation is enforced by
+      # smb.service.bindip (above) — SMB only listens on VLAN 20.
+
+ssh:
+  enable: true
+  # Password auth only during bring-up; phase `users` will install SSH keys
+  # and flip this to false.
+  password_auth: true
+  bindip: [10.10.5.10]

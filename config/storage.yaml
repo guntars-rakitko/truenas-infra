@@ -1,0 +1,119 @@
+# Declarative storage config.
+# Consumed by modules/pool.py, modules/datasets.py, modules/storage_tasks.py.
+
+pool:
+  name: tank
+  topology:
+    # TEMP NAS LAYOUT (Beelink RMA in flight ~3-4 weeks, 2026-04-20 onward):
+    # Single-drive STRIPE pool on a spare ASUS Q170S1 K8s-node-class machine.
+    # Boot pool is on a USB stick (also temporary).
+    # No redundancy — acceptable for test period; data is reproducible
+    # (Longhorn volumes, Velero backups, PXE assets).
+    #
+    # Post-RMA target (6-drive RAIDZ1 on new Beelink ME Mini with fixed
+    # 3.3V rail) is preserved as commented block below for when we migrate.
+    type: STRIPE
+    disks:
+      - nvme0n1   # 1x 1TB PM981 (from drawer) — temp
+  ashift: 12
+  autotrim: true
+
+  # Post-RMA layout (restore when new Beelink arrives):
+  # topology:
+  #   type: RAIDZ1
+  #   disks:
+  #     - nvme0n1
+  #     - nvme1n1
+  #     - nvme2n1
+  #     - nvme3n1
+  #     - nvme4n1
+  #     - nvme5n1
+
+# Defaults applied to every dataset unless overridden.
+defaults:
+  compression: lz4
+  atime: off
+  xattr: sa
+  recordsize: 128K
+
+# Nested dataset tree.
+# Environment-first grouping: /kube/<env>/<service> so that per-env policies
+# (quota, snapshots, NFS exports) cleanly attach at the env parent.
+datasets:
+  - name: tank/kube
+    kind: parent
+  - name: tank/kube/prd
+    kind: parent
+  - name: tank/kube/prd/longhorn
+    recordsize: 128K
+  - name: tank/kube/prd/velero
+    recordsize: 1M
+  - name: tank/kube/dev
+    kind: parent
+  - name: tank/kube/dev/longhorn
+    recordsize: 128K
+  - name: tank/kube/dev/velero
+    recordsize: 1M
+
+  - name: tank/media
+    quota: 4T
+  - name: tank/media/plex
+    kind: parent
+  - name: tank/media/plex/config
+  - name: tank/media/plex/media
+  - name: tank/media/torrent
+    kind: parent
+  - name: tank/media/torrent/config
+  - name: tank/media/torrent/downloads
+
+  - name: tank/shared
+    kind: parent
+  - name: tank/shared/general
+    quota: 1T
+
+  - name: tank/system
+    kind: parent
+  - name: tank/system/pxe
+    kind: parent
+  - name: tank/system/pxe/config
+  - name: tank/system/pxe/assets
+  - name: tank/system/apps-config
+    kind: parent
+  - name: tank/system/apps-config/nut
+  - name: tank/system/apps-config/talos-updater
+  - name: tank/system/apps-config/meshcentral
+
+# Storage tasks.
+scrub:
+  schedule: "0 4 * * 0"   # Sunday 04:00
+
+smart:
+  short_test:
+    schedule: "0 2 * * 0"        # Sunday 02:00
+    disks: all
+  long_test:
+    schedule: "0 3 1-7 * 0"      # First Sunday of the month, 03:00
+    disks: all
+
+snapshots:
+  # Per-environment recursive snapshots: one task per env covers all services
+  # (longhorn + velero) atomically — useful for consistent backups.
+  - dataset: tank/kube/prd
+    recursive: true
+    schedule: "0 1 * * *"         # daily 01:00
+    retention_days: 14
+  - dataset: tank/kube/dev
+    recursive: true
+    schedule: "0 1 * * *"
+    retention_days: 7
+  - dataset: tank/media
+    recursive: true
+    schedule: "0 5 * * 0"         # weekly Sun 05:00
+    retention_weeks: 4
+  - dataset: tank/shared/general
+    schedule: "0 2 * * *"
+    retention_days: 14
+  - dataset: tank/system
+    recursive: true
+    schedule: "30 2 * * *"
+    retention_days: 7

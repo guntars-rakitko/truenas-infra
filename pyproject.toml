@@ -1,0 +1,65 @@
+[project]
+name = "truenas-infra"
+version = "0.1.0"
+description = "API-driven TrueNAS Community Edition 25.10 configuration for the homelab NAS"
+# Code uses `from __future__ import annotations`, so `X | None` syntax works
+# on 3.9+. TrueNAS 25.10 itself ships with 3.11+. Keep 3.9 floor so macOS
+# system Python runs this without a separate install.
+requires-python = ">=3.9"
+readme = "README.md"
+license = { text = "MIT" }
+
+dependencies = [
+    # Official TrueNAS API client (JSON-RPC over WebSocket). REST is deprecated.
+    # Pin to the 25.10 compatible branch.
+    "truenas-api-client @ git+https://github.com/truenas/api_client.git@TS-25.10.3",
+    "pydantic>=2.6",
+    "structlog>=24.1",
+    "PyYAML>=6.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.3",
+    "mypy>=1.9",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+truenas-infra = "truenas_infra.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/truenas_infra"]
+
+[tool.hatch.metadata]
+# truenas-api-client is installed from GitHub (no PyPI release for 25.10).
+allow-direct-references = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]  # line-length handled by formatter
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_unused_ignores = true
+# truenas-api-client has no stubs yet
+[[tool.mypy.overrides]]
+module = ["truenas_api_client.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+pythonpath = ["src"]

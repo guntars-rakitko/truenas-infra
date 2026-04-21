@@ -1,0 +1,42 @@
+# Declarative service config.
+# Consumed by modules/nut.py, modules/tls.py, module helpers.
+
+nut:
+  enable: true
+  # TrueNAS NUT is singleton — one UPS per `ups.config`. The list format
+  # was aspirational; we use the first entry.
+  identifier: apc1
+  description: "APC Smart-UPS (primary)"
+  # Driver string format is "<driver>$<model>" (see ups.driver_choices).
+  # For generic APC Smart-UPS over USB:
+  driver: "usbhid-ups$Smart-UPS (USB)"
+  port: auto                        # NUT auto-detects USB HID device
+  mode: MASTER                      # this NAS runs the NUT server
+  # Service-level bindip isn't a field on ups.config in 25.10 — NUT listens
+  # on the port globally and we rely on mikrotik-infra firewall + the fact
+  # that only VLAN 5 routes to the NAS for management traffic.
+  remoteport: 3493
+  shutdown: BATT                    # BATT = shut down on battery (configurable)
+  shutdowntimer: 30                 # seconds before shutdown
+  # monuser/monpwd for NUT clients (K8s nodes will connect as these)
+  # Password lives in SOPS; left unset here so existing config keeps whatever
+  # TrueNAS generated. Add `monuser: upsmon` + monpwd via SOPS when wiring clients.
+  monuser: upsmon
+
+tls:
+  internal_ca:
+    enable: true
+    export_path: docs/nas-internal-ca.pem
+  acme:
+    enable: false             # flip true once DNS provider is wired in
+    domain: nas-01.w1.lv
+    challenge: dns-01
+    # provider: cloudflare    # or route53, mikrotik-internal, etc.
+    # email: admin@w1.lv
+
+# System defaults applied during bring-up.
+system:
+  timezone: Europe/Riga
+  console_banner: |
+    truenas-infra — API-configured. Manual edits will be overwritten.
+    Source of truth: github.com/guntars-rakitko/truenas-infra

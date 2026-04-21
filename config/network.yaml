@@ -1,0 +1,52 @@
+# Declarative network config.
+# Consumed by `modules/network.py` (phase: network).
+# Source of truth for every sub-interface.
+
+# Physical NIC assignments.
+# TEMP NAS (Q170S1) device names (verified via live interface.query 2026-04-20):
+#   enp0s31f6 (MAC 38:d5:47:ac:13:74) — Intel I219-LM 1G = mgmt (ether8 on CRS310)
+#   enp4s0    (MAC 02:26:26:02:10:00) — Intel I226-V 2.5G (M.2 add-in) = trunk (ether7 on CRS310)
+#
+# Original Beelink ME Mini device names (kept as reference for RMA migration):
+#   enp2s0 — NIC2 = mgmt
+#   enp1s0 — NIC1 = trunk
+nics:
+  # Mgmt NIC (untagged VLAN 5).
+  mgmt:
+    device: enp0s31f6
+    role: management
+    vlan: null            # untagged
+    ipv4: 10.10.5.10/24
+    gateway: 10.10.5.1    # router interface on VLAN 5
+    mtu: 1500
+
+  # Trunk NIC (tagged VLANs 10/15/20).
+  # Physical interface itself has no IP; sub-interfaces below.
+  trunk:
+    device: enp4s0
+    role: data
+    mtu: 1500
+    vlans:
+      - vid: 10
+        name: vlan10
+        ipv4: 10.10.10.10/24
+        purpose: prd Kube — NFS, MinIO
+      - vid: 15
+        name: vlan15
+        ipv4: 10.10.15.10/24
+        purpose: dev Kube — NFS, MinIO
+      - vid: 20
+        name: vlan20
+        ipv4: 10.10.20.10/24
+        purpose: home — SMB, (future) Plex/torrent
+
+# Global resolver/NTP config.
+dns:
+  servers: [10.10.0.1]
+  search: [w1.lv]
+ntp:
+  servers: [10.10.0.1]
+
+# Hostname / domain.
+hostname: nas-01
+domain: w1.lv
