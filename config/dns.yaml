@@ -1,0 +1,77 @@
+# Declarative internal DNS records, applied to the MikroTik router.
+#
+# Consumed by:
+#   - mikrotik-infra/manage.sh (option 15, "Sync DNS static records")
+#   - truenas-infra/modules/verify.py (check_dns_records)
+#
+# Split-horizon layout:
+#   * LAN clients resolve these via MikroTik (10.10.0.1) → internal RFC1918 IPs
+#   * Internet clients resolve via CloudFlare → NXDOMAIN (records never published publicly)
+#
+# Records with `preserve: true` exist on the router today, were not created by this
+# plan, and must NOT be removed by the sync tool. Records without the `preserve`
+# flag are `managed-by-claude` — the sync tool owns their lifecycle.
+#
+# New service? Follow the decision tree in docs/tls-dns.md (and the mirrored copy in
+# mikrotik-infra/CLAUDE.md):
+#   - admin/mgmt UI  → Traefik at 10.10.5.20
+#   - data-plane API → service's own VLAN IP
+#   - infra UI       → device's own IP, no proxy
+
+records:
+  # ─── NAS mgmt plane (via Traefik) ───────────────────────────────────────
+  - name: mc.w1.lv
+    address: 10.10.5.20
+    comment: MeshCentral UI (via Traefik)
+  - name: pxe.w1.lv
+    address: 10.10.5.20
+    comment: netboot.xyz UI (via Traefik)
+  - name: minio-prd.w1.lv
+    address: 10.10.5.20
+    comment: MinIO prd console (via Traefik)
+  - name: minio-dev.w1.lv
+    address: 10.10.5.20
+    comment: MinIO dev console (via Traefik)
+
+  # ─── NAS infra plane (direct) ───────────────────────────────────────────
+  - name: nas.w1.lv
+    address: 10.10.5.10
+    comment: TrueNAS UI / API (direct, bootstrap path)
+
+  # ─── NAS data plane (direct on service VLAN) ────────────────────────────
+  - name: s3-prd.w1.lv
+    address: 10.10.10.10
+    comment: MinIO prd S3 API (direct :9000)
+  - name: s3-dev.w1.lv
+    address: 10.10.15.10
+    comment: MinIO dev S3 API (direct :9000)
+
+  # ─── K8s node AMT endpoints ─────────────────────────────────────────────
+  - name: kub-prd-01.w1.lv
+    address: 10.10.5.11
+    comment: kub-prd-01 AMT (mgmt NIC)
+  - name: kub-prd-02.w1.lv
+    address: 10.10.5.12
+    comment: kub-prd-02 AMT (mgmt NIC)
+  - name: kub-prd-03.w1.lv
+    address: 10.10.5.13
+    comment: kub-prd-03 AMT (mgmt NIC)
+  - name: kub-dev-01.w1.lv
+    address: 10.10.5.14
+    comment: kub-dev-01 AMT (mgmt NIC)
+  - name: kub-dev-02.w1.lv
+    address: 10.10.5.15
+    comment: kub-dev-02 AMT (mgmt NIC)
+  - name: kub-dev-03.w1.lv
+    address: 10.10.5.16
+    comment: kub-dev-03 AMT (mgmt NIC)
+
+  # ─── Pre-existing, do NOT touch ─────────────────────────────────────────
+  - name: ntp.w1.lv
+    address: 10.10.0.1
+    preserve: true
+    comment: MikroTik built-in NTP (pre-existing)
+  - name: router.lan
+    address: 10.10.0.1
+    preserve: true
+    comment: Pre-existing router alias
