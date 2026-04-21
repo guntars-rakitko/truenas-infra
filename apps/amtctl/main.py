@@ -191,14 +191,16 @@ async def get_node(name: str) -> dict[str, Any]:
     return _cache[name]
 
 
-def _classify(state_name: str, reachable: bool, os_alive: bool) -> str:
-    """Condense the 3-way state we actually care about into a single
-    class string: 'on' / 'on-no-os' / 'off' / 'sleep' / 'unreachable'.
-    Used by both the emoji badge and the HTTP-status endpoint."""
+def _classify(state_name: str, reachable: bool) -> str:
+    """Condense AMT power state + reachability into one bucket:
+    'on' / 'off' / 'sleep' / 'unreachable'. OS-reachability probe
+    data (os_alive) still runs in the background + is available on
+    /api/nodes/{name} for operator use, but we don't factor it into
+    the status signal — bare-metal AMT view only, per operator ask."""
     if not reachable:
         return "unreachable"
     if state_name.startswith("On"):
-        return "on" if os_alive else "on-no-os"
+        return "on"
     if any(k in state_name for k in ("Soft", "Sleep", "Hibernate")):
         return "sleep"
     if state_name.startswith("Off"):
@@ -206,23 +208,18 @@ def _classify(state_name: str, reachable: bool, os_alive: bool) -> str:
     return "unknown"
 
 
-def _power_badge(state_name: str, reachable: bool, os_alive: bool) -> str:
-    """Prefix state with a colored emoji dot for Homepage's customapi widget.
-    Homepage can't do color mappings natively — emoji workaround.
-
-      🟢 running        = AMT On AND OS port open (really running)
-      🟡 On (no OS)     = AMT On but OS port closed (POST loop / stuck)
-      🟡 Off - Soft     = Soft-off / Sleep / Hibernate (AC, ME alive)
-      🔴 Off - Hard     = Hard off (S5)
-      🔴 Unreachable   = AMT not answering
+def _power_badge(state_name: str, reachable: bool) -> str:
+    """Emoji-prefixed state for Homepage customapi compatibility.
+      🟢 On            = CPU powered (AMT PowerState=2)
+      🟡 Off - Soft    = Soft-off / Sleep / Hibernate (AC present, ME alive)
+      🔴 Off - Hard    = Hard off (S5)
+      🔴 Unreachable  = AMT not answering
     """
-    cls = _classify(state_name, reachable, os_alive)
+    cls = _classify(state_name, reachable)
     if cls == "unreachable":
         return "🔴 Unreachable"
     if cls == "on":
-        return "🟢 Running"
-    if cls == "on-no-os":
-        return "🟡 Powered (no OS)"
+        return "🟢 " + state_name
     if cls == "sleep":
         return "🟡 " + state_name
     if cls == "off":
@@ -239,13 +236,12 @@ async def get_power(name: str) -> dict[str, Any]:
     power = s.get("power") or {}
     state_name = power.get("state_name", "unreachable")
     reachable = s.get("reachable", False)
-    os_alive = s.get("os_alive", False)
     return {
         "node": name,
         "reachable": reachable,
-        "os_alive": os_alive,
+        "os_alive": s.get("os_alive", False),   # still exposed for operators
         "power_state": state_name,
-        "power_badge": _power_badge(state_name, reachable, os_alive),
+        "power_badge": _power_badge(state_name, reachable),
         "last_seen_ago_s": int(time.time() - s.get("polled_at", 0)),
     }
 
@@ -270,17 +266,16 @@ async def get_status(name: str) -> JSONResponse:
     power = s.get("power") or {}
     state_name = power.get("state_name", "unreachable")
     reachable = s.get("reachable", False)
-    os_alive = s.get("os_alive", False)
-    cls = _classify(state_name, reachable, os_alive)
+    cls = _classify(state_name, reachable)
     if cls == "on":
         code = 200
-    elif cls in ("on-no-os", "sleep"):
-        code = 418  # I'm a teapot — semantically "powered but not serving"
+    elif cls == "sleep":
+        code = 418     # "powered but not at S0" — shows as down on Homepage siteMonitor
     else:
-        code = 503
+        code = 503     # hard off or unreachable
     return JSONResponse(
         status_code=code,
-        content={"node": name, "class": cls, "state": state_name, "reachable": reachable, "os_alive": os_alive},
+        content={"node": name, "class": cls, "state": state_name, "reachable": reachable},
     )
 
 

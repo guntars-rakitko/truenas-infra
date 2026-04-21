@@ -144,18 +144,13 @@
       return Math.floor(sec / 3600) + "h ago";
     }
 
-    function statusClass(powerName, reachable, osAlive) {
+    function statusClass(powerName, reachable) {
+      // Bare-metal AMT signal only: green = AMT reports On,
+      // yellow = soft-off / sleep / hibernate (AC present, ME alive),
+      // red = hard off or unreachable.
       if (!reachable) return "status-unknown";
       if (!powerName) return "status-unknown";
-      if (powerName.startsWith("On")) {
-        // AMT says "On" but OS port closed → yellow ("powered but stuck"),
-        // not green. This catches the kub-prd-03 case where CPU has power
-        // but POST never completed.
-        return osAlive ? "status-on" : "status-sleep";
-      }
-      // Soft-off, Sleep, Hibernate are all "AC present, ME alive" — yellow
-      // (actionable: Power On works), not red (dead). Must match BEFORE
-      // the generic "Off" check below.
+      if (powerName.startsWith("On")) return "status-on";
       if (powerName.includes("Soft") || powerName.includes("Sleep") ||
           powerName.includes("Hibernate") || powerName.includes("Power Cycle")) {
         return "status-sleep";
@@ -178,14 +173,9 @@
       const powerName = power.state_name || "unknown";
       const avail = power.available_names || [];
       const reachable = !!n.reachable;
-      const osAlive = !!n.os_alive;
       const isOn = powerName.startsWith("On");
-      const pillCls = statusClass(powerName, reachable, osAlive);
-      // Compose a pill label that reflects the OS-alive distinction
-      let pillLabel = powerName;
-      if (reachable && isOn) {
-        pillLabel = osAlive ? "ON · OS UP" : "ON · NO OS";
-      }
+      const pillCls = statusClass(powerName, reachable);
+      const pillLabel = reachable ? powerName : "UNREACHABLE";
 
       // Action buttons — shown only when we have real power state signal
       let actions = "";
@@ -226,7 +216,6 @@
               <div class="k">AMT hostname</div><div class="v">${set.hostname || "—"}</div>
               <div class="k">Domain</div><div class="v">${set.domain || "—"}</div>
               <div class="k">OS FQDN</div><div class="v">${set.host_os_fqdn || "—"}</div>
-              <div class="k">OS reachable</div><div class="v">${reachable ? (osAlive ? "yes (port " + n.os_alive_port + " open)" : "no (" + (n.os_probe_ports || []).join("/") + " all closed)") : "—"}</div>
               <div class="k">ME clock</div><div class="v">${fmtEpoch(n.amt_time && n.amt_time.epoch)}</div>
             </div>
           </div>
