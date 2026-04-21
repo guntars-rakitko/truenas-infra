@@ -73,17 +73,19 @@ http:
     minio-prd-console:
       loadBalancer:
         servers:
-          # MinIO console binds to 10.10.5.10:9001 — mgmt VLAN only,
-          # unreachable from prd/dev workloads. Defense in depth beyond
-          # MinIO's own auth.
-          - url: "http://10.10.5.10:9001"
+          # MinIO console is HTTPS (uses the wildcard cert from
+          # --certs-dir; MinIO can't split TLS between :9000 S3 and :9001
+          # console — same cert config on both). We connect via IP so
+          # the hostname on the cert doesn't match (*.w1.lv vs raw IP),
+          # hence serversTransport=insecure-backend. The hop is on NAS
+          # loopback — no wire exposure.
+          - url: "https://10.10.5.10:9001"
+        serversTransport: insecure-backend
     minio-dev-console:
       loadBalancer:
         servers:
-          # MinIO dev console on the same mgmt IP but a different host
-          # port (9011) — Docker port-mapping picks distinct host ports
-          # per container so they coexist on 10.10.5.10.
-          - url: "http://10.10.5.10:9011"
+          - url: "https://10.10.5.10:9011"
+        serversTransport: insecure-backend
     wiki:
       loadBalancer:
         servers:
@@ -96,6 +98,14 @@ http:
           # gethomepage/homepage in the `homepage` Custom App. Host port
           # 3001 (container 3000). Declarative-only, no Docker socket.
           - url: "http://10.10.5.10:3001"
+
+  # Reusable backend transport: skip-verify for NAS-loopback HTTPS hops
+  # where the hostname in the URL doesn't match the *.w1.lv cert SAN
+  # (specifically: 10.10.5.10:9001 / :9011 for MinIO consoles). Traefik
+  # still checks the cert itself is valid and trusted; just not hostname.
+  serversTransports:
+    insecure-backend:
+      insecureSkipVerify: true
 
 tls:
   certificates:

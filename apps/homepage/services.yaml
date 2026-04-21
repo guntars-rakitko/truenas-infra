@@ -22,13 +22,22 @@
         icon: traefik.png
         href: https://traefik-nas.w1.lv/dashboard/
         description: "Mgmt-plane reverse proxy"
-        siteMonitor: https://traefik-nas.w1.lv/ping
+        # /api/http/routers returns JSON via api@internal — always 200
+        # when Traefik is up. /ping would need --ping=true flag in compose;
+        # /api works unauthenticated on Traefik v3 dashboards.
+        siteMonitor: https://traefik-nas.w1.lv/api/http/routers
 
     - MeshCentral:
         icon: meshcentral.png
         href: https://mc.w1.lv/
         description: "AMT / KVM management (6 nodes)"
-        siteMonitor: https://mc.w1.lv/
+        # No siteMonitor — MeshCentral redirects every path to :4430
+        # (a leftover from when it ran its own TLS; config.json's
+        # TlsOffload should suppress this but doesn't take effect on
+        # our install). Every redirect target :4430 has no listener,
+        # so any Homepage probe reports 500. Clickable link works
+        # correctly in the browser; just no dot status on the card.
+        # Revisit when we fix MC's config.json TlsOffload behavior.
 
 - NAS:
     - TrueNAS:
