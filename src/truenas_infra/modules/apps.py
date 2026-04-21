@@ -511,6 +511,14 @@ WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 HOMEPAGE_CONFIG_LOCAL_DIR = Path("apps/homepage")
 HOMEPAGE_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/homepage"
 
+# MeshCentral config.json — our canonical overrides for TlsOffload,
+# RedirPort, Cert etc. On first-run MC writes its own config; this file
+# overwrites it. MC reads config.json ONLY on fresh container start —
+# operator must `app.stop` + `app.start` after changes here (NOT
+# `app.redeploy`, which keeps the process alive).
+MESHCENTRAL_CONFIG_PATH = Path("apps/meshcentral/config.json")
+MESHCENTRAL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/meshcentral/data"
+
 
 def run(
     cli: Any,
@@ -545,6 +553,8 @@ def run(
         _ensure_wiki_config_via_ctx(cli, ctx, log)
     if only in (None, "homepage"):
         _ensure_homepage_config_via_ctx(cli, ctx, log)
+    if only in (None, "meshcentral"):
+        _ensure_meshcentral_config_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -645,6 +655,55 @@ def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     )
     log.info("wiki_config_ensured", path=remote,
              action=diff.action, changed=diff.changed)
+
+
+def _ensure_meshcentral_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload apps/meshcentral/config.json so MC uses our canonical
+    TlsOffload / RedirPort / Cert settings (rather than whatever MC
+    self-generated on first run).
+
+    IMPORTANT: MC only reads config.json on FRESH container start. After
+    this helper changes the file, operator must:
+
+        midclt call app.stop meshcentral
+        midclt call app.start meshcentral
+
+    `app.redeploy` is NOT enough — the process stays alive across it
+    and keeps using in-memory config. See apps/meshcentral/config.json
+    header comment for the rationale on each setting.
+    """
+    if not MESHCENTRAL_CONFIG_PATH.exists():
+        log.warning("meshcentral_config_skipped",
+                    reason="source_missing", path=str(MESHCENTRAL_CONFIG_PATH))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    remote = f"{MESHCENTRAL_CONFIG_REMOTE_DIR}/config.json"
+    diff = ensure_file_on_nas(
+        cli, _upload,
+        local_path=MESHCENTRAL_CONFIG_PATH, remote_path=remote,
+        mode=0o644, apply=ctx.apply,
+    )
+    log.info("meshcentral_config_ensured", path=remote,
+             action=diff.action, changed=diff.changed)
+    if diff.changed:
+        log.warning(
+            "meshcentral_config_needs_restart",
+            msg="MC only reads config.json on full container start; "
+                "run `midclt call app.stop meshcentral && midclt call "
+                "app.start meshcentral` to pick up the new values.",
+        )
 
 
 def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

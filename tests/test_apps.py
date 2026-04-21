@@ -289,6 +289,7 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
         for p in sorted(_P("apps/homepage").glob("*.yaml"))
         if p.name != "docker-compose.yaml" and not p.name.endswith(".sops.yaml")
     }
+    meshcentral_config_size = _P("apps/meshcentral/config.json").stat().st_size
 
     # Cronjob.query for tls-rotate — pre-shaped to match expected command
     # so ensure_cronjob reports noop without needing a cronjob.update call.
@@ -309,6 +310,8 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
             {"size": homepage_yaml_sizes[name], "mode": 0o100644}
             for name in sorted(homepage_yaml_sizes)
         ],
+        # Step 2a: meshcentral config.json size-match → no upload.
+        {"size": meshcentral_config_size, "mode": 0o100644},
         [],                                                      # app.query
         {"id": "netboot-xyz"},                                   # app.create
         {"size": script_size, "mode": 0o100755},                # filesystem.stat script
