@@ -22,6 +22,10 @@
           url: http://router.w1.lv
           username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+          # Drop numberOfLeases — noise ("0") on devices that don't
+          # serve DHCP (switches, AP, LTE modem). Router still runs
+          # DHCP but leases count isn't dashboard-grade info anyway.
+          fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     - Switch (CRS310 — data):
         icon: mikrotik.png
@@ -33,6 +37,7 @@
           url: http://sw-data.w1.lv
           username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+          fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     - Switch (CRS326 — mgmt):
         icon: mikrotik.png
@@ -44,6 +49,7 @@
           url: http://sw-mgmt.w1.lv
           username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+          fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     - WiFi AP (cAP ax):
         icon: mikrotik.png
@@ -55,6 +61,7 @@
           url: http://wifi.w1.lv
           username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+          fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     - LTE Modem (LMT 5G):
         icon: mikrotik.png
@@ -66,6 +73,7 @@
           url: http://lte.w1.lv
           username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
           password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
+          fields: ["uptime", "cpuLoad", "memoryUsed"]
 
     - NAS Traefik:
         icon: traefik.png
