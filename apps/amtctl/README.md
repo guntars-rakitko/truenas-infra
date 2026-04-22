@@ -13,12 +13,11 @@ nodes. FastAPI sidecar polls each node's ME firmware via WS-MAN every
 
 | Path | Role |
 |---|---|
-| `amt.py` | Async WS-MAN client (httpx + digest auth + SOAP/XML) — also reused by `../../tools/amt_fleet_{audit,apply}.py` |
+| `amt.py` | **Symlink** → `../../../bios-config/amt/amt.py`. Single source of truth for the WS-MAN client; bios-config owns it since it's shared between this dashboard and the fleet-provisioning tool under `bios-config/tools/`. |
 | `main.py` | FastAPI app: background poller + endpoints + static UI serve |
 | `web/index.html` | Single-file dashboard (vanilla JS + CSS, no build) |
-| `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries |
-| `canonical.yaml` | Fleet-wide AMT configuration (applied by `amt_fleet_apply.py`) |
-| `secrets.sops.yaml` | AMT admin creds (SOPS-encrypted) |
+| `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries. Shared with `bios-config` AMT tools (cross-repo read). |
+| `secrets.sops.yaml` | AMT admin creds (SOPS-encrypted). Shared with `bios-config` AMT tools. |
 | `docker-compose.yaml` | python:3.13-alpine + runtime venv bootstrap |
 | `Dockerfile` | Reference (not used — compose does runtime install) |
 
@@ -64,50 +63,36 @@ the AMT-only view working.
 
 See kube-infra CLAUDE.md for the full plan + prerequisites.
 
-## Fleet AMT provisioning (canonical state)
+## Fleet AMT provisioning (lives in bios-config)
 
-Two laptop-run tools under `../../tools/` manage fleet-wide AMT
-configuration — like `bios-config` but for AMT/ME settings instead of
-BIOS NVRAM.
+The provisioning side of AMT configuration — declaring canonical
+state + a tool to assert it — lives in the sibling `bios-config`
+repo, alongside the analogous BIOS NVRAM flow. This dashboard stays
+here (it's a NAS-deployed monitoring service); the fleet tools ship
+with bios-config because they're "set the hardware to a canonical
+state" tools, which is bios-config's whole thesis.
 
-- **`tools/amt_fleet_audit.py`** — read-only diff across all 6 nodes.
-  Shows drift from the canonical in `canonical.yaml`.
-- **`tools/amt_fleet_apply.py`** — asserts canonical state. Idempotent
-  (Put with read-modify-write + read-back verification). Use `--dry-run`
-  to preview; `--apply` to write; `--node <name>` to target one box.
+See: `~/Documents/github/bios-config/tools/amt_fleet_{audit,apply}.py`
+and `~/Documents/github/bios-config/amt/canonical.yaml`.
 
-```sh
-cd ~/Documents/github/truenas-infra
-# Preview fleet drift
-uv run --python 3.11 --with httpx --with anyio --with pyyaml \
-    python tools/amt_fleet_apply.py --dry-run
+The two repos share:
+- `amt.py` — lives in bios-config, symlinked into this directory.
+- `nodes.yaml` — lives here (dashboard is the primary owner of the
+  fleet inventory); bios-config's tools read it cross-repo.
+- `secrets.sops.yaml` — lives here with the SOPS age keys;
+  bios-config's tools shell out to `sops -d` against this path.
 
-# Apply canonical across all 6 nodes
-uv run --python 3.11 --with httpx --with anyio --with pyyaml \
-    python tools/amt_fleet_apply.py --apply
-```
-
-What `canonical.yaml` manages:
-
-| Class | Why |
-|---|---|
-| `AMT_GeneralSettings` | Identity (HostName/Domain), DDNS disabled, ping/RMCP responses, network-interface state |
-| `AMT_EthernetPortSettings` | DHCP on, shared MAC/IP with OS side (transparent AMT on mgmt VLAN) |
-| `IPS_KVMRedirectionSettingData` | No legacy 5900/VNC, no OptIn prompt, 120-min KVM session timeout |
-| `AMT_TimeSynchronizationService` (method) | Force AMT clock to manager UTC every apply — audit logs get real timestamps |
-
-Findings from the 2026-04-22 discovery:
+Discovery findings (2026-04-22 session; see bios-config for details):
 
 - `HostOSFQDN` is **not remotely writable** via WS-MAN — only
   LMS-writable. Talos has no LMS agent, so whatever ME has latched
   stays latched. prd-01 has a stale `dev-srv-03.w1.lv` from a prior
-  OS install; harmless because effective AMT FQDN resolves correctly
-  via `HostName + DomainName + SharedFQDN=true`. `put_singleton` has
+  OS install; harmless because effective AMT FQDN resolves via
+  `HostName + DomainName + SharedFQDN=true`. `put_singleton` has
   read-back verification that flags silent refusals with ⚠.
 - AMT clocks across the fleet were 10-22 years off (prd-01 at 2004,
   rest at 2016). Every apply run force-syncs via
-  `SetHighAccuracyTimeSynch` — no cronjob needed unless drift
-  reappears.
+  `SetHighAccuracyTimeSynch`.
 
 ## Operator notes
 
