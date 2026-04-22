@@ -23,7 +23,8 @@
 :start
 menu hw-validation -- stress test
 item --gap -- --- Profiles ---
-item quick     Phase A smoke test (guards vs real disks, ~2 min)
+item quick     Phase A smoke test (guards round-trip on real disks, ~2 min)
+item cpu       Phase B-alpha CPU stress (60s all-core + thermal telemetry)
 item --gap -- --- Advanced ---
 item hold      Boot image, drop to shell (operator debug)
 item --gap -- ---
@@ -77,6 +78,13 @@ goto ${target}
 echo Booting hw-validation quick profile (guard smoke test)...
 imgfree
 kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=quick
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+boot || goto fail
+
+:cpu
+echo Booting hw-validation cpu profile (Phase B-alpha — 60s stress-ng all-core)...
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=cpu
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
