@@ -30,10 +30,17 @@ nfs:
     - name: stress-results
       path: /mnt/tank/system/stress-results
       networks: [10.10.5.0/24]
-      # hw-validation runs as root in a netboot live shell; map to
-      # nobody/nogroup on NAS storage so reports aren't owned by root.
-      maproot_user: nobody
-      maproot_group: nogroup
+      # hw-validation runs as root in a netboot live shell. Initially
+      # mapped to nobody/nogroup as a cosmetic preference, but the
+      # dataset's default ownership (root:wheel, mode 0755) then rejects
+      # writes with EACCES — the declarative datasets module has no
+      # owner/mode field to paper over it. Map root → root instead; the
+      # mgmt-VLAN ACL (10.10.5.0/24 only) is our security boundary per
+      # the hw-validation plan's non-goal #4 (same posture as longhorn-*
+      # exports). Reports land as root, which is fine for read-only
+      # consumption by a future dashboard.
+      maproot_user: root
+      maproot_group: wheel
 
 smb:
   service:
