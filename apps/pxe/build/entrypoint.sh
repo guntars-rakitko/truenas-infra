@@ -17,6 +17,20 @@
 set -eu
 
 echo "[entrypoint] Homelab PXE starting"
+
+# Copy the image-baked iPXE binary into /srv/tftp so dnsmasq can serve
+# it. /srv/tftp is bind-mounted from the NAS (rw) — it shadows anything
+# the Dockerfile placed at /srv/tftp, so the binary lives at /opt/ipxe-bin
+# until we put it in place here.
+#
+# Idempotent: `install` replaces the file atomically. If the NAS-side
+# copy already matches (subsequent starts after first run), the content
+# is the same but we overwrite anyway — it's <200 KB, the time cost is
+# negligible.
+install -o nbxyz -g nbxyz -m 0644 \
+    /opt/ipxe-bin/ipxe.efi /srv/tftp/ipxe.efi
+echo "[entrypoint] ipxe.efi deployed to /srv/tftp/ipxe.efi"
+
 echo "[entrypoint] dnsmasq serving TFTP from /srv/tftp (port 69/udp)"
 echo "[entrypoint] nginx  serving HTTP from /srv/http (port 80)"
 

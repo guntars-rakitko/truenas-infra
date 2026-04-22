@@ -6,17 +6,25 @@ services:
     # Build context lives on the NAS at the path below (uploaded by
     # `phase apps --apply`). First start takes ~5 min to clone iPXE
     # + compile; subsequent starts use Docker layer cache.
+    #
+    # `pull_policy: build` forces docker-compose to skip the pre-pull
+    # step — without it, compose treats `image:` as "pull this first"
+    # and fails because the tag isn't on any registry (it's local).
     build:
       context: /mnt/tank/system/apps-config/pxe/build
       dockerfile: Dockerfile
-    image: homelab/pxe:latest
+    image: homelab-pxe:latest
+    pull_policy: build
     ports:
       - "10.10.5.10:69:69/udp"   # TFTP — iPXE binary + menu tree
       - "10.10.5.10:8080:80"     # HTTP — cached distro/utility assets
     volumes:
-      # TFTP root — our menu tree (menu.ipxe, boot.cfg, menus/*.ipxe).
-      # iPXE binary baked into the image by the Dockerfile COPY.
-      # Uploaded by `phase apps --apply` (apps.py::ensure_pxe_menu_files).
-      - /mnt/tank/system/pxe/tftp:/srv/tftp:ro
+      # TFTP root — our menu tree (uploaded by phase apps --apply) plus
+      # the image-baked iPXE binary (written here by entrypoint.sh on
+      # each container start). Must be rw so the entrypoint's install
+      # of ipxe.efi can write; menu files are treated as read-only by
+      # the container (our stack only reads from /srv/tftp).
+      - /mnt/tank/system/pxe/tftp:/srv/tftp:rw
       # HTTP root — cached distro/utility assets (pxe-cache cronjob).
+      # Read-only — the container doesn't write here.
       - /mnt/tank/system/pxe/http:/srv/http:ro

@@ -1126,7 +1126,7 @@ def _ensure_pxe_cache_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     else:
         import hashlib
         local_sha = hashlib.sha256(bios_img.read_bytes()).hexdigest()[:16]
-        _upload(
+        _pxe_upload_helper(cli, ctx)(
             local_path=bios_img, remote_path=BIOS_APPLY_REMOTE_PATH,
             mode=0o644,
         )

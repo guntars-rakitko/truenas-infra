@@ -25,23 +25,16 @@
 # ──────────────────────────────────────────────────────────────────
 FROM alpine:3.20 AS ipxe-builder
 
-# iPXE build dependencies. Keep minimal — the builder layer isn't
-# pushed, only the produced .efi is COPYied into the runtime image.
+# iPXE EFI build dependencies. Alpine package names (not Debian).
+# Minimum set: toolchain + perl (for iPXE's pre-build scripts) + git.
+# We don't need mtools/xorriso/xz — those are for disk-image creation
+# which iPXE's EFI target doesn't use.
 RUN apk add --no-cache \
         bash \
         build-base \
-        binutils \
-        coreutils \
         git \
-        gcc \
-        make \
-        musl-dev \
-        perl \
         linux-headers \
-        mtools \
-        xz-utils \
-        xorriso \
-        liblzma
+        perl
 
 # Pin iPXE to a specific upstream commit. This commit is on the
 # 1.21.x series (pre the 2.0.0 USB HID rewrite) — USB keyboard works
@@ -88,8 +81,14 @@ RUN addgroup -g 1000 nbxyz && \
     chown -R nbxyz:nbxyz /srv/tftp /srv/http /var/log/nginx /var/run/nginx
 
 # Our custom iPXE binary — built in stage 1.
-COPY --from=ipxe-builder /ipxe/src/bin-x86_64-efi/snponly.efi /srv/tftp/ipxe.efi
-RUN chown nbxyz:nbxyz /srv/tftp/ipxe.efi
+#
+# Lives at /opt/ipxe-bin/ipxe.efi (not /srv/tftp/) because /srv/tftp
+# is bind-mounted from the NAS at container start, which shadows any
+# files the image places there. The entrypoint script copies this
+# binary into /srv/tftp/ipxe.efi on each container start — after the
+# first run it's a no-op (content-identical overwrite).
+COPY --from=ipxe-builder /ipxe/src/bin-x86_64-efi/snponly.efi /opt/ipxe-bin/ipxe.efi
+RUN chown -R nbxyz:nbxyz /opt/ipxe-bin
 
 COPY entrypoint.sh /entrypoint.sh
 COPY nginx.conf    /etc/nginx/nginx.conf
