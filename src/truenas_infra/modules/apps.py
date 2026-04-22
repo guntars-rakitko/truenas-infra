@@ -384,33 +384,80 @@ def ensure_netboot_menu_files(
     upload_fn: Any,
     *,
     boot_cfg_path: Path,
-    custom_ipxe_path: Path,
+    menu_ipxe_path: Path,
+    submenus_dir: Path,
     config_menus_dir: str,
-    assets_dir: str,
     apply: bool,
 ) -> tuple[Diff, ...]:
-    """Upload the homelab netboot.xyz overrides:
+    """Upload the Homelab PXE menu tree to the netboot.xyz container's
+    /config/menus directory (TFTP root):
 
-    - boot.cfg → <config_menus_dir>/boot.cfg (0644): chain-loaded by menu.ipxe
-      before the menu renders. Sets `custom_url` so the main-menu "Custom
-      URL Menu" item appears.
-    - custom.ipxe → <assets_dir>/custom.ipxe (0644): served over HTTP :8080
-      by the netboot.xyz container. Chained when the user clicks "Custom
-      URL Menu" (netboot.xyz appends /custom.ipxe to the URL).
+    - boot.cfg → <config_menus_dir>/boot.cfg — loaded first by menu.ipxe
+      for runtime vars (site_name, sigs_enabled, mirror URLs, live_endpoint).
+    - menu.ipxe → <config_menus_dir>/menu.ipxe — Homelab top-level menu,
+      overrides the upstream netboot.xyz 2.0.89 menu.ipxe that the
+      container's init.sh extracts from the menus tarball into the same
+      directory on first start. Ours controls display + flow.
+    - <submenus_dir>/*.ipxe → <config_menus_dir>/*.ipxe (flat) — our own
+      sub-menus (talos.ipxe, bios.ipxe). They're flat (not in a menus/
+      subdirectory remotely) because iPXE chains them with relative
+      paths from menu.ipxe and the CWD is the TFTP root.
+
+    Upstream's utils-efi.ipxe / linux.ipxe / live.ipxe stay in place and
+    are chained directly from menu.ipxe. boot.cfg sets sigs_enabled=false
+    so their :verify_sigs steps (which would fail EACCES due to the
+    post-3.0.0 cert rotation) are skipped.
+
+    All files uploaded at 0o644 AND chowned to uid=1000, gid=1000. The
+    chown is mandatory: the netboot.xyz container's dnsmasq runs as
+    user `nbxyz` (UID 1000) with `--tftp-secure`, which refuses to serve
+    files not readable by its own UID. Files that already existed from
+    the container's init.sh extraction preserve their nbxyz ownership
+    across filesystem.put updates, but newly created files land as
+    root:root and are invisible to TFTP until chowned.
+
+    Idempotent via size+mode check in ensure_file_on_nas. If submenus_dir
+    does not exist, skip the sub-menu loop — phase apps stays working
+    for bare-clone CI.
     """
-    boot_cfg_remote = f"{config_menus_dir.rstrip('/')}/{boot_cfg_path.name}"
-    custom_ipxe_remote = f"{assets_dir.rstrip('/')}/{custom_ipxe_path.name}"
-    d1 = ensure_file_on_nas(
-        cli, upload_fn,
-        local_path=boot_cfg_path, remote_path=boot_cfg_remote,
-        mode=0o644, apply=apply,
-    )
-    d2 = ensure_file_on_nas(
-        cli, upload_fn,
-        local_path=custom_ipxe_path, remote_path=custom_ipxe_remote,
-        mode=0o644, apply=apply,
-    )
-    return (d1, d2)
+    # UID/GID of the `nbxyz` user baked into the netboot.xyz container.
+    # Keep in sync with the container's init.sh (PUID/PGID defaults).
+    NBXYZ_UID, NBXYZ_GID = 1000, 1000
+
+    def upload_and_chown(local_path: Path, remote_path: str) -> Diff:
+        diff = ensure_file_on_nas(
+            cli, upload_fn,
+            local_path=local_path, remote_path=remote_path,
+            mode=0o644, apply=apply,
+        )
+        # Chown only when we actually wrote (create/update). No-op diffs
+        # mean the file already exists with matching content; ownership
+        # is presumed correct from a prior run.
+        if apply and diff.changed:
+            cli.call("filesystem.chown", {
+                "path": remote_path, "uid": NBXYZ_UID, "gid": NBXYZ_GID,
+            })
+        return diff
+
+    diffs: list[Diff] = []
+
+    diffs.append(upload_and_chown(
+        boot_cfg_path,
+        f"{config_menus_dir.rstrip('/')}/{boot_cfg_path.name}",
+    ))
+    diffs.append(upload_and_chown(
+        menu_ipxe_path,
+        f"{config_menus_dir.rstrip('/')}/{menu_ipxe_path.name}",
+    ))
+
+    if submenus_dir.is_dir():
+        for sub in sorted(submenus_dir.glob("*.ipxe")):
+            diffs.append(upload_and_chown(
+                sub,
+                f"{config_menus_dir.rstrip('/')}/{sub.name}",
+            ))
+
+    return tuple(diffs)
 
 
 def ensure_talos_updater(
@@ -477,11 +524,12 @@ TALOS_UPDATER_SCRIPT_PATH = Path("apps/netboot-xyz/talos-updater.sh")
 TALOS_UPDATER_SCHEMATIC_PATH = Path("apps/netboot-xyz/schematic.yaml")
 TALOS_UPDATER_CONFIG_PATH = Path("config/talos.yaml")
 
-# Homelab netboot.xyz menu overrides — committed in this repo, uploaded
-# to the netboot.xyz container's /config and /assets volumes on every
-# `phase apps --apply`.
+# Homelab PXE menu tree — committed in this repo, uploaded to the
+# netboot.xyz container's /config/menus volume (TFTP root) on every
+# `phase apps --apply`. Overrides upstream netboot.xyz 2.0.89 menus.
 NETBOOT_BOOT_CFG_PATH = Path("apps/netboot-xyz/boot.cfg")
-NETBOOT_CUSTOM_IPXE_PATH = Path("apps/netboot-xyz/custom.ipxe")
+NETBOOT_MENU_IPXE_PATH = Path("apps/netboot-xyz/menu.ipxe")
+NETBOOT_SUBMENUS_DIR = Path("apps/netboot-xyz/menus")
 NETBOOT_CONFIG_MENUS_DIR = "/mnt/tank/system/pxe/config/menus"
 NETBOOT_ASSETS_DIR = "/mnt/tank/system/pxe/assets"
 
@@ -880,10 +928,10 @@ def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
 
 def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
-    if not NETBOOT_BOOT_CFG_PATH.exists() or not NETBOOT_CUSTOM_IPXE_PATH.exists():
+    if not NETBOOT_BOOT_CFG_PATH.exists() or not NETBOOT_MENU_IPXE_PATH.exists():
         log.warning("netboot_menu_skipped",
                     boot_cfg_exists=NETBOOT_BOOT_CFG_PATH.exists(),
-                    custom_ipxe_exists=NETBOOT_CUSTOM_IPXE_PATH.exists())
+                    menu_ipxe_exists=NETBOOT_MENU_IPXE_PATH.exists())
         return
 
     from truenas_infra.client import upload_file
@@ -898,20 +946,24 @@ def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             local_path=local_path, remote_path=remote_path, mode=mode,
         )
 
-    boot_diff, custom_diff = ensure_netboot_menu_files(
+    diffs = ensure_netboot_menu_files(
         cli, _upload,
         boot_cfg_path=NETBOOT_BOOT_CFG_PATH,
-        custom_ipxe_path=NETBOOT_CUSTOM_IPXE_PATH,
+        menu_ipxe_path=NETBOOT_MENU_IPXE_PATH,
+        submenus_dir=NETBOOT_SUBMENUS_DIR,
         config_menus_dir=NETBOOT_CONFIG_MENUS_DIR,
-        assets_dir=NETBOOT_ASSETS_DIR,
         apply=ctx.apply,
     )
-    log.info("netboot_boot_cfg_ensured",
-             path=f"{NETBOOT_CONFIG_MENUS_DIR}/boot.cfg",
-             action=boot_diff.action, changed=boot_diff.changed)
-    log.info("netboot_custom_ipxe_ensured",
-             path=f"{NETBOOT_ASSETS_DIR}/custom.ipxe",
-             action=custom_diff.action, changed=custom_diff.changed)
+    # Reconstruct the upload order so we can log per-file. Matches the
+    # exact sequence inside ensure_netboot_menu_files: boot.cfg, then
+    # menu.ipxe, then sorted submenus/*.ipxe.
+    names: list[str] = [NETBOOT_BOOT_CFG_PATH.name, NETBOOT_MENU_IPXE_PATH.name]
+    if NETBOOT_SUBMENUS_DIR.is_dir():
+        names.extend(p.name for p in sorted(NETBOOT_SUBMENUS_DIR.glob("*.ipxe")))
+    for name, diff in zip(names, diffs):
+        log.info("netboot_menu_ensured",
+                 path=f"{NETBOOT_CONFIG_MENUS_DIR}/{name}",
+                 action=diff.action, changed=diff.changed)
 
     # bios-config bios-apply.img (optional; sibling repo build artefact).
     # No-op when the sibling repo isn't checked out at ../bios-config —

@@ -275,10 +275,17 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
     )
     expected_schedule = {"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "*"}
 
-    # Menu file sizes so the boot.cfg + custom.ipxe stat calls appear as
-    # already-uploaded (avoids a live upload attempt during the test).
-    boot_cfg_size = _P("apps/netboot-xyz/boot.cfg").stat().st_size
-    custom_ipxe_size = _P("apps/netboot-xyz/custom.ipxe").stat().st_size
+    # Menu-tree file sizes so the stat calls for boot.cfg + menu.ipxe +
+    # every menus/*.ipxe appear as already-uploaded (avoids live upload
+    # attempts during the test). Order must match ensure_netboot_menu_files:
+    # boot.cfg, menu.ipxe, then sorted submenus.
+    menu_tree_sizes = [
+        ("boot.cfg",  _P("apps/netboot-xyz/boot.cfg").stat().st_size),
+        ("menu.ipxe", _P("apps/netboot-xyz/menu.ipxe").stat().st_size),
+    ] + [
+        (p.name, p.stat().st_size)
+        for p in sorted(_P("apps/netboot-xyz/menus").glob("*.ipxe"))
+    ]
     tls_export_size = _P("apps/tls/tls-export.sh").stat().st_size
     tls_rotate_size = _P("apps/tls/tls-rotate.sh").stat().st_size
     wiki_nginx_size = _P("apps/wiki/nginx.conf").stat().st_size
@@ -334,8 +341,12 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
             "id": 1, "description": "talos-updater", "enabled": True,
             "command": expected_cmd, "user": "root", "schedule": expected_schedule,
         }],
-        {"size": boot_cfg_size, "mode": 0o100644},              # filesystem.stat boot.cfg
-        {"size": custom_ipxe_size, "mode": 0o100644},           # filesystem.stat custom.ipxe
+        # Menu-tree: boot.cfg, menu.ipxe, then every menus/*.ipxe in
+        # sorted order (matches ensure_netboot_menu_files).
+        *[
+            {"size": size, "mode": 0o100644}
+            for _name, size in menu_tree_sizes
+        ],
         {"size": tls_export_size, "mode": 0o100755},            # filesystem.stat tls-export
         {"size": tls_rotate_size, "mode": 0o100755},            # filesystem.stat tls-rotate
         [{                                                       # cronjob.query tls-rotate
@@ -628,18 +639,38 @@ def test_ensure_tls_rotate_uploads_both_scripts_and_registers_hourly_cronjob(
     assert len(diffs) == 3  # export + rotate + cronjob
 
 
-def test_ensure_netboot_menu_files_uploads_boot_cfg_and_custom_ipxe(tmp_path: Path) -> None:
-    """phase apps uploads boot.cfg to /config/menus/ and custom.ipxe to /assets/."""
+def _stat_missing_chown_ok(method, *args, **kwargs):
+    """Mock side-effect: raise ClientException('missing') for filesystem.stat
+    (simulates file-not-on-NAS → triggers upload), succeed silently for
+    filesystem.chown and everything else. Used by the netboot-menu tests."""
     from truenas_api_client.exc import ClientException
+    if method == "filesystem.stat":
+        raise ClientException("missing")
+    return None
+
+
+def test_ensure_netboot_menu_files_uploads_full_menu_tree(tmp_path: Path) -> None:
+    """phase apps uploads the Homelab PXE menu tree — boot.cfg, menu.ipxe
+    (overriding the upstream 2.0.89 extracted one), and every *.ipxe file
+    under apps/netboot-xyz/menus/ — all flat under /config/menus/ (TFTP root).
+
+    After each upload it chowns the file to uid/gid 1000 (nbxyz) so the
+    container's dnsmasq --tftp-secure can serve it. No custom.ipxe upload
+    — the Custom-URL indirection is retired now that our menu.ipxe handles
+    Talos / BIOS / etc. directly."""
     from truenas_infra.modules.apps import ensure_netboot_menu_files
 
     boot_cfg = tmp_path / "boot.cfg"
-    boot_cfg.write_bytes(b"#!ipxe\nset custom_url http://10.10.5.10:8080\n")
-    custom_ipxe = tmp_path / "custom.ipxe"
-    custom_ipxe.write_bytes(b"#!ipxe\n:start\nmenu Homelab\nexit\n")
+    boot_cfg.write_bytes(b"#!ipxe\nset site_name Homelab\n")
+    menu_ipxe = tmp_path / "menu.ipxe"
+    menu_ipxe.write_bytes(b"#!ipxe\n:main\nmenu Homelab\nchoose x\n")
+    submenus_dir = tmp_path / "menus"
+    submenus_dir.mkdir()
+    (submenus_dir / "talos.ipxe").write_bytes(b"#!ipxe\nchain ...\n")
+    (submenus_dir / "bios.ipxe").write_bytes(b"#!ipxe\nsanboot ...\n")
 
     cli = MagicMock()
-    cli.call.side_effect = ClientException("missing")
+    cli.call.side_effect = _stat_missing_chown_ok
 
     uploads: list = []
     def fake_upload(**kw):
@@ -648,18 +679,110 @@ def test_ensure_netboot_menu_files_uploads_boot_cfg_and_custom_ipxe(tmp_path: Pa
     diffs = ensure_netboot_menu_files(
         cli, fake_upload,
         boot_cfg_path=boot_cfg,
-        custom_ipxe_path=custom_ipxe,
+        menu_ipxe_path=menu_ipxe,
+        submenus_dir=submenus_dir,
         config_menus_dir="/mnt/tank/system/pxe/config/menus",
-        assets_dir="/mnt/tank/system/pxe/assets",
         apply=True,
     )
 
-    # Two uploads expected, both 0o644.
-    assert len(uploads) == 2
+    # 4 uploads: boot.cfg + menu.ipxe + 2 sub-menus, all 0o644, all flat
+    # under config_menus_dir (sub-menus are NOT placed in a menus/
+    # subdirectory remotely — iPXE chains them via relative path from
+    # menu.ipxe so they must live alongside it).
+    assert len(uploads) == 4
     paths = {u["remote_path"]: u["mode"] for u in uploads}
-    assert paths["/mnt/tank/system/pxe/config/menus/boot.cfg"] == 0o644
-    assert paths["/mnt/tank/system/pxe/assets/custom.ipxe"] == 0o644
+    assert paths == {
+        "/mnt/tank/system/pxe/config/menus/boot.cfg":   0o644,
+        "/mnt/tank/system/pxe/config/menus/menu.ipxe":  0o644,
+        "/mnt/tank/system/pxe/config/menus/talos.ipxe": 0o644,
+        "/mnt/tank/system/pxe/config/menus/bios.ipxe":  0o644,
+    }
     assert all(d.changed for d in diffs)
+
+    # Every uploaded file must be followed by a filesystem.chown to 1000:1000
+    # so dnsmasq --tftp-secure can read it. Count chown calls against the 4
+    # uploads.
+    chown_calls = [c for c in cli.call.call_args_list
+                   if c.args and c.args[0] == "filesystem.chown"]
+    assert len(chown_calls) == 4
+    chowned_paths = {c.args[1]["path"] for c in chown_calls}
+    assert chowned_paths == set(paths.keys())
+    for c in chown_calls:
+        assert c.args[1] == {"path": c.args[1]["path"], "uid": 1000, "gid": 1000}
+
+
+def test_ensure_netboot_menu_files_skips_chown_when_file_already_matches(tmp_path: Path) -> None:
+    """Idempotency: if ensure_file_on_nas reports noop (size+mode match),
+    don't bother with a filesystem.chown — the file already exists and
+    ownership was presumably set on the original create. This keeps
+    repeated `phase apps --apply` runs fast."""
+    from truenas_infra.modules.apps import ensure_netboot_menu_files
+
+    boot_cfg = tmp_path / "boot.cfg"
+    boot_cfg.write_bytes(b"#!ipxe\n")
+    menu_ipxe = tmp_path / "menu.ipxe"
+    menu_ipxe.write_bytes(b"#!ipxe\n")
+    submenus_dir = tmp_path / "menus"
+    submenus_dir.mkdir()
+
+    # Return a stat that matches the local files → ensure_file_on_nas
+    # produces noop diffs, nothing uploaded, no chown.
+    cli = MagicMock()
+    def _stat_matches(method, *args, **kwargs):
+        if method == "filesystem.stat":
+            # The real stat payload includes mode + size; mode 0o100644
+            # is "regular file with 0o644 perms" (stat(2) st_mode format).
+            path = args[0]
+            size = (tmp_path / Path(path).name).stat().st_size
+            return {"size": size, "mode": 0o100644}
+        return None
+    cli.call.side_effect = _stat_matches
+
+    uploads: list = []
+    diffs = ensure_netboot_menu_files(
+        cli, lambda **kw: uploads.append(kw),
+        boot_cfg_path=boot_cfg,
+        menu_ipxe_path=menu_ipxe,
+        submenus_dir=submenus_dir,
+        config_menus_dir="/mnt/tank/system/pxe/config/menus",
+        apply=True,
+    )
+
+    assert len(uploads) == 0, "size+mode match → no upload"
+    assert all(d.action == "noop" for d in diffs)
+    # No chown calls when files are already correct.
+    chown_calls = [c for c in cli.call.call_args_list
+                   if c.args and c.args[0] == "filesystem.chown"]
+    assert len(chown_calls) == 0
+
+
+def test_ensure_netboot_menu_files_missing_submenus_dir_skips_submenus(tmp_path: Path) -> None:
+    """If the submenus directory doesn't exist, upload boot.cfg + menu.ipxe
+    only — don't raise. This keeps phase apps working for operators who
+    haven't checked out the submenu tree (e.g. bare-clone CI)."""
+    from truenas_infra.modules.apps import ensure_netboot_menu_files
+
+    boot_cfg = tmp_path / "boot.cfg"
+    boot_cfg.write_bytes(b"#!ipxe\n")
+    menu_ipxe = tmp_path / "menu.ipxe"
+    menu_ipxe.write_bytes(b"#!ipxe\n")
+    submenus_dir = tmp_path / "menus-does-not-exist"
+
+    cli = MagicMock()
+    cli.call.side_effect = _stat_missing_chown_ok
+
+    uploads: list = []
+    diffs = ensure_netboot_menu_files(
+        cli, lambda **kw: uploads.append(kw),
+        boot_cfg_path=boot_cfg,
+        menu_ipxe_path=menu_ipxe,
+        submenus_dir=submenus_dir,
+        config_menus_dir="/mnt/tank/system/pxe/config/menus",
+        apply=True,
+    )
+
+    assert len(uploads) == 2
+    assert len(diffs) == 2
 
 
 def test_ensure_talos_updater_all_noop_when_state_matches(tmp_path: Path) -> None:
