@@ -1,0 +1,33 @@
+#!ipxe
+# BIOS apply — sanboots the FAT disk image built by
+# bios-config/tools/build-bios-apply-img.sh. UEFI firmware mounts
+# the image as a virtual disk, boots EFI/BOOT/BOOTX64.EFI, which
+# auto-runs startup.nsh → setup_var.efi → applies settings.txt.
+#
+# See the bios-apply PXE runbook on the wiki for the operator flow.
+
+:start
+echo
+echo Applying canonical BIOS config via bios-config MVP...
+echo Source: github.com/guntars-rakitko/bios-config
+echo
+sanboot --keep ${cache_url}/bios-config/bios-apply.img || goto fail
+exit
+
+:fail
+echo
+echo ERROR: sanboot ${cache_url}/bios-config/bios-apply.img failed.
+echo
+echo Troubleshooting:
+echo   * Is the image on the NAS?
+echo     curl -I ${cache_url}/bios-config/bios-apply.img
+echo     ls -la /mnt/tank/system/pxe/http/bios-config/bios-apply.img
+echo
+echo   * Rebuild and re-upload:
+echo     cd ~/Documents/github/bios-config && ./tools/build-bios-apply-img.sh
+echo     cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+echo
+echo   * Runbook: https://wiki.w1.lv/runbooks/bios-apply-pxe-setup/
+echo
+prompt Press any key to return to the main menu...
+exit 1

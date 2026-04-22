@@ -1,0 +1,22 @@
+services:
+  pxe:
+    container_name: pxe
+    restart: unless-stopped
+    network_mode: bridge
+    # Build context lives on the NAS at the path below (uploaded by
+    # `phase apps --apply`). First start takes ~5 min to clone iPXE
+    # + compile; subsequent starts use Docker layer cache.
+    build:
+      context: /mnt/tank/system/apps-config/pxe/build
+      dockerfile: Dockerfile
+    image: homelab/pxe:latest
+    ports:
+      - "10.10.5.10:69:69/udp"   # TFTP — iPXE binary + menu tree
+      - "10.10.5.10:8080:80"     # HTTP — cached distro/utility assets
+    volumes:
+      # TFTP root — our menu tree (menu.ipxe, boot.cfg, menus/*.ipxe).
+      # iPXE binary baked into the image by the Dockerfile COPY.
+      # Uploaded by `phase apps --apply` (apps.py::ensure_pxe_menu_files).
+      - /mnt/tank/system/pxe/tftp:/srv/tftp:ro
+      # HTTP root — cached distro/utility assets (pxe-cache cronjob).
+      - /mnt/tank/system/pxe/http:/srv/http:ro

@@ -1,0 +1,79 @@
+#!ipxe
+# Utilities sub-menu — curated list of rescue/diagnostic tools.
+#
+# All kernel + initrd URLs point at ${cache_url}/utils/ which is
+# populated by the pxe-cache cronjob from upstream distro origins
+# (memtest.org, gparted.org, system-rescue.org, tianocore.org, etc.).
+# No netboot.xyz in the fetch path.
+
+:start
+menu Utilities (UEFI)
+item --gap -- --- Memory / Storage ---
+item memtest      Memtest86+ v8.00  (RAM test)
+item gparted      GParted Live 1.6.0  (partition editor)
+item zfsbootmenu  ZFSBootMenu  (ZFS boot manager / rescue shell)
+item --gap -- --- Rescue ---
+item sysresc      SystemRescue 11.03  (full live rescue distro)
+item --gap -- --- Low-level ---
+item uefishell    UEFI Shell v2.2 EDK2  (interactive EFI shell)
+item --gap -- ---
+item back         Back to main menu
+choose --default memtest --timeout 30000 target || goto back
+goto ${target}
+
+# ─── Memtest86+ — single EFI binary, direct boot ───────────────────
+
+:memtest
+echo Booting Memtest86+ v8.00
+chain --autofree ${cache_url}/utils/memtest/memtest.efi || goto fail
+goto start
+
+# ─── GParted Live — vmlinuz + initrd + squashfs fetched live ───────
+
+:gparted
+echo Booting GParted Live 1.6.0
+imgfree
+set gparted_url ${cache_url}/utils/gparted
+kernel ${gparted_url}/vmlinuz boot=live config components noswap noeject toram=filesystem.squashfs ip=dhcp nosplash fetch=${gparted_url}/filesystem.squashfs
+initrd ${gparted_url}/initrd.img
+boot || goto fail
+
+# ─── SystemRescue 11.03 — vmlinuz + initrd + sysresccd.img ─────────
+
+:sysresc
+echo Booting SystemRescue 11.03
+imgfree
+set sr_url ${cache_url}/utils/sysresc
+kernel ${sr_url}/vmlinuz archisobasedir=sysresccd archiso_http_srv=${sr_url}/ checksum=y
+initrd ${sr_url}/sysresccd.img
+boot || goto fail
+
+# ─── ZFSBootMenu — vmlinuz + initrd ─────────────────────────────────
+
+:zfsbootmenu
+echo Booting ZFSBootMenu (recovery shell)
+imgfree
+set zbm_url ${cache_url}/utils/zfsbootmenu
+kernel ${zbm_url}/vmlinuz.efi zbm.show loglevel=4
+initrd ${zbm_url}/initramfs.img
+boot || goto fail
+
+# ─── UEFI Shell — single EFI binary ─────────────────────────────────
+
+:uefishell
+echo Booting UEFI Shell
+chain --autofree ${cache_url}/utils/uefishell/Shell.efi || goto fail
+goto start
+
+# ─── Failure + exit ────────────────────────────────────────────────
+
+:fail
+echo
+echo ERROR: boot failed. Has pxe-cache populated the asset?
+echo   curl -I ${cache_url}/utils/...
+echo
+prompt Press any key to return to the Utilities menu...
+goto start
+
+:back
+exit

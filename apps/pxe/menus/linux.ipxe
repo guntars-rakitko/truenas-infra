@@ -1,0 +1,70 @@
+#!ipxe
+# Linux network installers — curated, cached.
+#
+# Kernels + initrds are mirrored from upstream distro archives
+# (archive.ubuntu.com, deb.debian.org) by the pxe-cache cronjob
+# and served from ${cache_url}/linux/<distro>/<version>/.
+#
+# The installer itself still fetches packages from upstream during
+# the install (that's by design — we don't want to mirror the full
+# archive). Only the boot-time kernel+initrd are local.
+
+:start
+menu Linux network installers
+item --gap -- --- Ubuntu ---
+item ubuntu-2404      Ubuntu Server 24.04.1 LTS (noble)
+item ubuntu-2204      Ubuntu Server 22.04.5 LTS (jammy)
+item --gap -- --- Debian ---
+item debian-13        Debian 13 "trixie" (stable, netinst)
+item debian-12        Debian 12 "bookworm" (oldstable, netinst)
+item --gap -- ---
+item back             Back to main menu
+choose --default ubuntu-2404 --timeout 30000 target || goto back
+goto ${target}
+
+# ─── Ubuntu Server ──────────────────────────────────────────────────
+
+:ubuntu-2404
+echo Booting Ubuntu Server 24.04.1 LTS installer
+imgfree
+set ub_url ${cache_url}/linux/ubuntu/24.04
+kernel ${ub_url}/vmlinuz url=https://releases.ubuntu.com/24.04/ubuntu-24.04.1-live-server-amd64.iso ip=dhcp
+initrd ${ub_url}/initrd
+boot || goto fail
+
+:ubuntu-2204
+echo Booting Ubuntu Server 22.04.5 LTS installer
+imgfree
+set ub_url ${cache_url}/linux/ubuntu/22.04
+kernel ${ub_url}/vmlinuz url=https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso ip=dhcp
+initrd ${ub_url}/initrd
+boot || goto fail
+
+# ─── Debian ─────────────────────────────────────────────────────────
+
+:debian-13
+echo Booting Debian 13 trixie netinst
+imgfree
+set db_url ${cache_url}/linux/debian/13
+kernel ${db_url}/linux auto=true priority=critical
+initrd ${db_url}/initrd.gz
+boot || goto fail
+
+:debian-12
+echo Booting Debian 12 bookworm netinst
+imgfree
+set db_url ${cache_url}/linux/debian/12
+kernel ${db_url}/linux auto=true priority=critical
+initrd ${db_url}/initrd.gz
+boot || goto fail
+
+:fail
+echo
+echo ERROR: boot failed. Has pxe-cache populated the asset?
+echo   curl -I ${cache_url}/linux/...
+echo
+prompt Press any key to return...
+goto start
+
+:back
+exit

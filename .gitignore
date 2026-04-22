@@ -20,6 +20,10 @@ __pycache__/
 venv/
 dist/
 build/
+# Exception: apps/pxe/build/ is the container build context (Dockerfile
+# + iPXE build inputs), not Python build output — must ship.
+!apps/pxe/build/
+!apps/pxe/build/**
 
 # uv
 .uv/
