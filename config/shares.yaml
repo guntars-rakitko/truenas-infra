@@ -7,8 +7,13 @@
 nfs:
   service:
     enable: true
-    # Service listens on prd and dev VLAN sub-iface IPs only.
+    # Service listens on prd data, dev data, AND mgmt sub-iface IPs.
+    # Mgmt (10.10.5.10) is added so the hw-validation PXE image can
+    # drop report.json on stress-results even when NIC2 (I226-V) is
+    # broken — NIC2 is itself one of the validation subjects, so the
+    # report-delivery path must not depend on it.
     bindip:
+      - 10.10.5.10
       - 10.10.10.10
       - 10.10.15.10
   shares:
@@ -20,6 +25,13 @@ nfs:
     - name: longhorn-dev
       path: /mnt/tank/kube/dev/longhorn
       networks: [10.10.15.0/24]
+      maproot_user: nobody
+      maproot_group: nogroup
+    - name: stress-results
+      path: /mnt/tank/system/stress-results
+      networks: [10.10.5.0/24]
+      # hw-validation runs as root in a netboot live shell; map to
+      # nobody/nogroup on NAS storage so reports aren't owned by root.
       maproot_user: nobody
       maproot_group: nogroup
 

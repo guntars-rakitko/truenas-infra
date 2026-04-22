@@ -108,6 +108,13 @@ datasets:
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.
+  - name: tank/system/stress-results
+    # NFS export target for the hw-validation PXE image. Each test run
+    # lands a {hostname}-{iso8601}.json report. Read by a (future)
+    # dashboard that renders a per-node pass/fail matrix. Served over
+    # the mgmt VLAN (NIC1) so reports still land even when NIC2
+    # (I226-V, which is ITSELF one of the validation subjects) is
+    # broken — a scenario we've already hit on kub-dev-02.
 
 # Storage tasks.
 scrub:
