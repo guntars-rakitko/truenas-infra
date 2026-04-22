@@ -17,52 +17,50 @@
 
 :start
 menu Talos -- installer
-item --gap -- --- Install ---
-item install        Install (or re-install) Talos -- latest, wipe disks
-item install-serial Install -- serial console (ttyS0 @ 115200n8)
-item install-wipe   Install -- also wipe data partitions (nuclear)
+item --gap -- --- Boot ---
+item install        Boot Talos (maintenance mode on fresh node, K8s on provisioned)
+item install-wipe   Re-provision (nuclear -- wipes STATE+EPHEMERAL partitions)
 item --gap -- --- Diagnostics ---
-item rescue         Boot Talos in maintenance mode (shell)
-item chain-menu     Chain the talos-updater generated menu (raw)
+item chain-menu     Chain the talos-updater generated menu (version picker)
 item --gap -- ---
 item back           Back to main menu
 choose --timeout 30000 --default install target || goto back
 goto ${target}
 
-# ─── Install variants ──────────────────────────────────────────────
+# ─── Kernel args ────────────────────────────────────────────────────
 #
-# Common args (factory-recommended, do NOT add ip=dhcp -- Talos does its
-# own networking; the stock kernel's in-initramfs ipconfig breaks it):
-#   talos.platform=metal  init_on_alloc=1  slab_nomerge  pti=on
-#   consoleblank=0  nvme_core.io_timeout=4294967295  printk.devkmsg=on
-#   selinux=1  module.sig_enforce=1
-# Per-variant args override console= / talos.experimental.wipe=.
+# Factory-recommended base (mirrors pxe.factory.talos.dev's PXE response --
+# do NOT add ip=dhcp, Talos does its own networking and stock kernel
+# ipconfig leaves you hung on "Sending DHCP requests ...... timed out!"):
+#
+#   talos.platform=metal         -- Talos metal (bare-metal) platform
+#   console=tty0                  -- kernel messages on local VGA
+#   init_on_alloc=1               -- zero-init all pages (hardening)
+#   slab_nomerge                  -- don't merge slab caches (hardening)
+#   pti=on                        -- page-table isolation (Meltdown mitig)
+#   consoleblank=0                -- never blank the VT console
+#   nvme_core.io_timeout=<big>    -- don't abort NVMe I/O on slow devices
+#   printk.devkmsg=on             -- allow userspace writes to /dev/kmsg
+#   selinux=1  module.sig_enforce=1  -- SELinux + signed modules required
+#
+# Per-variant extras:
+#   :install       -- (none, just the base)
+#   :install-wipe  -- + talos.experimental.wipe=system  (wipe STATE+EPHEMERAL
+#                      so the node forgets its machineconfig and starts over)
+#
+# Keep these lists in lockstep with KERNEL_ARGS in talos-updater.sh.
 
 :install
-echo Installing Talos -- latest image, default console
+echo Booting Talos (base args -- maintenance mode if unprovisioned)
 imgfree
 kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
-initrd ${cache_url}/talos/initramfs
-boot || goto fail
-
-:install-serial
-echo Installing Talos -- serial console (ttyS0 @ 115200n8)
-imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 console=ttyS0,115200n8 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :install-wipe
-echo Installing Talos -- nuclear (wipe=system, removes data partitions)
+echo Booting Talos with wipe=system -- nuclear re-provision
 imgfree
 kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1 talos.experimental.wipe=system
-initrd ${cache_url}/talos/initramfs
-boot || goto fail
-
-:rescue
-echo Booting Talos maintenance mode (shell only -- no install)
-imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
