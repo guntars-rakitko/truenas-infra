@@ -33,9 +33,22 @@ goto ${target}
 
 # ─── Kernel args ────────────────────────────────────────────────────
 #
-# Alpine netboot kernel + our overlay cpio concatenated (dual-initrd).
-# iPXE loads them in order; the kernel concatenates the cpio streams
-# into a single rootfs.
+# Alpine netboot uses a STOCK initramfs that is just a bootstrap -- it
+# has no /sbin/init of its own. At boot, Alpine's init script parses
+# the kernel cmdline for:
+#
+#   modloop=<URL>      squashfs of kernel modules (sd-mod, nvme, etc.)
+#   apkovl=<URL>       our overlay: scripts + /etc/apk/world + repositories
+#   ip=dhcp            both NICs DHCP
+#
+# It fetches both over HTTP, untars the apkovl, then runs `apk add`
+# against the repo listed in /etc/apk/repositories to install
+# alpine-base + our packages. THAT creates /sbin/init. Only then does
+# OpenRC run /etc/local.d/stresstest.start.
+#
+# Do NOT try to ship apkovl.tar.gz as a second `initrd` directive --
+# the kernel would concatenate it with the stock initramfs (both cpio)
+# and the tar inside would confuse the cpio loader. apkovl is HTTP.
 #
 # Cmdline contract with image/init/stresstest.start (hw-validation repo):
 #   stress.profile=quick|standard|burnin|shell -- which profile runs
@@ -44,15 +57,8 @@ goto ${target}
 #   stress.destructive=1                       -- permit fio writes
 #   stress.hold=1                              -- drop to shell instead of reboot
 #
-# Alpine live framework:
-#   modules=loop,squashfs,sd-mod,usb-storage   -- needed for modloop mount
-#   modloop=${cache_url}/hw-validation/latest/modloop-lts
-#     -- where to fetch the squashfs with kernel modules at boot
-#   ip=dhcp                                    -- both NICs DHCP;
-#     stresstest.start needs the mgmt-VLAN address to mount NFS
-#   alpine_dev=nfs:10.10.5.10:<export>         -- (NOT SET in Phase A;
-#     NFS mount happens later in stresstest.start script so we can log
-#     to NFS from the moment the script runs)
+# Other Alpine live framework bits:
+#   modules=loop,squashfs,sd-mod,usb-storage   -- load so modloop can mount
 #   console=tty0                               -- visible on AMT KVM
 #
 # Keep the base args identical across profiles so the only variable is
@@ -61,17 +67,15 @@ goto ${target}
 :quick
 echo Booting hw-validation quick profile (guard smoke test)...
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts ip=dhcp console=tty0 stress.profile=quick
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 stress.profile=quick
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
-initrd ${cache_url}/hw-validation/latest/overlay.cpio.gz
 boot || goto fail
 
 :hold
 echo Booting hw-validation with stress.hold=1 -- drops to shell after init
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts ip=dhcp console=tty0 stress.profile=quick stress.hold=1
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 stress.profile=quick stress.hold=1
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
-initrd ${cache_url}/hw-validation/latest/overlay.cpio.gz
 boot || goto fail
 
 # ─── Failure handling ───────────────────────────────────────────────
@@ -88,8 +92,10 @@ echo
 echo   * modloop-lts failed to fetch --
 echo     curl -I ${cache_url}/hw-validation/latest/modloop-lts
 echo
-echo   * overlay.cpio.gz format error --
-echo     rebuild with --clean to regenerate.
+echo   * apkovl.tar.gz fetch failed, or alpine_repo unreachable --
+echo     curl -I ${cache_url}/hw-validation/latest/apkovl.tar.gz
+echo     (and check the node's mgmt-VLAN internet access -- the
+echo      netboot init pulls ~15 MB from dl-cdn.alpinelinux.org)
 echo
 echo Runbook: https://wiki.w1.lv/runbooks/hw-validation/  (Phase F)
 echo

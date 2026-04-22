@@ -633,7 +633,11 @@ HW_VALIDATION_PAYLOAD_FILES = (
     "vmlinuz-lts",
     "initramfs-lts",
     "modloop-lts",
-    "overlay.cpio.gz",
+    # apkovl.tar.gz: our scripts + /etc/apk/world + /etc/apk/repositories.
+    # Fetched by the Alpine netboot init over HTTP (apkovl=<URL> cmdline),
+    # NOT loaded as a second initrd — the netboot init untars it after
+    # fetching modloop, then runs `apk add` to install /sbin/init.
+    "apkovl.tar.gz",
     "version.txt",
 )
 BIOS_APPLY_REMOTE_PATH = "/mnt/tank/system/pxe/http/bios-config/bios-apply.img"
