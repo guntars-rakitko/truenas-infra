@@ -28,6 +28,8 @@ item cpu       Phase B-alpha CPU stress (60s all-core + thermal telemetry)
 item ram       Phase C RAM stress (60s stress-ng --vm --verify + telemetry)
 item nvme      Phase C NVMe read (60s fio seq-read @ 1MB, guard-gated, read-only)
 item ssd       Phase C SATA SSD read (60s fio seq-read @ 1MB, /dev/sda, read-only)
+item net-mgmt-server   Phase C mgmt NIC iperf3 SERVER (I219-LM, 1Gb, VLAN 5)
+item net-mgmt-client   Phase C mgmt NIC iperf3 CLIENT (needs server node up first)
 item --gap -- --- Advanced ---
 item hold      Boot image, drop to shell (operator debug)
 item --gap -- ---
@@ -109,6 +111,28 @@ boot || goto fail
 echo Booting hw-validation ssd profile (Phase C — 60s fio read-only seq-read on /dev/sda)...
 imgfree
 kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=ssd
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+boot || goto fail
+
+:net-mgmt-server
+echo Booting hw-validation net-mgmt SERVER profile (Phase C — iperf3 -s -1 on I219-LM)...
+echo Read the bound IP off the console, then boot the client node(s) with
+echo   stress.profile=net-mgmt stress.role=client stress.server=^<IP^>
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=net-mgmt stress.role=server
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+boot || goto fail
+
+:net-mgmt-client
+# iPXE prompts for the server IP operator copied off the AMT KVM screen
+# of the server node. Default to 10.10.5.11 (kub-prd-01) as the fleet's
+# conventional "first boot" pairing partner; override by typing another.
+echo Enter server IP (default 10.10.5.11 / kub-prd-01):
+set server_ip 10.10.5.11
+read --timeout 30000 server_ip || goto back
+echo Booting hw-validation net-mgmt CLIENT profile (iperf3 -c ${server_ip})...
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=net-mgmt stress.role=client stress.server=${server_ip}
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
