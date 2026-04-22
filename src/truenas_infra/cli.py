@@ -35,7 +35,7 @@ PHASES: list[tuple[str, str, str]] = [
     ("storage-tasks", "storage_tasks", "SMART, scrub, snapshot tasks"),
     ("shares", "shares", "NFS (prd/dev) + SMB (home) + service bindings"),
     ("nut", "nut", "Built-in UPS/NUT service (1x APC Smart-UPS)"),
-    ("apps", "apps", "netboot-xyz + minio-prd + minio-dev"),
+    ("apps", "apps", "pxe + minio-prd + minio-dev"),
     ("verify", "verify", "Run the verification matrix"),
 ]
 

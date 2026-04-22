@@ -75,8 +75,13 @@ datasets:
     kind: parent
   - name: tank/system/pxe
     kind: parent
-  - name: tank/system/pxe/config
-  - name: tank/system/pxe/assets
+    # Subdirs tftp/ and http/ are not separate datasets — just regular
+    # subdirectories under tank/system/pxe. apps/pxe/docker-compose.yaml
+    # bind-mounts them as /srv/tftp and /srv/http.
+    #
+    # The legacy `config/` and `assets/` subdirs from the pre-rebuild
+    # netboot.xyz era remain on disk until manually cleaned; they're not
+    # referenced by anything the current stack uses.
   - name: tank/system/apps-config
     kind: parent
   - name: tank/system/apps-config/nut
@@ -95,6 +100,11 @@ datasets:
     # AMT control sidecar — bind-mount target for code (amt.py, main.py,
     # web/index.html) + config (nodes.yaml) + persistent venv. Populated
     # by _ensure_amtctl_config_via_ctx in modules/apps.py.
+  - name: tank/system/apps-config/pxe
+    # PXE container build context (apps/pxe/build/** uploaded by phase
+    # apps) + pxe-cache.sh + pxe-cache.log. docker-compose.yaml's
+    # build.context points at /mnt/tank/system/apps-config/pxe/build
+    # so the Dockerfile is resolvable when TrueNAS runs the build.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.

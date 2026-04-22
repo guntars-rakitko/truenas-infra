@@ -15,12 +15,12 @@
 #     Then: ./manage.sh phase apps --apply && cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
 
 apps:
-  - name: netboot-xyz
+  - name: pxe
     enabled: true
-    compose: apps/netboot-xyz/docker-compose.yaml
+    compose: apps/pxe/docker-compose.yaml
     secrets: null              # no secrets needed
     bind_ip: 10.10.5.10
-    description: "PXE/TFTP + HTTP + UI for Talos and netboot.xyz menu"
+    description: "Homelab PXE — iPXE + dnsmasq(TFTP) + nginx(HTTP), built from source"
 
   - name: minio-prd
     enabled: true

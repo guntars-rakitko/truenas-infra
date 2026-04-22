@@ -64,16 +64,16 @@ def test_check_service_fails_when_stopped() -> None:
 def test_check_app_passes_when_running() -> None:
     from truenas_infra.modules.verify import check_app
 
-    cli = _mk_cli([[{"name": "netboot-xyz", "state": "RUNNING"}]])
-    r = check_app(cli, app_name="netboot-xyz")
+    cli = _mk_cli([[{"name": "pxe", "state": "RUNNING"}]])
+    r = check_app(cli, app_name="pxe")
     assert r.passed is True
 
 
 def test_check_app_fails_when_deploying() -> None:
     from truenas_infra.modules.verify import check_app
 
-    cli = _mk_cli([[{"name": "netboot-xyz", "state": "DEPLOYING"}]])
-    r = check_app(cli, app_name="netboot-xyz")
+    cli = _mk_cli([[{"name": "pxe", "state": "DEPLOYING"}]])
+    r = check_app(cli, app_name="pxe")
     assert r.passed is False
 
 
@@ -158,7 +158,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
         # apps (8 of them now — amtctl added)
-        [{"name": "netboot-xyz", "state": "RUNNING"}],
+        [{"name": "pxe", "state": "RUNNING"}],
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "meshcentral", "state": "RUNNING"}],
@@ -188,7 +188,7 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        [{"name": "netboot-xyz", "state": "RUNNING"}],
+        [{"name": "pxe", "state": "RUNNING"}],
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "meshcentral", "state": "RUNNING"}],
@@ -338,7 +338,7 @@ def test_run_fails_when_a_new_app_is_missing(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        [{"name": "netboot-xyz", "state": "RUNNING"}],
+        [{"name": "pxe", "state": "RUNNING"}],
         # minio-prd CRASHED
         [{"name": "minio-prd", "state": "CRASHED"}],
         [{"name": "minio-dev", "state": "RUNNING"}],

@@ -1,4 +1,4 @@
-# Talos PXE updater config — consumed by apps/netboot-xyz/talos-updater.sh
+# Talos PXE updater config — consumed by apps/pxe/talos-updater.sh
 # via env vars set from `cronjob.command` in modules/apps.py.
 
 # Version selection.
@@ -17,7 +17,7 @@ architecture: amd64
 platform: metal
 
 # System extensions baked into the Talos factory schematic. Mirrored
-# into apps/netboot-xyz/schematic.yaml (the canonical source the factory
+# into apps/pxe/schematic.yaml (the canonical source the factory
 # receives) — keep both in sync. Changes here WILL force a new schematic
 # ID from factory.talos.dev on the next updater run (state file is
 # regenerated), which triggers re-download of kernel + initramfs.

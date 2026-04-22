@@ -3,7 +3,8 @@
 See docs/plans/zesty-drifting-castle.md §Phase 9.
 
 Planned apps in initial scope:
-  * netboot-xyz  → 10.10.5.10  (PXE/TFTP + HTTP + UI)
+  * pxe          → 10.10.5.10  (TFTP/iPXE + HTTP asset cache; our own
+                                alpine+dnsmasq+nginx, no netboot.xyz)
   * minio-prd    → 10.10.10.10 (S3 for Velero prd)
   * minio-dev    → 10.10.15.10 (S3 for Velero dev)
 
@@ -379,49 +380,43 @@ def load_talos_config(path: Path) -> TalosUpdaterConfig:
     )
 
 
-def ensure_netboot_menu_files(
+def ensure_pxe_menu_files(
     cli: Any,
     upload_fn: Any,
     *,
     boot_cfg_path: Path,
     menu_ipxe_path: Path,
     submenus_dir: Path,
-    config_menus_dir: str,
+    tftp_dir: str,
     apply: bool,
 ) -> tuple[Diff, ...]:
-    """Upload the Homelab PXE menu tree to the netboot.xyz container's
-    /config/menus directory (TFTP root):
+    """Upload the Homelab PXE menu tree to the pxe container's TFTP
+    root (bind-mounted from /mnt/tank/system/pxe/tftp):
 
-    - boot.cfg → <config_menus_dir>/boot.cfg — loaded first by menu.ipxe
-      for runtime vars (site_name, sigs_enabled, mirror URLs, live_endpoint).
-    - menu.ipxe → <config_menus_dir>/menu.ipxe — Homelab top-level menu,
-      overrides the upstream netboot.xyz 2.0.89 menu.ipxe that the
-      container's init.sh extracts from the menus tarball into the same
-      directory on first start. Ours controls display + flow.
-    - <submenus_dir>/*.ipxe → <config_menus_dir>/*.ipxe (flat) — our own
-      sub-menus (talos.ipxe, bios.ipxe). They're flat (not in a menus/
-      subdirectory remotely) because iPXE chains them with relative
-      paths from menu.ipxe and the CWD is the TFTP root.
+    - boot.cfg → <tftp_dir>/boot.cfg — loaded first by menu.ipxe for
+      runtime vars (site_name, cache_url, sigs_enabled).
+    - menu.ipxe → <tftp_dir>/menu.ipxe — Homelab top-level menu
+      (chained by the iPXE binary's embedded script).
+    - <submenus_dir>/*.ipxe → <tftp_dir>/*.ipxe (flat) — our own
+      sub-menus (talos.ipxe, bios.ipxe, utils.ipxe, linux.ipxe,
+      live.ipxe). Flat, not nested, because iPXE chains them with
+      relative paths from menu.ipxe and the TFTP CWD is the root.
 
-    Upstream's utils-efi.ipxe / linux.ipxe / live.ipxe stay in place and
-    are chained directly from menu.ipxe. boot.cfg sets sigs_enabled=false
-    so their :verify_sigs steps (which would fail EACCES due to the
-    post-3.0.0 cert rotation) are skipped.
-
-    All files uploaded at 0o644 AND chowned to uid=1000, gid=1000. The
-    chown is mandatory: the netboot.xyz container's dnsmasq runs as
-    user `nbxyz` (UID 1000) with `--tftp-secure`, which refuses to serve
-    files not readable by its own UID. Files that already existed from
-    the container's init.sh extraction preserve their nbxyz ownership
-    across filesystem.put updates, but newly created files land as
-    root:root and are invisible to TFTP until chowned.
+    All files uploaded at 0o644 AND chowned to uid=1000, gid=1000.
+    The chown is mandatory: the pxe container's dnsmasq runs as user
+    `nbxyz` (UID 1000) with `--tftp-secure`, which refuses to serve
+    files not readable by its own UID. Files that already existed in
+    this dataset preserve their nbxyz ownership across filesystem.put
+    updates, but newly created files land as root:root and are
+    invisible to TFTP until chowned.
 
     Idempotent via size+mode check in ensure_file_on_nas. If submenus_dir
     does not exist, skip the sub-menu loop — phase apps stays working
     for bare-clone CI.
     """
-    # UID/GID of the `nbxyz` user baked into the netboot.xyz container.
-    # Keep in sync with the container's init.sh (PUID/PGID defaults).
+    # UID/GID of the `nbxyz` user baked into the pxe container
+    # (created in the Dockerfile, matches what the container's dnsmasq
+    # and nginx drop to).
     NBXYZ_UID, NBXYZ_GID = 1000, 1000
 
     def upload_and_chown(local_path: Path, remote_path: str) -> Diff:
@@ -443,21 +438,99 @@ def ensure_netboot_menu_files(
 
     diffs.append(upload_and_chown(
         boot_cfg_path,
-        f"{config_menus_dir.rstrip('/')}/{boot_cfg_path.name}",
+        f"{tftp_dir.rstrip('/')}/{boot_cfg_path.name}",
     ))
     diffs.append(upload_and_chown(
         menu_ipxe_path,
-        f"{config_menus_dir.rstrip('/')}/{menu_ipxe_path.name}",
+        f"{tftp_dir.rstrip('/')}/{menu_ipxe_path.name}",
     ))
 
     if submenus_dir.is_dir():
         for sub in sorted(submenus_dir.glob("*.ipxe")):
             diffs.append(upload_and_chown(
                 sub,
-                f"{config_menus_dir.rstrip('/')}/{sub.name}",
+                f"{tftp_dir.rstrip('/')}/{sub.name}",
             ))
 
     return tuple(diffs)
+
+
+def ensure_pxe_build_context(
+    cli: Any,
+    upload_fn: Any,
+    *,
+    local_dir: Path,
+    remote_dir: str,
+    apply: bool,
+) -> tuple[tuple[str, Diff], ...]:
+    """Upload every file in apps/pxe/build/ to the NAS at remote_dir.
+
+    The pxe container's docker-compose build.context points at this
+    remote directory, so the Dockerfile + embed.ipxe + local-*.h +
+    entrypoint.sh + nginx.conf must all exist there before TrueNAS
+    runs `docker compose up`.
+
+    Uploaded files preserve their executable bits: .sh files go as
+    0755, everything else as 0644. Returns a list of (filename, diff)
+    tuples so the caller can log per-file.
+
+    Idempotent via size+mode check. Safe to re-run.
+    """
+    if not local_dir.is_dir():
+        return ()
+
+    diffs: list[tuple[str, Diff]] = []
+    for f in sorted(local_dir.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(local_dir)
+        mode = 0o755 if f.name.endswith(".sh") else 0o644
+        remote = f"{remote_dir.rstrip('/')}/{rel}"
+        diffs.append((str(rel), ensure_file_on_nas(
+            cli, upload_fn,
+            local_path=f, remote_path=remote,
+            mode=mode, apply=apply,
+        )))
+    return tuple(diffs)
+
+
+def ensure_pxe_cache(
+    cli: Any,
+    upload_fn: Any,
+    *,
+    script_path: Path,
+    remote_dir: str,
+    apply: bool,
+) -> tuple[Diff, Diff]:
+    """Install pxe-cache.sh on the NAS and register a weekly cronjob.
+
+    Weekly rather than daily — the cached assets (Ubuntu/Debian
+    installers, utility binaries, live ISOs) change at release
+    cadence, typically months. Weekly refresh picks up point releases
+    within ~7 days without hammering upstream mirrors.
+
+    Runs Sunday 03:00 local time. Logs to pxe-cache.log alongside the
+    script (captured by the script's internal `log()` helper).
+    """
+    remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
+
+    script_diff = ensure_file_on_nas(
+        cli, upload_fn,
+        local_path=script_path, remote_path=remote_script,
+        mode=0o755, apply=apply,
+    )
+
+    cron_cmd = f'/bin/bash -c "/bin/bash {remote_script} >> {remote_dir.rstrip("/")}/pxe-cache.log 2>&1"'
+    cron_diff = ensure_cronjob(
+        cli,
+        description="pxe-cache",
+        command=cron_cmd,
+        schedule={"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "0"},
+        user="root",
+        apply=apply,
+    )
+
+    return (script_diff, cron_diff)
 
 
 def ensure_talos_updater(
@@ -520,18 +593,29 @@ DEFAULT_CONFIG_PATH = Path("config/apps.yaml")
 TALOS_UPDATER_REMOTE_DIR = "/mnt/tank/system/apps-config/talos-updater"
 
 # Local source paths, committed in this repo.
-TALOS_UPDATER_SCRIPT_PATH = Path("apps/netboot-xyz/talos-updater.sh")
-TALOS_UPDATER_SCHEMATIC_PATH = Path("apps/netboot-xyz/schematic.yaml")
+TALOS_UPDATER_SCRIPT_PATH = Path("apps/pxe/talos-updater.sh")
+TALOS_UPDATER_SCHEMATIC_PATH = Path("apps/pxe/schematic.yaml")
 TALOS_UPDATER_CONFIG_PATH = Path("config/talos.yaml")
 
 # Homelab PXE menu tree — committed in this repo, uploaded to the
-# netboot.xyz container's /config/menus volume (TFTP root) on every
-# `phase apps --apply`. Overrides upstream netboot.xyz 2.0.89 menus.
-NETBOOT_BOOT_CFG_PATH = Path("apps/netboot-xyz/boot.cfg")
-NETBOOT_MENU_IPXE_PATH = Path("apps/netboot-xyz/menu.ipxe")
-NETBOOT_SUBMENUS_DIR = Path("apps/netboot-xyz/menus")
-NETBOOT_CONFIG_MENUS_DIR = "/mnt/tank/system/pxe/config/menus"
-NETBOOT_ASSETS_DIR = "/mnt/tank/system/pxe/assets"
+# pxe container's TFTP root (bind-mounted from /mnt/tank/system/pxe/tftp)
+# on every `phase apps --apply`.
+PXE_BOOT_CFG_PATH = Path("apps/pxe/boot.cfg")
+PXE_MENU_IPXE_PATH = Path("apps/pxe/menu.ipxe")
+PXE_SUBMENUS_DIR = Path("apps/pxe/menus")
+PXE_TFTP_DIR = "/mnt/tank/system/pxe/tftp"
+PXE_HTTP_DIR = "/mnt/tank/system/pxe/http"
+
+# Container build context — Dockerfile, embed.ipxe, iPXE build inputs,
+# entrypoint, nginx config. Uploaded to NAS so docker-compose's
+# build.context directive finds them locally during image build.
+PXE_BUILD_CONTEXT_DIR = Path("apps/pxe/build")
+PXE_BUILD_CONTEXT_REMOTE_DIR = "/mnt/tank/system/apps-config/pxe/build"
+
+# pxe-cache.sh — mirrors distro/utility assets from upstream origins
+# into /mnt/tank/system/pxe/http/. Runs weekly via TrueNAS cronjob.
+PXE_CACHE_SCRIPT_PATH = Path("apps/pxe/pxe-cache.sh")
+PXE_CACHE_REMOTE_DIR = "/mnt/tank/system/apps-config/pxe"
 
 # bios-config PXE bios-apply image — built in the sibling `bios-config`
 # repo by `./tools/build-bios-apply-img.sh`; uploaded here so
@@ -546,7 +630,7 @@ NETBOOT_ASSETS_DIR = "/mnt/tank/system/pxe/assets"
 # present, the upload is skipped silently (phase apps keeps working
 # for operators who don't have bios-config checked out locally).
 BIOS_APPLY_LOCAL_PATH = Path("../bios-config/build/bios-apply.img")
-BIOS_APPLY_REMOTE_PATH = "/mnt/tank/system/pxe/assets/bios-config/bios-apply.img"
+BIOS_APPLY_REMOTE_PATH = "/mnt/tank/system/pxe/http/bios-config/bios-apply.img"
 
 # TLS export + rotate scripts (phase apps ships them to the pool; the
 # hourly cronjob runs them when TrueNAS auto-renews the wildcard cert).
@@ -649,11 +733,15 @@ def run(
     if only in (None, "talos-updater"):
         _ensure_talos_updater_via_ctx(cli, ctx, log)
 
-    # 4. Homelab netboot.xyz overrides — boot.cfg sets custom_url so the
-    # "Custom URL Menu" item appears in the main menu; clicking it chains
-    # our custom.ipxe (with local Talos boot entry).
-    if only in (None, "netboot-xyz"):
-        _ensure_netboot_menu_files_via_ctx(cli, ctx, log)
+    # 4. Homelab PXE — independent TFTP/HTTP stack (apps/pxe/). Uploads
+    # the container build context (Dockerfile + iPXE build inputs),
+    # the TFTP-served menu tree (menu.ipxe, boot.cfg, menus/*.ipxe),
+    # and installs the pxe-cache cronjob (weekly mirror of distro /
+    # utility assets from upstream origins).
+    if only in (None, "pxe"):
+        _ensure_pxe_build_context_via_ctx(cli, ctx, log)
+        _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
+        _ensure_pxe_cache_via_ctx(cli, ctx, log)
 
     # 5. TLS cert export + rotation scripts. Ships to /mnt/tank/system/tls/
     # and registers the hourly cronjob. Depends on phase tls having already
@@ -927,15 +1015,13 @@ def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
              action=cron_diff.action, changed=cron_diff.changed)
 
 
-def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
-    if not NETBOOT_BOOT_CFG_PATH.exists() or not NETBOOT_MENU_IPXE_PATH.exists():
-        log.warning("netboot_menu_skipped",
-                    boot_cfg_exists=NETBOOT_BOOT_CFG_PATH.exists(),
-                    menu_ipxe_exists=NETBOOT_MENU_IPXE_PATH.exists())
-        return
+def _pxe_upload_helper(cli: Any, ctx: Any) -> Any:
+    """Build the upload callable the ensure_pxe_* helpers expect.
 
+    Extracted from the three via_ctx functions below so they all share
+    the same filesystem.put wrapper without re-stating the boilerplate.
+    """
     from truenas_infra.client import upload_file
-
     host = ctx.config.truenas_host
     api_key = ctx.config.truenas_api_key
     verify_ssl = ctx.config.truenas_verify_ssl
@@ -945,25 +1031,76 @@ def _ensure_netboot_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
             local_path=local_path, remote_path=remote_path, mode=mode,
         )
+    return _upload
 
-    diffs = ensure_netboot_menu_files(
-        cli, _upload,
-        boot_cfg_path=NETBOOT_BOOT_CFG_PATH,
-        menu_ipxe_path=NETBOOT_MENU_IPXE_PATH,
-        submenus_dir=NETBOOT_SUBMENUS_DIR,
-        config_menus_dir=NETBOOT_CONFIG_MENUS_DIR,
+
+def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload apps/pxe/build/** to the NAS so docker-compose's
+    build.context directive can read them at image-build time."""
+    if not PXE_BUILD_CONTEXT_DIR.is_dir():
+        log.warning("pxe_build_context_skipped",
+                    local_dir_exists=False,
+                    local_dir=str(PXE_BUILD_CONTEXT_DIR))
+        return
+
+    diffs = ensure_pxe_build_context(
+        cli, _pxe_upload_helper(cli, ctx),
+        local_dir=PXE_BUILD_CONTEXT_DIR,
+        remote_dir=PXE_BUILD_CONTEXT_REMOTE_DIR,
+        apply=ctx.apply,
+    )
+    for name, diff in diffs:
+        log.info("pxe_build_context_ensured",
+                 path=f"{PXE_BUILD_CONTEXT_REMOTE_DIR}/{name}",
+                 action=diff.action, changed=diff.changed)
+
+
+def _ensure_pxe_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    if not PXE_BOOT_CFG_PATH.exists() or not PXE_MENU_IPXE_PATH.exists():
+        log.warning("pxe_menu_skipped",
+                    boot_cfg_exists=PXE_BOOT_CFG_PATH.exists(),
+                    menu_ipxe_exists=PXE_MENU_IPXE_PATH.exists())
+        return
+
+    diffs = ensure_pxe_menu_files(
+        cli, _pxe_upload_helper(cli, ctx),
+        boot_cfg_path=PXE_BOOT_CFG_PATH,
+        menu_ipxe_path=PXE_MENU_IPXE_PATH,
+        submenus_dir=PXE_SUBMENUS_DIR,
+        tftp_dir=PXE_TFTP_DIR,
         apply=ctx.apply,
     )
     # Reconstruct the upload order so we can log per-file. Matches the
-    # exact sequence inside ensure_netboot_menu_files: boot.cfg, then
+    # exact sequence inside ensure_pxe_menu_files: boot.cfg, then
     # menu.ipxe, then sorted submenus/*.ipxe.
-    names: list[str] = [NETBOOT_BOOT_CFG_PATH.name, NETBOOT_MENU_IPXE_PATH.name]
-    if NETBOOT_SUBMENUS_DIR.is_dir():
-        names.extend(p.name for p in sorted(NETBOOT_SUBMENUS_DIR.glob("*.ipxe")))
+    names: list[str] = [PXE_BOOT_CFG_PATH.name, PXE_MENU_IPXE_PATH.name]
+    if PXE_SUBMENUS_DIR.is_dir():
+        names.extend(p.name for p in sorted(PXE_SUBMENUS_DIR.glob("*.ipxe")))
     for name, diff in zip(names, diffs):
-        log.info("netboot_menu_ensured",
-                 path=f"{NETBOOT_CONFIG_MENUS_DIR}/{name}",
+        log.info("pxe_menu_ensured",
+                 path=f"{PXE_TFTP_DIR}/{name}",
                  action=diff.action, changed=diff.changed)
+
+
+def _ensure_pxe_cache_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload pxe-cache.sh and register its weekly cronjob."""
+    if not PXE_CACHE_SCRIPT_PATH.exists():
+        log.warning("pxe_cache_skipped",
+                    script_exists=False,
+                    script=str(PXE_CACHE_SCRIPT_PATH))
+        return
+
+    script_diff, cron_diff = ensure_pxe_cache(
+        cli, _pxe_upload_helper(cli, ctx),
+        script_path=PXE_CACHE_SCRIPT_PATH,
+        remote_dir=PXE_CACHE_REMOTE_DIR,
+        apply=ctx.apply,
+    )
+    log.info("pxe_cache_script_ensured",
+             path=f"{PXE_CACHE_REMOTE_DIR}/{PXE_CACHE_SCRIPT_PATH.name}",
+             action=script_diff.action, changed=script_diff.changed)
+    log.info("pxe_cache_cronjob_ensured",
+             action=cron_diff.action, changed=cron_diff.changed)
 
     # bios-config bios-apply.img (optional; sibling repo build artefact).
     # No-op when the sibling repo isn't checked out at ../bios-config —
