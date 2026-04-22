@@ -246,6 +246,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_app(cli, app_name="wiki"),
         check_app(cli, app_name="homepage"),
         check_app(cli, app_name="amtctl"),
+        check_app(cli, app_name="iperf3"),
         # TLS + DNS checks (phase 3 added these)
         check_cert_expiry(cli, cert_name="w1-wildcard"),
     ]

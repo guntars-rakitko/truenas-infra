@@ -64,6 +64,13 @@ apps:
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
     description: "Service-catalog dashboard (Homepage), declarative YAML-only"
 
+  - name: iperf3
+    enabled: true
+    compose: apps/iperf3/docker-compose.yaml
+    secrets: null              # no auth — mgmt VLAN isolation is the boundary
+    bind_ip: 10.10.5.10
+    description: "Always-on iperf3 server for hw-validation net-mgmt / net-data tests"
+
   - name: amtctl
     enabled: true
     compose: apps/amtctl/docker-compose.yaml

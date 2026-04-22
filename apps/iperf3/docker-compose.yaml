@@ -1,0 +1,38 @@
+services:
+  iperf3:
+    # Tiny Alpine-based image with iperf3 baked in. Rebuilds from upstream
+    # Alpine on first pull; versions re-pinned when we bump Alpine in
+    # hw-validation. networkstatic/iperf3 is the de-facto community image
+    # — Alpine 3.x + iperf3 from main repo, ~10 MB.
+    image: networkstatic/iperf3:latest
+    container_name: iperf3
+    restart: unless-stopped
+    network_mode: bridge
+    # Bind to the mgmt VLAN IP only. hw-validation clients target this
+    # from VLAN 5 (10.10.5.0/24); no reason for any other interface to
+    # answer iperf3. TCP + UDP both exposed — Phase C uses TCP (-P 4);
+    # leaving UDP available for future jitter/loss measurements.
+    ports:
+      - "10.10.5.10:5201:5201/tcp"
+      - "10.10.5.10:5201:5201/udp"
+    # `-s` runs as server. `-D` NOT used — we want iperf3 in foreground
+    # so Docker sees the process and `restart: unless-stopped` works.
+    # `-V` verbose logging so `docker logs iperf3` shows connecting
+    # clients (useful when debugging a node that claims the server
+    # didn't answer — we can confirm on the NAS whether the SYN arrived).
+    command: ["-s", "-V"]
+# Why always-on (vs one-shot per test run):
+#
+#   * No operator pairing dance — any node can boot net-mgmt anytime
+#     and just work. Previous pair-nodes design required booting one
+#     node first as server, copying its IP into the next node's cmdline.
+#     Always-on NAS collapses that to a single menu entry.
+#   * NAS sits on a 2.5 Gb link to the switch — won't bottleneck the
+#     1 Gb I219-LM client traffic. (net-data.sh will saturate the 2.5 Gb
+#     client side; still fine because NAS-side uplink is also 2.5 Gb
+#     and otherwise mostly idle during a single-node stress run.)
+#   * Idle iperf3 -s consumes <1 MB RSS, 0% CPU — zero cost when
+#     no clients are running. Starts once, never touched.
+#
+# Only node that's NOT a test target: the NAS itself. Everything else
+# in the fleet (the 6 K8s nodes) uses this service.
