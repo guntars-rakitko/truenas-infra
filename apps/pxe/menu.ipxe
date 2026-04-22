@@ -22,6 +22,7 @@ menu ${site_name} PXE - next-server: ${next-server}
 item --gap -- --- Homelab ---
 item talos        Install / reinstall Talos (K8s cluster node)
 item bios         Apply canonical BIOS + AMT config
+item hw-validation  Validate hardware (stress / burn-in)
 item --gap -- --- Tools ---
 item utils        Utilities (Memtest, GParted, SystemRescue, UEFI Shell)
 item --gap -- --- Distributions ---
@@ -53,6 +54,10 @@ goto main
 
 :bios
 chain --autofree tftp://10.10.5.10/bios.ipxe || goto main
+goto main
+
+:hw-validation
+chain --autofree tftp://10.10.5.10/hw-validation.ipxe || goto main
 goto main
 
 :utils

@@ -1,0 +1,100 @@
+#!ipxe
+# hw-validation -- PXE-booted stress test for the 6-node K8s cluster.
+#
+# Boots a custom Alpine Linux live image that stress-tests CPU / RAM /
+# NVMe / SATA / both NICs with thermal telemetry, logs JSON to NAS NFS.
+# Companion to bios-config (applies firmware settings) -- this validates
+# the hardware those settings run on.
+#
+# Built in the sibling hw-validation repo:
+#   cd ~/Documents/github/hw-validation && ./tools/build-image.sh
+#   cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+#
+# The builder emits build/latest/{vmlinuz-lts, initramfs-lts,
+# modloop-lts, overlay.cpio.gz}. `phase apps --apply` uploads those to
+# ${cache_url}/hw-validation/latest/ -- the URLs this menu references.
+#
+# Phase A (current): only the `quick` profile is wired up -- boots
+# Alpine, runs the disk-safety guard smoke test against real disks
+# (expects all refuses on a Talos-provisioned node), reboots. No
+# destructive I/O, no stress load yet. Later phases add standard /
+# burnin / shell / memtest86+ parallel entries.
+
+:start
+menu hw-validation -- stress test
+item --gap -- --- Profiles ---
+item quick     Phase A smoke test (guards vs real disks, ~2 min)
+item --gap -- --- Advanced ---
+item hold      Boot image, drop to shell (operator debug)
+item --gap -- ---
+item back      Back to main menu
+choose --timeout 30000 --default quick target || goto back
+goto ${target}
+
+# ─── Kernel args ────────────────────────────────────────────────────
+#
+# Alpine netboot kernel + our overlay cpio concatenated (dual-initrd).
+# iPXE loads them in order; the kernel concatenates the cpio streams
+# into a single rootfs.
+#
+# Cmdline contract with image/init/stresstest.start (hw-validation repo):
+#   stress.profile=quick|standard|burnin|shell -- which profile runs
+#   stress.role=server|client                  -- iperf3 pairing (Phase E+)
+#   stress.duration=<seconds>                  -- overrides profile default
+#   stress.destructive=1                       -- permit fio writes
+#   stress.hold=1                              -- drop to shell instead of reboot
+#
+# Alpine live framework:
+#   modules=loop,squashfs,sd-mod,usb-storage   -- needed for modloop mount
+#   modloop=${cache_url}/hw-validation/latest/modloop-lts
+#     -- where to fetch the squashfs with kernel modules at boot
+#   ip=dhcp                                    -- both NICs DHCP;
+#     stresstest.start needs the mgmt-VLAN address to mount NFS
+#   alpine_dev=nfs:10.10.5.10:<export>         -- (NOT SET in Phase A;
+#     NFS mount happens later in stresstest.start script so we can log
+#     to NFS from the moment the script runs)
+#   console=tty0                               -- visible on AMT KVM
+#
+# Keep the base args identical across profiles so the only variable is
+# stress.profile / stress.hold. Simplifies debugging.
+
+:quick
+echo Booting hw-validation quick profile (guard smoke test)...
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts ip=dhcp console=tty0 stress.profile=quick
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+initrd ${cache_url}/hw-validation/latest/overlay.cpio.gz
+boot || goto fail
+
+:hold
+echo Booting hw-validation with stress.hold=1 -- drops to shell after init
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts ip=dhcp console=tty0 stress.profile=quick stress.hold=1
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+initrd ${cache_url}/hw-validation/latest/overlay.cpio.gz
+boot || goto fail
+
+# ─── Failure handling ───────────────────────────────────────────────
+
+:fail
+echo
+echo ERROR: hw-validation boot failed. Possible causes:
+echo   * ${cache_url}/hw-validation/latest/vmlinuz-lts 404 --
+echo     sibling hw-validation build artefact not uploaded.
+echo     Fix: cd ~/Documents/github/hw-validation
+echo          ./tools/build-image.sh
+echo          cd ../truenas-infra && ./manage.sh phase apps --apply
+echo
+echo   * modloop-lts failed to fetch --
+echo     curl -I ${cache_url}/hw-validation/latest/modloop-lts
+echo
+echo   * overlay.cpio.gz format error --
+echo     rebuild with --clean to regenerate.
+echo
+echo Runbook: https://wiki.w1.lv/runbooks/hw-validation/  (Phase F)
+echo
+prompt Press any key to return to the main menu...
+goto back
+
+:back
+exit

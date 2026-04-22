@@ -612,6 +612,30 @@ PXE_SCRIPTS_REMOTE_DIR   = "/mnt/tank/system/apps-config/pxe"
 # present, the upload is skipped silently (phase apps keeps working
 # for operators who don't have bios-config checked out locally).
 BIOS_APPLY_LOCAL_PATH = Path("../bios-config/build/bios-apply.img")
+
+# hw-validation PXE live image — built in the sibling `hw-validation`
+# repo by `./tools/build-image.sh`. Produces a 4-file set under
+# build/<alpine-version>-r0/ and a `latest` symlink pointing to it:
+#   vmlinuz-lts      ~11 MB  (stock Alpine kernel)
+#   initramfs-lts    ~24 MB  (stock Alpine init)
+#   modloop-lts     ~183 MB  (squashfs of kernel modules, fetched at boot)
+#   overlay.cpio.gz  (grows with test scripts; Phase A ~8 KB)
+#
+# Uploaded to /mnt/tank/system/pxe/http/hw-validation/latest/ so the
+# hw-validation.ipxe sub-menu's `kernel` + `initrd` URLs resolve.
+# No-op if sibling repo isn't checked out or hasn't been built --
+# mirrors the bios-apply.img pattern.
+HW_VALIDATION_LOCAL_DIR = Path("../hw-validation/build/latest")
+HW_VALIDATION_REMOTE_DIR = "/mnt/tank/system/pxe/http/hw-validation/latest"
+# Files the hw-validation.ipxe menu references. If the build produces
+# more files later (e.g. memtest86+ sister payload), append here.
+HW_VALIDATION_PAYLOAD_FILES = (
+    "vmlinuz-lts",
+    "initramfs-lts",
+    "modloop-lts",
+    "overlay.cpio.gz",
+    "version.txt",
+)
 BIOS_APPLY_REMOTE_PATH = "/mnt/tank/system/pxe/http/bios-config/bios-apply.img"
 
 # TLS export + rotate scripts (phase apps ships them to the pool; the
@@ -725,6 +749,7 @@ def run(
         _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
         _ensure_pxe_scripts_via_ctx(cli, ctx, log)
         _ensure_pxe_bios_apply_img_via_ctx(cli, ctx, log)
+        _ensure_pxe_hw_validation_via_ctx(cli, ctx, log)
 
     # 5. TLS cert export + rotation scripts. Ships to /mnt/tank/system/tls/
     # and registers the hourly cronjob. Depends on phase tls having already
@@ -1152,6 +1177,58 @@ def _ensure_pxe_bios_apply_img_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                  action="uploaded", changed=True,
                  local_size=bios_img.stat().st_size,
                  local_sha256=local_sha)
+
+
+def _ensure_pxe_hw_validation_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload hw-validation's Alpine live-image artefacts if the sibling
+    repo has built them.
+
+    No-op when the sibling repo isn't checked out at ../hw-validation
+    or `./tools/build-image.sh` hasn't run yet (in which case
+    build/latest/ is missing). Keeps `phase apps` working for operators
+    who don't use hw-validation.
+
+    Size-based idempotency via ensure_file_on_nas is safe here: each
+    file's size is determined by content (kernel + Alpine version),
+    not by a fixed padding like bios-apply.img. A rebuild of the same
+    Alpine version produces byte-identical vmlinuz / initramfs /
+    modloop; only overlay.cpio.gz + version.txt change with our own
+    edits, and their sizes do change.
+    """
+    local_dir = HW_VALIDATION_LOCAL_DIR.resolve()
+    if not local_dir.is_dir():
+        log.info("hw_validation_skipped",
+                 reason="sibling build artefact not present",
+                 expected_local=str(local_dir))
+        return
+
+    # Resolve any symlink (`build/latest -> 3.21.0-r0/`) so stat + mtime
+    # reflect the real target, not the link.
+    try:
+        real_local_dir = local_dir.resolve()
+    except OSError as e:
+        log.warning("hw_validation_skipped",
+                    reason=f"resolve failed: {e}",
+                    expected_local=str(local_dir))
+        return
+
+    upload = _pxe_upload_helper(cli, ctx)
+    for name in HW_VALIDATION_PAYLOAD_FILES:
+        local = real_local_dir / name
+        if not local.is_file():
+            log.info("hw_validation_file_skipped",
+                     reason="expected payload file missing",
+                     expected_local=str(local))
+            continue
+        remote = f"{HW_VALIDATION_REMOTE_DIR}/{name}"
+        diff = ensure_file_on_nas(
+            cli, upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("hw_validation_file_ensured",
+                 path=remote, action=diff.action, changed=diff.changed,
+                 local_size=local.stat().st_size)
 
 
 def _ensure_talos_updater_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
