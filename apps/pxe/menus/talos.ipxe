@@ -6,6 +6,12 @@
 # them under /mnt/tank/system/pxe/http/talos/. nginx serves them at
 # ${cache_url}/talos/.
 #
+# Kernel args MUST mirror factory.talos.dev's PXE response -- anything
+# else (notably `ip=dhcp`, a stock-kernel in-initramfs DHCP flag) fights
+# with Talos's own machined networking and leaves the box stuck on
+# "Sending DHCP requests ...... timed out!" in the initramfs. Keep this
+# in sync with KERNEL_ARGS in talos-updater.sh.
+#
 # Menu surfaces common operator flows as first-class items so you
 # don't have to remember Talos kernel args at 02:00.
 
@@ -14,7 +20,7 @@ menu Talos -- installer
 item --gap -- --- Install ---
 item install        Install (or re-install) Talos -- latest, wipe disks
 item install-serial Install -- serial console (ttyS0 @ 115200n8)
-item install-keep   Install -- keep existing data partitions
+item install-wipe   Install -- also wipe data partitions (nuclear)
 item --gap -- --- Diagnostics ---
 item rescue         Boot Talos in maintenance mode (shell)
 item chain-menu     Chain the talos-updater generated menu (raw)
@@ -24,32 +30,39 @@ choose --timeout 30000 --default install target || goto back
 goto ${target}
 
 # ─── Install variants ──────────────────────────────────────────────
+#
+# Common args (factory-recommended, do NOT add ip=dhcp -- Talos does its
+# own networking; the stock kernel's in-initramfs ipconfig breaks it):
+#   talos.platform=metal  init_on_alloc=1  slab_nomerge  pti=on
+#   consoleblank=0  nvme_core.io_timeout=4294967295  printk.devkmsg=on
+#   selinux=1  module.sig_enforce=1
+# Per-variant args override console= / talos.experimental.wipe=.
 
 :install
-echo Installing Talos -- latest image, default console, wipe install disk
+echo Installing Talos -- latest image, default console
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 talos.hostname=${hostname} ip=dhcp
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :install-serial
 echo Installing Talos -- serial console (ttyS0 @ 115200n8)
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 console=ttyS0,115200n8 talos.hostname=${hostname} ip=dhcp
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 console=ttyS0,115200n8 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
-:install-keep
-echo Installing Talos -- preserve existing partitions (reset=system)
+:install-wipe
+echo Installing Talos -- nuclear (wipe=system, removes data partitions)
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 talos.hostname=${hostname} ip=dhcp talos.experimental.wipe=system
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1 talos.experimental.wipe=system
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :rescue
-echo Booting Talos maintenance mode (no install, shell only)
+echo Booting Talos maintenance mode (shell only -- no install)
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 talos.hostname=${hostname} ip=dhcp talos.experimental.wipe=none
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
