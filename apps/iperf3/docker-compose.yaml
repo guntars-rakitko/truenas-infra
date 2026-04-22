@@ -8,13 +8,22 @@ services:
     container_name: iperf3
     restart: unless-stopped
     network_mode: bridge
-    # Bind to the mgmt VLAN IP only. hw-validation clients target this
-    # from VLAN 5 (10.10.5.0/24); no reason for any other interface to
-    # answer iperf3. TCP + UDP both exposed — Phase C uses TCP (-P 4);
-    # leaving UDP available for future jitter/loss measurements.
+    # Listen on all three fleet-facing NAS IPs:
+    #   10.10.5.10  — mgmt VLAN 5   (I219-LM clients; net-mgmt profile)
+    #   10.10.10.10 — prd data VLAN 10 (I226-V clients on kub-prd-*; net-data)
+    #   10.10.15.10 — dev data VLAN 15 (I226-V clients on kub-dev-*; net-data)
+    # The fleet's I226-V NICs are split by physical switch port: prd nodes
+    # land on VLAN 10, dev nodes on VLAN 15. net-data.sh auto-picks the
+    # right NAS IP from whichever subnet the node's own DHCP lease put it in.
+    # TCP + UDP both exposed — Phase C uses TCP (-P 4); leaving UDP
+    # available for future jitter/loss measurements.
     ports:
       - "10.10.5.10:5201:5201/tcp"
       - "10.10.5.10:5201:5201/udp"
+      - "10.10.10.10:5201:5201/tcp"
+      - "10.10.10.10:5201:5201/udp"
+      - "10.10.15.10:5201:5201/tcp"
+      - "10.10.15.10:5201:5201/udp"
     # `-s` runs as server. `-D` NOT used — we want iperf3 in foreground
     # so Docker sees the process and `restart: unless-stopped` works.
     # `-V` verbose logging so `docker logs iperf3` shows connecting

@@ -29,6 +29,7 @@ item ram       Phase C RAM stress (60s stress-ng --vm --verify + telemetry)
 item nvme      Phase C NVMe read (60s fio seq-read @ 1MB, guard-gated, read-only)
 item ssd       Phase C SATA SSD read (60s fio seq-read @ 1MB, /dev/sda, read-only)
 item net-mgmt  Phase C mgmt NIC (I219-LM 1Gb, iperf3 → NAS 10.10.5.10)
+item net-data  Phase C data NIC (I226-V 2.5Gb, iperf3 → NAS prd/dev VLAN)
 item --gap -- --- Advanced ---
 item hold      Boot image, drop to shell (operator debug)
 item --gap -- ---
@@ -110,6 +111,18 @@ boot || goto fail
 echo Booting hw-validation ssd profile (Phase C — 60s fio read-only seq-read on /dev/sda)...
 imgfree
 kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=ssd
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+boot || goto fail
+
+:net-data
+# Data NIC counterpart. NAS iperf3 container binds on prd
+# (10.10.10.10) and dev (10.10.15.10) VLANs as well as mgmt;
+# net-data.sh auto-picks the target from whichever data VLAN the
+# node's I226-V DHCP'd into (kub-prd-* → VLAN 10, kub-dev-* → VLAN 15,
+# set by Mikrotik switch port config). No operator input needed.
+echo Booting hw-validation net-data profile (Phase C — iperf3 over I226-V 2.5Gb)...
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=net-data
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
