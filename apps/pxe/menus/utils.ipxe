@@ -14,12 +14,11 @@
 menu Utilities
 item --gap -- --- RAM / Boot ---
 item memtest      Memtest86+ v8.00 (small, instant)
-item supergrub2   Super Grub2 Disk (bootloader rescue, ~18 MB)
 item --gap -- --- Partition / Disk ---
-item gparted      GParted Live 1.8.1 (~450 MB)
-item clonezilla   Clonezilla Live 3.2.2 (~400 MB)
+item gparted      GParted Live 1.8.1-3 (~450 MB)
+item clonezilla   Clonezilla Live 3.2.2-15 (~400 MB)
 item --gap -- --- Rescue ---
-item sysresc      SystemRescue 12.03 (full rescue, ~900 MB)
+item sysresc      SystemRescue 13.00 (full rescue, ~900 MB)
 item --gap -- --- Secure erase ---
 item shredos      ShredOS 2025.11 (DBAN replacement)
 item --gap -- --- ZFS / Low-level ---
@@ -54,23 +53,18 @@ goto start
 # ─── ISO-based tools (sanboot) ─────────────────────────────────────
 
 :gparted
-echo Booting GParted Live 1.8.1
-sanboot --no-describe ${cache_url}/gparted/gparted-live-1.8.1-1/gparted-live-1.8.1-1-amd64.iso || goto fail
+echo Booting GParted Live 1.8.1-3
+sanboot --no-describe ${cache_url}/gparted/gparted-live-stable/1.8.1-3/gparted-live-1.8.1-3-amd64.iso || goto fail
 goto start
 
 :clonezilla
-echo Booting Clonezilla Live 3.2.2
+echo Booting Clonezilla Live 3.2.2-15
 sanboot --no-describe ${cache_url}/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.iso || goto fail
 goto start
 
 :sysresc
-echo Booting SystemRescue 12.03
-sanboot --no-describe ${cache_url}/sysresc/12.03/systemrescue-12.03-amd64.iso || goto fail
-goto start
-
-:supergrub2
-echo Booting Super Grub2 Disk
-sanboot --no-describe ${cache_url}/supergrub2/2.06s1/super_grub2_disk_hybrid_2.06s1.iso || goto fail
+echo Booting SystemRescue 13.00
+sanboot --no-describe ${cache_url}/sysresc/13.00/systemrescue-13.00-amd64.iso || goto fail
 goto start
 
 :shredos

@@ -58,8 +58,8 @@ goto start
 # point release.
 
 :tails
-echo Booting Tails 6.9 (amnesic Tor live)
-sanboot --no-describe ${cache_url}/tails/tails-amd64-6.9/tails-amd64-6.9.iso || goto fail
+echo Booting Tails 7.6.2 (amnesic Tor live)
+sanboot --no-describe ${cache_url}/tails/tails-amd64-7.6.2/tails-amd64-7.6.2.iso || goto fail
 goto start
 
 :fail
