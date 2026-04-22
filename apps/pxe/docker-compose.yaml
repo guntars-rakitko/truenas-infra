@@ -25,6 +25,14 @@ services:
       # of ipxe.efi can write; menu files are treated as read-only by
       # the container (our stack only reads from /srv/tftp).
       - /mnt/tank/system/pxe/tftp:/srv/tftp:rw
-      # HTTP root — cached distro/utility assets (pxe-cache cronjob).
-      # Read-only — the container doesn't write here.
+      # Local-only HTTP assets — bios-apply.img, talos kernel+initramfs,
+      # talos-menu.ipxe. NOT upstream-mirrored; produced by sibling
+      # jobs (bios-config build, talos-updater cronjob). Read-only.
       - /mnt/tank/system/pxe/http:/srv/http:ro
+      # nginx proxy-cache storage — LAZY CACHE of upstream distro +
+      # utility downloads. First request for a given URL goes to
+      # upstream (internet speed); nginx stores a copy here and
+      # subsequent requests serve from cache at LAN speed. Entries
+      # evicted after 30 days of non-use; hard cap 80 GB.
+      # Must be rw — nginx writes cached responses here.
+      - /mnt/tank/system/pxe/cache:/srv/cache/pxe:rw

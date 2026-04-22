@@ -494,43 +494,22 @@ def ensure_pxe_build_context(
     return tuple(diffs)
 
 
-def ensure_pxe_cache(
-    cli: Any,
-    upload_fn: Any,
-    *,
-    script_path: Path,
-    remote_dir: str,
-    apply: bool,
-) -> tuple[Diff, Diff]:
-    """Install pxe-cache.sh on the NAS and register a weekly cronjob.
-
-    Weekly rather than daily — the cached assets (Ubuntu/Debian
-    installers, utility binaries, live ISOs) change at release
-    cadence, typically months. Weekly refresh picks up point releases
-    within ~7 days without hammering upstream mirrors.
-
-    Runs Sunday 03:00 local time. Logs to pxe-cache.log alongside the
-    script (captured by the script's internal `log()` helper).
-    """
-    remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
-
-    script_diff = ensure_file_on_nas(
-        cli, upload_fn,
-        local_path=script_path, remote_path=remote_script,
-        mode=0o755, apply=apply,
-    )
-
-    cron_cmd = f'/bin/bash -c "/bin/bash {remote_script} >> {remote_dir.rstrip("/")}/pxe-cache.log 2>&1"'
-    cron_diff = ensure_cronjob(
-        cli,
-        description="pxe-cache",
-        command=cron_cmd,
-        schedule={"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "0"},
-        user="root",
-        apply=apply,
-    )
-
-    return (script_diff, cron_diff)
+# ensure_pxe_cache removed 2026-04-22.
+#
+# Replaced by nginx reverse-proxy lazy cache (see
+# apps/pxe/build/nginx.conf, proxy_cache_path + proxy_pass blocks).
+# Instead of pre-downloading a curated list of assets via a weekly
+# script, nginx downloads + caches on first client request and
+# serves cached copies from that point on. Entries evict after 30d
+# of non-use; hard cap 80 GB.
+#
+# Benefits over the old pre-cache model:
+#   * Only fetches what's actually used — zero disk cost for menu
+#     items nobody boots
+#   * Self-maintaining: no URL-list to keep in sync with upstream
+#     releases, nginx just caches whatever the client asks for
+#   * Adding a new distro to the menu is a one-line menus/*.ipxe
+#     edit — no cache-script changes needed
 
 
 def ensure_talos_updater(
@@ -612,10 +591,11 @@ PXE_HTTP_DIR = "/mnt/tank/system/pxe/http"
 PXE_BUILD_CONTEXT_DIR = Path("apps/pxe/build")
 PXE_BUILD_CONTEXT_REMOTE_DIR = "/mnt/tank/system/apps-config/pxe/build"
 
-# pxe-cache.sh — mirrors distro/utility assets from upstream origins
-# into /mnt/tank/system/pxe/http/. Runs weekly via TrueNAS cronjob.
-PXE_CACHE_SCRIPT_PATH = Path("apps/pxe/pxe-cache.sh")
-PXE_CACHE_REMOTE_DIR = "/mnt/tank/system/apps-config/pxe"
+# No pxe-cache script — see commentary on ensure_pxe_cache above.
+# nginx inside the pxe container handles caching as a lazy
+# reverse-proxy. Disk: /mnt/tank/system/pxe/cache, bind-mounted into
+# the container at /srv/cache/pxe.
+PXE_CACHE_DIR = "/mnt/tank/system/pxe/cache"
 
 # bios-config PXE bios-apply image — built in the sibling `bios-config`
 # repo by `./tools/build-bios-apply-img.sh`; uploaded here so
@@ -741,7 +721,9 @@ def run(
     if only in (None, "pxe"):
         _ensure_pxe_build_context_via_ctx(cli, ctx, log)
         _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
-        _ensure_pxe_cache_via_ctx(cli, ctx, log)
+        # pxe-cache.sh removed — nginx inside the container handles
+        # caching as a lazy reverse-proxy (see apps/pxe/build/nginx.conf).
+        _ensure_pxe_bios_apply_img_via_ctx(cli, ctx, log)
 
     # 5. TLS cert export + rotation scripts. Ships to /mnt/tank/system/tls/
     # and registers the hourly cronjob. Depends on phase tls having already
@@ -1082,26 +1064,14 @@ def _ensure_pxe_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                  action=diff.action, changed=diff.changed)
 
 
-def _ensure_pxe_cache_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
-    """Upload pxe-cache.sh and register its weekly cronjob."""
-    if not PXE_CACHE_SCRIPT_PATH.exists():
-        log.warning("pxe_cache_skipped",
-                    script_exists=False,
-                    script=str(PXE_CACHE_SCRIPT_PATH))
-        return
+def _ensure_pxe_bios_apply_img_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload bios-config's bios-apply.img if the sibling repo has built it.
 
-    script_diff, cron_diff = ensure_pxe_cache(
-        cli, _pxe_upload_helper(cli, ctx),
-        script_path=PXE_CACHE_SCRIPT_PATH,
-        remote_dir=PXE_CACHE_REMOTE_DIR,
-        apply=ctx.apply,
-    )
-    log.info("pxe_cache_script_ensured",
-             path=f"{PXE_CACHE_REMOTE_DIR}/{PXE_CACHE_SCRIPT_PATH.name}",
-             action=script_diff.action, changed=script_diff.changed)
-    log.info("pxe_cache_cronjob_ensured",
-             action=cron_diff.action, changed=cron_diff.changed)
-
+    Used to live inside the old _ensure_pxe_cache_via_ctx (since the
+    cache script and the img upload ran in the same code path). With
+    the cache script retired (→ nginx lazy cache), the img upload
+    now stands alone.
+    """
     # bios-config bios-apply.img (optional; sibling repo build artefact).
     # No-op when the sibling repo isn't checked out at ../bios-config —
     # keeps phase apps working for operators who don't use bios-config.

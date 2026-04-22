@@ -1,76 +1,52 @@
 #!ipxe
-# Utilities sub-menu — curated list of rescue/diagnostic tools.
-#
-# All kernel + initrd URLs point at ${cache_url}/utils/ which is
-# populated by the pxe-cache cronjob from upstream distro origins
-# (memtest.org, gparted.org, system-rescue.org, tianocore.org, etc.).
-# No netboot.xyz in the fetch path.
+# Utilities — small curated set, all fetched via the nginx proxy
+# cache at ${cache_url} (http://10.10.5.10:8080). First PXE-boot of
+# each item is internet-speed while nginx downloads + caches; every
+# subsequent boot is LAN-speed. Cache entries evict after 30 days of
+# non-use.
 
 :start
-menu Utilities (UEFI)
-item --gap -- --- Memory / Storage ---
-item memtest      Memtest86+ v8.00  (RAM test)
-item gparted      GParted Live 1.6.0  (partition editor)
-item zfsbootmenu  ZFSBootMenu  (ZFS boot manager / rescue shell)
-item --gap -- --- Rescue ---
-item sysresc      SystemRescue 11.03  (full live rescue distro)
+menu Utilities
+item --gap -- --- RAM / hardware ---
+item memtest      Memtest86+ (latest)
+item --gap -- --- ZFS ---
+item zbm          ZFSBootMenu (latest recovery image)
 item --gap -- --- Low-level ---
-item uefishell    UEFI Shell v2.2 EDK2  (interactive EFI shell)
+item uefishell    UEFI Shell v2.2 (TianoCore EDK2)
 item --gap -- ---
 item back         Back to main menu
 choose --default memtest --timeout 30000 target || goto back
 goto ${target}
 
-# ─── Memtest86+ — single EFI binary, direct boot ───────────────────
-
+# Memtest86+ latest — single EFI binary from github release.
+# Github's /releases/latest/download/<file> auto-redirects to the
+# current release, so nginx's proxy /memtest/ always maps to "the
+# currently-latest binary". When a new version ships upstream the
+# next PXE-boot of this item fetches it fresh.
 :memtest
-echo Booting Memtest86+ v8.00
-chain --autofree ${cache_url}/utils/memtest/memtest.efi || goto fail
+echo Booting Memtest86+ (latest from NAS proxy cache)
+chain --autofree ${cache_url}/memtest/memtest64.efi || goto fail
 goto start
 
-# ─── GParted Live — vmlinuz + initrd + squashfs fetched live ───────
-
-:gparted
-echo Booting GParted Live 1.6.0
-imgfree
-set gparted_url ${cache_url}/utils/gparted
-kernel ${gparted_url}/vmlinuz boot=live config components noswap noeject toram=filesystem.squashfs ip=dhcp nosplash fetch=${gparted_url}/filesystem.squashfs
-initrd ${gparted_url}/initrd.img
-boot || goto fail
-
-# ─── SystemRescue 11.03 — vmlinuz + initrd + sysresccd.img ─────────
-
-:sysresc
-echo Booting SystemRescue 11.03
-imgfree
-set sr_url ${cache_url}/utils/sysresc
-kernel ${sr_url}/vmlinuz archisobasedir=sysresccd archiso_http_srv=${sr_url}/ checksum=y
-initrd ${sr_url}/sysresccd.img
-boot || goto fail
-
-# ─── ZFSBootMenu — vmlinuz + initrd ─────────────────────────────────
-
-:zfsbootmenu
-echo Booting ZFSBootMenu (recovery shell)
-imgfree
-set zbm_url ${cache_url}/utils/zfsbootmenu
-kernel ${zbm_url}/vmlinuz.efi zbm.show loglevel=4
-initrd ${zbm_url}/initramfs.img
-boot || goto fail
-
-# ─── UEFI Shell — single EFI binary ─────────────────────────────────
-
+# UEFI Shell — stable TianoCore EDK2 release, pinned to edk2-stable202408.
+# Bump the pin in /etc/nginx/nginx.conf when a newer EDK2 tag is wanted.
 :uefishell
-echo Booting UEFI Shell
-chain --autofree ${cache_url}/utils/uefishell/Shell.efi || goto fail
+echo Booting UEFI Shell v2.2 (TianoCore EDK2)
+chain --autofree ${cache_url}/uefishell/Shell.efi || goto fail
 goto start
 
-# ─── Failure + exit ────────────────────────────────────────────────
+# ZFSBootMenu — latest recovery image (single bootable EFI).
+:zbm
+echo Booting ZFSBootMenu (recovery shell)
+chain --autofree ${cache_url}/zbm/zfsbootmenu-EFI-x86_64.EFI || goto fail
+goto start
 
 :fail
 echo
-echo ERROR: boot failed. Has pxe-cache populated the asset?
-echo   curl -I ${cache_url}/utils/...
+echo Boot failed. The proxy cache tried to fetch upstream but the
+echo download errored. Check NAS connectivity and nginx logs:
+echo   docker logs pxe | tail -30
+echo   curl -I ${cache_url}/<path>     shows X-Cache-Status header
 echo
 prompt Press any key to return to the Utilities menu...
 goto start

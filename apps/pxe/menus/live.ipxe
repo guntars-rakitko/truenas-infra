@@ -1,53 +1,58 @@
 #!ipxe
-# Live CDs — boot-from-network distros that run entirely in RAM.
+# Live CDs — iPXE `sanboot`s a hybrid ISO directly, loading the
+# whole image into RAM. First boot fetches multi-GB from upstream
+# (slow!); subsequent boots serve from nginx proxy cache at
+# LAN-speed.
 #
-# Assets mirrored from upstream by pxe-cache. For live ISOs the
-# whole squashfs (multi-GB) is downloaded once to the NAS and served
-# from ${cache_url}/live/, so first boot loads 5GB from the LAN
-# (fast) instead of the internet (slow). Subsequent boots use
-# iPXE's in-memory cache during a session.
+# Two versions each of Ubuntu Desktop + Debian Live (N + N-2).
 
 :start
 menu Live CDs
-item --gap -- --- Ubuntu ---
-item ubuntu-desktop-2404  Ubuntu 24.04 Desktop Live
-item --gap -- --- Debian ---
-item debian-13-live       Debian 13 "trixie" Live (KDE)
-item --gap -- --- Rescue / Recovery ---
-item sysresc              SystemRescue 11.03 (full live)
+item --gap -- --- Ubuntu Desktop Live ---
+item ubuntu-24-04  Ubuntu 24.04 Desktop Live  [latest LTS]
+item ubuntu-22-04  Ubuntu 22.04 Desktop Live  [N-1 LTS]
+item --gap -- --- Debian Live (KDE) ---
+item debian-13     Debian 13 "trixie" Live    [stable]
+item debian-12     Debian 12 "bookworm" Live  [oldstable]
 item --gap -- ---
-item back                 Back to main menu
-choose --default ubuntu-desktop-2404 --timeout 30000 target || goto back
+item back          Back to main menu
+choose --default ubuntu-24-04 --timeout 30000 target || goto back
 goto ${target}
 
-# ─── Ubuntu Desktop — sanboot the ISO ───────────────────────────────
+# Ubuntu Desktop ISOs via nginx proxy → releases.ubuntu.com/<ver>/<iso>
+#
+# Versions bump periodically (24.04 → 24.04.1 → 24.04.2 etc.). Update
+# the filename when upstream ships a new point release — cache purges
+# the old one automatically after 30 days of no access.
 
-:ubuntu-desktop-2404
-echo Booting Ubuntu 24.04 Desktop Live (sanboot)
-sanboot --no-describe ${cache_url}/live/ubuntu/24.04-desktop.iso || goto fail
+:ubuntu-24-04
+echo Booting Ubuntu 24.04.1 Desktop Live (sanboot)
+sanboot --no-describe ${cache_url}/ubuntu-live/24.04/ubuntu-24.04.1-desktop-amd64.iso || goto fail
 goto start
 
-# ─── Debian Live ───────────────────────────────────────────────────
-
-:debian-13-live
-echo Booting Debian 13 Live KDE
-sanboot --no-describe ${cache_url}/live/debian/13-live-kde.iso || goto fail
+:ubuntu-22-04
+echo Booting Ubuntu 22.04.5 Desktop Live (sanboot)
+sanboot --no-describe ${cache_url}/ubuntu-live/22.04/ubuntu-22.04.5-desktop-amd64.iso || goto fail
 goto start
 
-# ─── SystemRescue — full live distro (shared asset with utils) ─────
+# Debian Live KDE ISOs via nginx proxy → cdimage.debian.org/debian-cd/
+# current-live/amd64/iso-hybrid/. Upstream rotates URL between point
+# releases; /current-live/ always points at the latest stable.
 
-:sysresc
-echo Booting SystemRescue 11.03 (live)
-imgfree
-set sr_url ${cache_url}/utils/sysresc
-kernel ${sr_url}/vmlinuz archisobasedir=sysresccd archiso_http_srv=${sr_url}/ copytoram=y checksum=y
-initrd ${sr_url}/sysresccd.img
-boot || goto fail
+:debian-13
+echo Booting Debian 13 Live KDE (sanboot)
+sanboot --no-describe ${cache_url}/debian-live/debian-live-13.0.0-amd64-kde.iso || goto fail
+goto start
+
+:debian-12
+echo Booting Debian 12 Live KDE (sanboot)
+sanboot --no-describe ${cache_url}/debian-live/debian-live-12.11.0-amd64-kde.iso || goto fail
+goto start
 
 :fail
 echo
-echo ERROR: sanboot / boot failed. Has pxe-cache populated the asset?
-echo   curl -I ${cache_url}/live/...
+echo Boot failed. First-time ISO fetch is multi-GB and slow —
+echo check NAS internet + retry. Subsequent boots hit nginx cache.
 echo
 prompt Press any key to return to the Live menu...
 goto start

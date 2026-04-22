@@ -1,69 +1,83 @@
 #!ipxe
-# Linux network installers — curated, cached.
+# Linux network installers — Ubuntu Server + Debian netinst, two
+# versions each (N + N-2). Adjust the list + URLs as new releases
+# ship and EOLs drop.
 #
-# Kernels + initrds are mirrored from upstream distro archives
-# (archive.ubuntu.com, deb.debian.org) by the pxe-cache cronjob
-# and served from ${cache_url}/linux/<distro>/<version>/.
-#
-# The installer itself still fetches packages from upstream during
-# the install (that's by design — we don't want to mirror the full
-# archive). Only the boot-time kernel+initrd are local.
+# All kernel + initrd fetches go through nginx's proxy cache at
+# ${cache_url}/ubuntu/ and /debian/, so first boot is internet-speed
+# while nginx downloads + caches; every subsequent boot is LAN-speed.
+# The installer itself (once booted) fetches packages from upstream
+# mirrors — package cache is NOT mirrored here, only the boot kernel
+# + initrd.
 
 :start
 menu Linux network installers
-item --gap -- --- Ubuntu ---
-item ubuntu-2404      Ubuntu Server 24.04.1 LTS (noble)
-item ubuntu-2204      Ubuntu Server 22.04.5 LTS (jammy)
+item --gap -- --- Ubuntu Server ---
+item ubuntu-24-04  Ubuntu Server 24.04 LTS (noble)    [latest LTS]
+item ubuntu-22-04  Ubuntu Server 22.04 LTS (jammy)    [N-1 LTS]
 item --gap -- --- Debian ---
-item debian-13        Debian 13 "trixie" (stable, netinst)
-item debian-12        Debian 12 "bookworm" (oldstable, netinst)
+item debian-13     Debian 13 "trixie"                 [stable]
+item debian-12     Debian 12 "bookworm"               [oldstable]
 item --gap -- ---
-item back             Back to main menu
-choose --default ubuntu-2404 --timeout 30000 target || goto back
+item back          Back to main menu
+choose --default ubuntu-24-04 --timeout 30000 target || goto back
 goto ${target}
 
-# ─── Ubuntu Server ──────────────────────────────────────────────────
+# ─── Ubuntu Server ─────────────────────────────────────────────────
+#
+# Upstream path:
+#   archive.ubuntu.com/ubuntu/dists/<codename>/main/installer-amd64/
+#       current/legacy-images/netboot/ubuntu-installer/amd64/{linux,initrd.gz}
+#
+# Our nginx proxy /ubuntu/ strips the /ubuntu/ prefix and fetches
+# from archive.ubuntu.com/ubuntu/<rest>, so the URL pattern matches
+# almost exactly.
 
-:ubuntu-2404
-echo Booting Ubuntu Server 24.04.1 LTS installer
+:ubuntu-24-04
+echo Booting Ubuntu Server 24.04 LTS (noble) installer
 imgfree
-set ub_url ${cache_url}/linux/ubuntu/24.04
-kernel ${ub_url}/vmlinuz url=https://releases.ubuntu.com/24.04/ubuntu-24.04.1-live-server-amd64.iso ip=dhcp
-initrd ${ub_url}/initrd
+set ub_base ${cache_url}/ubuntu/dists/noble/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64
+kernel ${ub_base}/linux ip=dhcp
+initrd ${ub_base}/initrd.gz
 boot || goto fail
 
-:ubuntu-2204
-echo Booting Ubuntu Server 22.04.5 LTS installer
+:ubuntu-22-04
+echo Booting Ubuntu Server 22.04 LTS (jammy) installer
 imgfree
-set ub_url ${cache_url}/linux/ubuntu/22.04
-kernel ${ub_url}/vmlinuz url=https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso ip=dhcp
-initrd ${ub_url}/initrd
+set ub_base ${cache_url}/ubuntu/dists/jammy/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64
+kernel ${ub_base}/linux ip=dhcp
+initrd ${ub_base}/initrd.gz
 boot || goto fail
 
-# ─── Debian ─────────────────────────────────────────────────────────
+# ─── Debian ────────────────────────────────────────────────────────
+#
+# Upstream path:
+#   deb.debian.org/debian/dists/<codename>/main/installer-amd64/
+#       current/images/netboot/debian-installer/amd64/{linux,initrd.gz}
 
 :debian-13
-echo Booting Debian 13 trixie netinst
+echo Booting Debian 13 "trixie" netinst
 imgfree
-set db_url ${cache_url}/linux/debian/13
-kernel ${db_url}/linux auto=true priority=critical
-initrd ${db_url}/initrd.gz
+set db_base ${cache_url}/debian/dists/trixie/main/installer-amd64/current/images/netboot/debian-installer/amd64
+kernel ${db_base}/linux auto=true priority=critical
+initrd ${db_base}/initrd.gz
 boot || goto fail
 
 :debian-12
-echo Booting Debian 12 bookworm netinst
+echo Booting Debian 12 "bookworm" netinst
 imgfree
-set db_url ${cache_url}/linux/debian/12
-kernel ${db_url}/linux auto=true priority=critical
-initrd ${db_url}/initrd.gz
+set db_base ${cache_url}/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64
+kernel ${db_base}/linux auto=true priority=critical
+initrd ${db_base}/initrd.gz
 boot || goto fail
 
 :fail
 echo
-echo ERROR: boot failed. Has pxe-cache populated the asset?
-echo   curl -I ${cache_url}/linux/...
+echo Boot failed. First-time fetches hit upstream — check NAS has
+echo internet. Cache status visible in `docker logs pxe` and via
+echo `curl -I ${cache_url}/ubuntu/...`.
 echo
-prompt Press any key to return...
+prompt Press any key to return to the Linux menu...
 goto start
 
 :back
