@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     ports:
       # Mgmt VLAN bind. Host :3001 clear of every existing service on
-      # 10.10.5.10 (:3000 netboot-ui, :4480 meshcentral, :8088 wiki).
+      # 10.10.5.10 (:8080 PXE nginx, :4480 meshcentral, :8088 wiki).
       - "10.10.5.10:3001:3000"
     volumes:
       # All Homepage YAMLs (services, bookmarks, widgets, settings, etc.)

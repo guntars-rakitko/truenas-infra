@@ -146,10 +146,10 @@
           enablePools: true   # show tank pool size + health
           nasType: scale      # TrueNAS SCALE / Community Edition
 
-    - PXE (netboot.xyz):
-        icon: netbootxyz.png
+    - PXE assets:
+        icon: mdi-server-network
         href: https://pxe.w1.lv/
-        description: "PXE menu admin + Talos images"
+        description: "Browse pre-cached ISOs, Talos images, netboot kernels"
         siteMonitor: https://pxe.w1.lv/
 
     - Internal Wiki:
