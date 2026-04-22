@@ -51,7 +51,7 @@ edit the matching wiki page in the same commit set.
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
 | `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
-| `apps/netboot-xyz/custom.ipxe` (new menu entry) | `docs/runbooks/bios-apply-pxe-setup.md` (if cross-repo flow changes) |
+| `apps/pxe/pxe-download.sh` (new PXE asset) | `docs/runbooks/bios-apply-pxe-setup.md` (if cross-repo flow changes), `docs/runbooks/pxe-operator.md` (adding / removing PXE ISOs) |
 | `docs/bios-apply-pxe-setup.md` | _Auto-synced_ → `docs/runbooks/bios-apply-pxe-setup.md` |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
 | `.env.sops` / `.env.example` (add/remove var) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
@@ -121,7 +121,7 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 |---|---|---|
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MeshCentral | AMT KVM into K8s nodes | https://mc.w1.lv/ (via Traefik) |
-| netboot.xyz UI | PXE menu management | https://pxe.w1.lv/ (via Traefik) |
+| PXE directory index | Browse cached distro/utility assets | http://10.10.5.10:8080/ (nginx autoindex, no auth) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO prd S3 API | Velero backup store | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
@@ -129,7 +129,7 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 | Traefik dashboard | Proxy ops view | https://traefik-nas.w1.lv/dashboard/ |
 | NFS (prd) | Longhorn backups | 10.10.10.10 (NFS, service-level bindip) |
 | NFS (dev) | Longhorn backups | 10.10.15.10 |
-| PXE / TFTP server | netboot.xyz + Talos | 10.10.5.10:69/udp, :8080 (HTTP assets) |
+| PXE / TFTP server | custom iPXE 1.21.1+ built from source (apps/pxe/) — USB_HCD_USBIO fix for Intel Q170. Dynamic menu auto-listed from /mnt/tank/system/pxe/http/extras/{utils,distros,live}/*.iso by apps/pxe/pxe-genmenu.sh. Operator runbook: `docs/pxe-operator.md` | 10.10.5.10:69/udp (TFTP), :8080 (HTTP assets) |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
