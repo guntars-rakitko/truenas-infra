@@ -61,7 +61,38 @@ WORKDIR /ipxe/src
 RUN make -j$(nproc) bin-x86_64-efi/snponly.efi EMBED=embed.ipxe
 
 # ──────────────────────────────────────────────────────────────────
-# Stage 2: Runtime
+# Stage 2: memtest86plus extractor
+# ──────────────────────────────────────────────────────────────────
+#
+# memtest86plus v8.00 does NOT publish individual .efi files as
+# github release assets (confirmed via api.github.com on 2026-04-22 —
+# the release has zero assets). The only official distribution
+# channel for pre-built binaries is a ZIP at memtest.org:
+#   https://www.memtest.org/download/v8.00/mt86plus_8.00.binaries.zip
+#
+# iPXE can't unzip. So we extract the binary once at image-build time
+# and bake it in. Bumping MEMTEST_VERSION below + rebuild gets the
+# latest into every container restart.
+FROM alpine:3.20 AS memtest-extractor
+
+# Note: memtest86plus v8.x ZIP ships only Linux-bootable kernels
+# (mt86p_XXX_x86_64 multiboot image), NOT EFI binaries. iPXE boots
+# these via `kernel <url>; boot`. The filename pattern in the zip is
+# `mt86p_<ver-digits>_x86_64` — e.g. v8.00 → mt86p_800_x86_64.
+ARG MEMTEST_VERSION=8.00
+ARG MEMTEST_ZIP_NAME=mt86p_800_x86_64
+RUN apk add --no-cache curl unzip && \
+    mkdir -p /out && \
+    cd /tmp && \
+    curl -fsSL -o mt.zip \
+        "https://www.memtest.org/download/v${MEMTEST_VERSION}/mt86plus_${MEMTEST_VERSION}.binaries.zip" && \
+    unzip mt.zip && \
+    ls -la && \
+    cp "${MEMTEST_ZIP_NAME}" /out/memtest.bin && \
+    ls -la /out/
+
+# ──────────────────────────────────────────────────────────────────
+# Stage 3: Runtime
 # ──────────────────────────────────────────────────────────────────
 FROM alpine:3.20
 
@@ -88,6 +119,7 @@ RUN addgroup -g 1000 nbxyz && \
 # binary into /srv/tftp/ipxe.efi on each container start — after the
 # first run it's a no-op (content-identical overwrite).
 COPY --from=ipxe-builder /ipxe/src/bin-x86_64-efi/snponly.efi /opt/ipxe-bin/ipxe.efi
+COPY --from=memtest-extractor /out/memtest.bin /opt/ipxe-bin/memtest.bin
 RUN chown -R nbxyz:nbxyz /opt/ipxe-bin
 
 COPY entrypoint.sh /entrypoint.sh

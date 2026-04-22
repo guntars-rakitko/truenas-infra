@@ -1,52 +1,94 @@
 #!ipxe
-# Utilities — small curated set, all fetched via the nginx proxy
-# cache at ${cache_url} (http://10.10.5.10:8080). First PXE-boot of
-# each item is internet-speed while nginx downloads + caches; every
-# subsequent boot is LAN-speed. Cache entries evict after 30 days of
-# non-use.
+# Utilities — curated rescue / diagnostic tools, cached via nginx
+# proxy at ${cache_url}. Most items are multi-hundred-MB hybrid ISOs
+# `sanboot`ed directly (loaded into RAM). RAM is the limit: nodes
+# with <4 GB RAM may struggle with the larger ISOs.
+#
+# URL pinning strategy:
+#   * EFI binaries (memtest, uefishell) — served directly from TFTP
+#     (baked into image) or nginx local
+#   * ISO images — pinned version in menu URL; nginx proxies to
+#     upstream origin and caches on first fetch.
 
 :start
 menu Utilities
-item --gap -- --- RAM / hardware ---
-item memtest      Memtest86+ (latest)
-item --gap -- --- ZFS ---
-item zbm          ZFSBootMenu (latest recovery image)
-item --gap -- --- Low-level ---
+item --gap -- --- RAM / Boot ---
+item memtest      Memtest86+ v8.00 (small, instant)
+item supergrub2   Super Grub2 Disk (bootloader rescue, ~18 MB)
+item --gap -- --- Partition / Disk ---
+item gparted      GParted Live 1.8.1 (~450 MB)
+item clonezilla   Clonezilla Live 3.2.2 (~400 MB)
+item --gap -- --- Rescue ---
+item sysresc      SystemRescue 12.03 (full rescue, ~900 MB)
+item --gap -- --- Secure erase ---
+item shredos      ShredOS 2025.11 (DBAN replacement)
+item --gap -- --- ZFS / Low-level ---
+item zbm          ZFSBootMenu v3.1.0 recovery
 item uefishell    UEFI Shell v2.2 (TianoCore EDK2)
 item --gap -- ---
 item back         Back to main menu
 choose --default memtest --timeout 30000 target || goto back
 goto ${target}
 
-# Memtest86+ latest — single EFI binary from github release.
-# Github's /releases/latest/download/<file> auto-redirects to the
-# current release, so nginx's proxy /memtest/ always maps to "the
-# currently-latest binary". When a new version ships upstream the
-# next PXE-boot of this item fetches it fresh.
+# ─── Tiny EFI binaries — served from TFTP (baked into image) ───────
+
 :memtest
-echo Booting Memtest86+ (latest from NAS proxy cache)
-chain --autofree ${cache_url}/memtest/memtest64.efi || goto fail
+echo Booting Memtest86+ v8.00 (Linux kernel image)
+imgfree
+kernel tftp://10.10.5.10/memtest.bin
+boot || goto fail
 goto start
 
-# UEFI Shell — stable TianoCore EDK2 release, pinned to edk2-stable202408.
-# Bump the pin in /etc/nginx/nginx.conf when a newer EDK2 tag is wanted.
 :uefishell
 echo Booting UEFI Shell v2.2 (TianoCore EDK2)
 chain --autofree ${cache_url}/uefishell/Shell.efi || goto fail
 goto start
 
-# ZFSBootMenu — latest recovery image (single bootable EFI).
+# ─── ZFSBootMenu — pinned version ──────────────────────────────────
+
 :zbm
-echo Booting ZFSBootMenu (recovery shell)
-chain --autofree ${cache_url}/zbm/zfsbootmenu-EFI-x86_64.EFI || goto fail
+echo Booting ZFSBootMenu v3.1.0 (recovery shell)
+chain --autofree ${cache_url}/zbm/zfsbootmenu-recovery-x86_64-v3.1.0-linux6.18.EFI || goto fail
 goto start
+
+# ─── ISO-based tools (sanboot) ─────────────────────────────────────
+
+:gparted
+echo Booting GParted Live 1.8.1
+sanboot --no-describe ${cache_url}/gparted/gparted-live-1.8.1-1/gparted-live-1.8.1-1-amd64.iso || goto fail
+goto start
+
+:clonezilla
+echo Booting Clonezilla Live 3.2.2
+sanboot --no-describe ${cache_url}/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.iso || goto fail
+goto start
+
+:sysresc
+echo Booting SystemRescue 12.03
+sanboot --no-describe ${cache_url}/sysresc/12.03/systemrescue-12.03-amd64.iso || goto fail
+goto start
+
+:supergrub2
+echo Booting Super Grub2 Disk
+sanboot --no-describe ${cache_url}/supergrub2/2.06s1/super_grub2_disk_hybrid_2.06s1.iso || goto fail
+goto start
+
+:shredos
+echo Booting ShredOS (secure disk wipe)
+sanboot --no-describe ${cache_url}/shredos/v2025.11_29_x86-64_0.40/shredos-2025.11_29_i686_v0.40_20260402_lite.iso || goto fail
+goto start
+
+# ─── Failure handler ───────────────────────────────────────────────
 
 :fail
 echo
-echo Boot failed. The proxy cache tried to fetch upstream but the
-echo download errored. Check NAS connectivity and nginx logs:
-echo   docker logs pxe | tail -30
-echo   curl -I ${cache_url}/<path>     shows X-Cache-Status header
+echo Boot failed. Possible causes:
+echo   1. First-time fetch — check NAS internet connectivity.
+echo   2. Upstream URL shifted — inspect nginx proxy logs:
+echo        docker logs pxe | tail -30
+echo   3. Specific version in menu is stale — update the URL.
+echo
+echo   curl -I ${cache_url}/<path>  shows X-Cache-Status header
 echo
 prompt Press any key to return to the Utilities menu...
 goto start

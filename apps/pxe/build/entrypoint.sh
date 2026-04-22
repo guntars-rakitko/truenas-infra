@@ -31,6 +31,18 @@ install -o nbxyz -g nbxyz -m 0644 \
     /opt/ipxe-bin/ipxe.efi /srv/tftp/ipxe.efi
 echo "[entrypoint] ipxe.efi deployed to /srv/tftp/ipxe.efi"
 
+# Bake-in binaries that don't have direct release URLs (memtest86plus
+# only ships as a zip, so we extracted during image build). Deploy
+# into /srv/tftp so dnsmasq can serve them, mirroring the ipxe.efi
+# pattern.
+#
+# NOTE: memtest86plus v8.x dropped EFI binaries — only ships a
+# Linux-bootable kernel (multiboot). iPXE boots it via
+# `kernel <url>; boot` rather than `chain`.
+install -o nbxyz -g nbxyz -m 0644 \
+    /opt/ipxe-bin/memtest.bin /srv/tftp/memtest.bin
+echo "[entrypoint] memtest.bin deployed to /srv/tftp/memtest.bin"
+
 echo "[entrypoint] dnsmasq serving TFTP from /srv/tftp (port 69/udp)"
 echo "[entrypoint] nginx  serving HTTP from /srv/http (port 80)"
 

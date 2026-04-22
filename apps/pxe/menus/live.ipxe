@@ -14,6 +14,8 @@ item ubuntu-22-04  Ubuntu 22.04 Desktop Live  [N-1 LTS]
 item --gap -- --- Debian Live (KDE) ---
 item debian-13     Debian 13 "trixie" Live    [stable]
 item debian-12     Debian 12 "bookworm" Live  [oldstable]
+item --gap -- --- Privacy / offline ---
+item tails         Tails (amnesic Tor-only live)
 item --gap -- ---
 item back          Back to main menu
 choose --default ubuntu-24-04 --timeout 30000 target || goto back
@@ -47,6 +49,17 @@ goto start
 :debian-12
 echo Booting Debian 12 Live KDE (sanboot)
 sanboot --no-describe ${cache_url}/debian-live/debian-live-12.11.0-amd64-kde.iso || goto fail
+goto start
+
+# ─── Tails ─────────────────────────────────────────────────────────
+#
+# Tails ISOs versioned in the URL (tails-amd64-<version>/tails-amd64-
+# <version>.iso). Bump version in menu URL when Tails ships a new
+# point release.
+
+:tails
+echo Booting Tails 6.9 (amnesic Tor live)
+sanboot --no-describe ${cache_url}/tails/tails-amd64-6.9/tails-amd64-6.9.iso || goto fail
 goto start
 
 :fail
