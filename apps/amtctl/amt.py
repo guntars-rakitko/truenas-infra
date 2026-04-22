@@ -730,3 +730,145 @@ class AMTClient:
         r2 = await self._client.post(self.url, data=env_put, auth=self._auth)
         if r2.status_code != 200:
             raise AMTError(self.host, "http", f"Put boot settings failed: HTTP {r2.status_code}: {r2.text[:300]}")
+
+    # ── Generic singleton Put (Batch 1+ provisioning) ────────────────────
+
+    async def put_singleton(
+        self,
+        uri: str,
+        class_name: str,
+        overlay: dict[str, str],
+    ) -> dict[str, str]:
+        """Read-modify-write of a singleton WS-MAN instance.
+
+        1. GET the current instance body.
+        2. For each (field, new_value) in `overlay`: replace the field's
+           value if present, or append `<g:field>value</g:field>` if
+           absent (new in this firmware version — rare).
+        3. PUT the modified body back.
+
+        Returns a diff dict: {field: (old, new)} for fields that actually
+        changed. Unchanged fields are omitted. Missing-and-added fields
+        appear with old="".
+
+        WARNING: WS-MAN Put semantics replace the *whole* instance. Fields
+        the caller doesn't include stay at their current values because
+        we Get-Modify-Put. Don't use this helper if any field needs to be
+        cleared to default — the preserved body keeps old values intact.
+        """
+        assert self._client is not None, "use `async with AMTClient(...)`"
+
+        # 1. GET current instance
+        get_raw = await self._post(f"{_WST}/Get", uri, "")
+
+        # 2. Extract the inner body between <ns:ClassName>…</ns:ClassName>
+        m = re.search(
+            rf"<[a-z0-9]+:{class_name}[^>]*>(.*?)</[a-z0-9]+:{class_name}>",
+            get_raw, re.DOTALL,
+        )
+        if not m:
+            raise AMTError(
+                self.host, "soap_fault",
+                f"Get {class_name}: response had no body element",
+            )
+        inner = m.group(1)
+
+        # 3. Overlay each field, tracking what actually changed
+        diff: dict[str, str] = {}
+        for field, new_val in overlay.items():
+            pat = rf"<([a-z0-9]+):{field}>([^<]*)</\1:{field}>"
+            mm = re.search(pat, inner)
+            if mm:
+                old_val = mm.group(2)
+                if old_val == new_val:
+                    continue  # no-op
+                diff[field] = f"{old_val!r} → {new_val!r}"
+                inner = re.sub(
+                    pat,
+                    lambda m, nv=new_val: f"<{m.group(1)}:{field}>{nv}</{m.group(1)}:{field}>",
+                    inner,
+                    count=1,
+                )
+            else:
+                # Field not present — append with default 'g' prefix
+                diff[field] = f"<absent> → {new_val!r}"
+                inner += f"<g:{field}>{new_val}</g:{field}>"
+
+        # 4. Short-circuit if nothing changed
+        if not diff:
+            return {}
+
+        # 5. Wrap + PUT
+        body = f'<g:{class_name} xmlns:g="{uri}">{inner}</g:{class_name}>'
+        put_response = await self._post(f"{_WST}/Put", uri, body)
+
+        # 6. Verify — AMT returns HTTP 200 with the old value for
+        #    silently-read-only fields (e.g. AMT_GeneralSettings.HostOSFQDN
+        #    which is only LMS-writable). Scan the PUT response body for
+        #    any overlay field whose echoed value still differs from
+        #    what we intended, and annotate the diff as a silent refusal.
+        silently_refused: list[str] = []
+        for field in list(diff.keys()):
+            mm = re.search(rf"<[a-z0-9]+:{field}>([^<]*)</", put_response)
+            if mm:
+                echoed = mm.group(1)
+                if echoed != overlay[field]:
+                    silently_refused.append(field)
+                    diff[field] = f"{diff[field]}  ⚠ REFUSED (still {echoed!r} on read-back)"
+        if silently_refused:
+            # Non-fatal — leave it to the caller to decide how to handle.
+            # Typically means the field is read-only via remote WS-MAN.
+            pass
+        return diff
+
+    # ── Time synchronisation ─────────────────────────────────────────────
+
+    async def sync_time(self) -> dict[str, Any]:
+        """Force AMT's clock to current manager (local) UTC.
+
+        Two-step protocol per the Intel AMT SDK:
+          1. GetLowAccuracyTimeSynch → Ta0 (AMT's current unix time)
+          2. SetHighAccuracyTimeSynch(Ta0, Tm1, Tm2) where Tm1 = our
+             unix time at call-1 completion, Tm2 = our unix time now.
+
+        Returns a dict with the before/after times for logging.
+        """
+        import time as _time
+        uri = "http://intel.com/wbem/wscim/1/amt-schema/1/AMT_TimeSynchronizationService"
+
+        # Step 1: Get AMT's current time
+        action_low = f"{uri}/GetLowAccuracyTimeSynch"
+        # Methods use an _INPUT envelope, but GetLowAccuracyTimeSynch has
+        # no input params — send an empty <g:GetLowAccuracyTimeSynch_INPUT/>.
+        body_low = (
+            '<g:GetLowAccuracyTimeSynch_INPUT '
+            f'xmlns:g="{uri}"/>'
+        )
+        r_low = await self._post(action_low, uri, body_low)
+        m_ta0 = re.search(r"<[a-z0-9]+:Ta0>(\d+)</", r_low)
+        if not m_ta0:
+            raise AMTError(self.host, "soap_fault", "GetLowAccuracyTimeSynch: no Ta0 in response")
+        ta0 = int(m_ta0.group(1))
+        tm1 = int(_time.time())
+
+        # Step 2: Set high-accuracy sync
+        action_high = f"{uri}/SetHighAccuracyTimeSynch"
+        tm2 = int(_time.time())
+        body_high = (
+            f'<g:SetHighAccuracyTimeSynch_INPUT xmlns:g="{uri}">'
+            f'<g:Ta0>{ta0}</g:Ta0>'
+            f'<g:Tm1>{tm1}</g:Tm1>'
+            f'<g:Tm2>{tm2}</g:Tm2>'
+            f'</g:SetHighAccuracyTimeSynch_INPUT>'
+        )
+        r_high = await self._post(action_high, uri, body_high)
+        m_rv = re.search(r"<[a-z0-9]+:ReturnValue>(\d+)</", r_high)
+        rv = int(m_rv.group(1)) if m_rv else -1
+
+        return {
+            "amt_time_before": ta0,
+            "manager_time_before": tm1,
+            "manager_time_after": tm2,
+            "return_value": rv,  # 0 == success
+            "drift_seconds": tm2 - ta0,
+        }

@@ -13,10 +13,11 @@ nodes. FastAPI sidecar polls each node's ME firmware via WS-MAN every
 
 | Path | Role |
 |---|---|
-| `amt.py` | Async WS-MAN client (httpx + digest auth + SOAP/XML) |
+| `amt.py` | Async WS-MAN client (httpx + digest auth + SOAP/XML) — also reused by `../../tools/amt_fleet_{audit,apply}.py` |
 | `main.py` | FastAPI app: background poller + endpoints + static UI serve |
 | `web/index.html` | Single-file dashboard (vanilla JS + CSS, no build) |
 | `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries |
+| `canonical.yaml` | Fleet-wide AMT configuration (applied by `amt_fleet_apply.py`) |
 | `secrets.sops.yaml` | AMT admin creds (SOPS-encrypted) |
 | `docker-compose.yaml` | python:3.13-alpine + runtime venv bootstrap |
 | `Dockerfile` | Reference (not used — compose does runtime install) |
@@ -62,6 +63,51 @@ AMT-derived data. When a node is offline, graceful degradation keeps
 the AMT-only view working.
 
 See kube-infra CLAUDE.md for the full plan + prerequisites.
+
+## Fleet AMT provisioning (canonical state)
+
+Two laptop-run tools under `../../tools/` manage fleet-wide AMT
+configuration — like `bios-config` but for AMT/ME settings instead of
+BIOS NVRAM.
+
+- **`tools/amt_fleet_audit.py`** — read-only diff across all 6 nodes.
+  Shows drift from the canonical in `canonical.yaml`.
+- **`tools/amt_fleet_apply.py`** — asserts canonical state. Idempotent
+  (Put with read-modify-write + read-back verification). Use `--dry-run`
+  to preview; `--apply` to write; `--node <name>` to target one box.
+
+```sh
+cd ~/Documents/github/truenas-infra
+# Preview fleet drift
+uv run --python 3.11 --with httpx --with anyio --with pyyaml \
+    python tools/amt_fleet_apply.py --dry-run
+
+# Apply canonical across all 6 nodes
+uv run --python 3.11 --with httpx --with anyio --with pyyaml \
+    python tools/amt_fleet_apply.py --apply
+```
+
+What `canonical.yaml` manages:
+
+| Class | Why |
+|---|---|
+| `AMT_GeneralSettings` | Identity (HostName/Domain), DDNS disabled, ping/RMCP responses, network-interface state |
+| `AMT_EthernetPortSettings` | DHCP on, shared MAC/IP with OS side (transparent AMT on mgmt VLAN) |
+| `IPS_KVMRedirectionSettingData` | No legacy 5900/VNC, no OptIn prompt, 120-min KVM session timeout |
+| `AMT_TimeSynchronizationService` (method) | Force AMT clock to manager UTC every apply — audit logs get real timestamps |
+
+Findings from the 2026-04-22 discovery:
+
+- `HostOSFQDN` is **not remotely writable** via WS-MAN — only
+  LMS-writable. Talos has no LMS agent, so whatever ME has latched
+  stays latched. prd-01 has a stale `dev-srv-03.w1.lv` from a prior
+  OS install; harmless because effective AMT FQDN resolves correctly
+  via `HostName + DomainName + SharedFQDN=true`. `put_singleton` has
+  read-back verification that flags silent refusals with ⚠.
+- AMT clocks across the fleet were 10-22 years off (prd-01 at 2004,
+  rest at 2016). Every apply run force-syncs via
+  `SetHighAccuracyTimeSynch` — no cronjob needed unless drift
+  reappears.
 
 ## Operator notes
 
