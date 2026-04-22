@@ -1,0 +1,104 @@
+#!ipxe
+# Homelab PXE top-level menu.
+#
+# Served from NAS TFTP at /config/menus/menu.ipxe. Overrides the copy
+# of upstream netboot.xyz/2.0.89/menu.ipxe that the container's init.sh
+# extracts into the same directory.
+#
+# Why our own menu instead of upstream's:
+#   * We use ~2% of upstream's menu tree (Talos + BIOS apply). 98% is
+#     noise (every Linux distro ever, every rescue tool, FreeDOS,
+#     Windows, netboot.xyz ads, etc.).
+#   * Upstream's menu.ipxe chains its own boot.cfg from the CDN with a
+#     relative URL that CWD-pops us to the upstream site when loaded
+#     over HTTPS — our local boot.cfg is never consulted, so overrides
+#     like site_name / sigs_enabled don't apply.
+#   * Upstream's sig-verify path (:verify_sigs → imgverify) fails every
+#     sub-menu chain with EACCES ("permission denied") because netboot
+#     .xyz rotated the image-signing cert in 3.0.0 and the 2.0.89
+#     iPXE binary we're pinned to embeds the pre-rotation cert.
+#
+# Design rules (don't break these):
+#   1. This script NEVER exits at the top level. All paths either chain
+#      to an OS boot (iPXE exits via `boot`/`sanboot`) or `goto main`.
+#      Reason: the netboot.xyz 2.0.89 iPXE binary's embedded :tftpmenu
+#      block runs `goto menu` (→ chains upstream menu.ipxe) AFTER a
+#      successful chain to us. Exiting drops the user onto the upstream
+#      menu. Staying in-loop keeps us in control.
+#   2. :local uses `sanboot --no-describe --drive 0x80` instead of
+#      `exit` for the same reason.
+#   3. boot.cfg is chained with an ABSOLUTE TFTP URL to avoid any CWD
+#      surprises from the embedded script's chain-chain path.
+
+chain --autofree tftp://10.10.5.10/boot.cfg || echo boot.cfg failed to load, using defaults
+
+:main
+clear menu
+menu ${site_name} PXE - next-server: ${next-server}
+item --gap -- --- Homelab ---
+item talos        Install / wipe Talos (K8s cluster node)
+item bios         Apply canonical BIOS + AMT config (bios-config MVP)
+item --gap -- --- Tools ---
+item utils        Utilities: Memtest, GParted, SystemRescue, ZFSBootMenu, UEFI Shell
+item --gap -- --- Distributions ---
+item linux        Linux network installers (Ubuntu, Debian, Arch, Fedora, ...)
+item live         Live CDs
+item --gap -- --- System ---
+item local        Boot from local disk
+item shell        Drop to iPXE shell
+item netinfo      Show network info
+choose --default local --timeout 60000 selected || goto local
+goto ${selected}
+
+# ─── Homelab items ──────────────────────────────────────────────────
+
+:talos
+chain --autofree tftp://10.10.5.10/talos.ipxe || goto main
+
+:bios
+chain --autofree tftp://10.10.5.10/bios.ipxe || goto main
+
+# ─── Reuse upstream 2.0.89 sub-menus (already extracted to TFTP root) ─
+#
+# These files were extracted by the netboot.xyz container's init.sh from
+# the 2.0.89 menus tarball into /config/menus/. They use our boot.cfg's
+# mirror vars and ${live_endpoint}. Because our boot.cfg sets
+# sigs_enabled=false, the :verify_sigs block is skipped (would otherwise
+# fail EACCES due to the rotated signing cert).
+
+:utils
+chain --autofree tftp://10.10.5.10/utils-efi.ipxe || goto main
+
+:linux
+chain --autofree tftp://10.10.5.10/linux.ipxe || goto main
+
+:live
+chain --autofree tftp://10.10.5.10/live.ipxe || goto main
+
+# ─── System items ───────────────────────────────────────────────────
+
+:shell
+echo Type "exit" to return to the menu.
+shell
+goto main
+
+:netinfo
+echo
+echo IP address:  ${ip}
+echo Netmask:     ${netmask}
+echo Gateway:     ${gateway}
+echo DNS:         ${dns}
+echo MAC:         ${mac}
+echo Next-server: ${next-server}
+echo Filename:    ${filename}
+echo Platform:    ${platform} (arch=${arch})
+echo iPXE build:  ${version}
+echo
+prompt Press any key to return to the menu...
+goto main
+
+:local
+# Try to sanboot the first local disk. On success, iPXE exits into the
+# OS. On failure, loop back to the menu (don't exit — that'd trigger
+# the upstream :menu fallback; see design rule 1 above).
+sanboot --no-describe --drive 0x80 || goto main

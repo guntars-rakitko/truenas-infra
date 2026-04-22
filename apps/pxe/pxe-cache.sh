@@ -26,7 +26,12 @@
 # None of the origin URLs here point at netboot.xyz — everything is
 # pulled directly from distro / project origins.
 
-set -euo pipefail
+# NO `set -e`. We WANT individual fetch failures to be logged and
+# skipped without halting the whole run — if Ubuntu's mirror is down
+# and GParted isn't, the GParted download should still happen. The
+# fetch() helper below returns non-zero on failure and logs it; the
+# top-level flow just continues past.
+set -uo pipefail
 
 DEST="${DEST:-/mnt/tank/system/pxe/http}"
 LOG="${LOG:-/mnt/tank/system/apps-config/pxe/pxe-cache.log}"
@@ -67,16 +72,23 @@ log "pxe-cache starting — DEST=${DEST}"
 
 # ─── Utilities ──────────────────────────────────────────────────────
 
-# Memtest86+ — github release
-fetch https://github.com/memtest86plus/memtest86plus/releases/download/v7.00/mt86plus_7.00.binaries.zip \
-      "${DEST}/utils/memtest/_download.zip"
-# Extract memtest.efi from the zip
+# Memtest86+ — github release. Update MT_VERSION when upstream ships a
+# new one; the binaries zip is consistently named mt86plus_<ver>.binaries.zip.
+MT_VERSION="7.20"
+fetch "https://github.com/memtest86plus/memtest86plus/releases/download/v${MT_VERSION}/mt86plus_${MT_VERSION}.binaries.zip" \
+      "${DEST}/utils/memtest/_download.zip" || true
+# Extract memtest64.efi from the zip. Skip if the zip isn't there or
+# extraction already happened. `unzip` requires the `unzip` binary —
+# TrueNAS includes it by default under /usr/bin/unzip.
 if [[ -f "${DEST}/utils/memtest/_download.zip" && ! -f "${DEST}/utils/memtest/memtest.efi" ]]; then
-    log "EXTRACT memtest.efi"
-    unzip -o -j "${DEST}/utils/memtest/_download.zip" \
-        "memtest64.efi" -d "${DEST}/utils/memtest/" 2>&1 | tee -a "${LOG}"
-    mv "${DEST}/utils/memtest/memtest64.efi" "${DEST}/utils/memtest/memtest.efi"
-    chown 1000:1000 "${DEST}/utils/memtest/memtest.efi"
+    log "EXTRACT memtest64.efi from zip"
+    if unzip -o -j "${DEST}/utils/memtest/_download.zip" \
+            "memtest64.efi" -d "${DEST}/utils/memtest/" 2>&1 | tee -a "${LOG}"; then
+        mv "${DEST}/utils/memtest/memtest64.efi" "${DEST}/utils/memtest/memtest.efi"
+        chown 1000:1000 "${DEST}/utils/memtest/memtest.efi"
+    else
+        log "EXTRACT FAILED (continuing)"
+    fi
 fi
 
 # GParted Live — sourceforge

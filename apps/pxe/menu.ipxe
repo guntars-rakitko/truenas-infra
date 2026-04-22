@@ -32,25 +32,40 @@ item local        Boot from local disk
 item shell        Drop to iPXE shell
 item netinfo      Show network info
 item reboot       Reboot
-choose --default local --timeout 60000 selected || goto local
+# Esc / timeout / no-choice → back to main menu (NOT local-boot).
+# Local boot is explicit — operator picks it. This prevents accidentally
+# losing the menu when someone taps Esc.
+choose --default local --timeout 60000 selected || goto main
 goto ${selected}
 
 # ─── Homelab items ──────────────────────────────────────────────────
+#
+# Each item chains a sub-menu, then `goto main` unconditionally. The
+# `|| goto main` after chain catches FAILURE (file missing, network
+# issue). Without an extra `goto main` after the `||` line, iPXE
+# would fall through to the NEXT label when the chain succeeds and
+# the sub-menu exits — silently running the next menu in source order.
+# Each item block is now self-terminating either way.
 
 :talos
 chain --autofree tftp://10.10.5.10/talos.ipxe || goto main
+goto main
 
 :bios
 chain --autofree tftp://10.10.5.10/bios.ipxe || goto main
+goto main
 
 :utils
 chain --autofree tftp://10.10.5.10/utils.ipxe || goto main
+goto main
 
 :linux
 chain --autofree tftp://10.10.5.10/linux.ipxe || goto main
+goto main
 
 :live
 chain --autofree tftp://10.10.5.10/live.ipxe || goto main
+goto main
 
 # ─── System items ───────────────────────────────────────────────────
 

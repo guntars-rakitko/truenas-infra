@@ -1,0 +1,31 @@
+#!ipxe
+# Homelab autoexec.ipxe — probed by iPXE at boot time BEFORE the
+# embedded boot script runs. Serves the same role as embed.ipxe, just
+# at TFTP-file granularity instead of baked-into-the-binary.
+#
+# Why both this file AND embed.ipxe (baked into ipxe.efi):
+#   * embed.ipxe is the fallback: if the NAS TFTP is unreachable at
+#     the exact moment iPXE boots, the binary still has logic to show
+#     a shell prompt.
+#   * autoexec.ipxe silences iPXE's "autoexec.ipxe... Not found"
+#     warnings on screen — iPXE always checks for this filename
+#     before falling through to the embed script.
+#
+# Deliberately identical in behavior to embed.ipxe so the user sees
+# the same menu either way.
+
+:start
+echo Homelab iPXE starting...
+dhcp || goto retry
+chain tftp://${next-server}/menu.ipxe || goto retry
+exit 0
+
+:retry
+echo
+echo Boot failed - iPXE shell available for diagnostics.
+echo   config              edit network settings
+echo   chain tftp://...    manual chain retry
+echo   exit                reboot
+echo
+shell
+goto start

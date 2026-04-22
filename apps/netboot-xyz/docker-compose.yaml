@@ -1,0 +1,36 @@
+services:
+  netbootxyz:
+    image: ghcr.io/netbootxyz/netbootxyz:latest
+    container_name: netbootxyz
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.5.10:69:69/udp"     # TFTP
+      - "10.10.5.10:8080:80"       # HTTP (kernel/initramfs assets)
+      - "10.10.5.10:3000:3000"     # Web UI
+    volumes:
+      - /mnt/tank/system/pxe/config:/config
+      - /mnt/tank/system/pxe/assets:/assets
+    environment:
+      - TZ=UTC
+      # Pin to the last netboot.xyz release shipping iPXE 1.21.x.
+      # netboot.xyz 3.0.0 (Jan 2026) bumped iPXE to 2.0.0 which regresses
+      # USB keyboard input in UEFI on Intel Q170-class chipsets (our K8s
+      # nodes — confirmed symptom: keyboard dead in the iPXE menu even
+      # over AMT KVM; BIOS keyboard fine). Unset this once iPXE 2.0.x
+      # ships with USB_HCD_USBIO backported or the upstream xHCI driver
+      # is fixed. See docs/netboot-xyz-ipxe-keyboard-regression.md.
+      - MENU_VERSION=2.0.89
+
+# Talos auto-updater is handled by a TrueNAS host-level cronjob (registered
+# by `phase apps`), not an in-compose sidecar. The cronjob runs daily and:
+#   1. Registers our schematic (apps/netboot-xyz/schematic.yaml) with
+#      factory.talos.dev and caches the schematic ID.
+#   2. Fetches the latest Talos release tag from GitHub.
+#   3. Downloads vmlinuz + initramfs into /mnt/tank/system/pxe/assets/talos/.
+#   4. Renders an iPXE menu entry at
+#      /mnt/tank/system/pxe/config/menus/remote/talos.ipxe.
+#
+# Rationale: sidecar containers with inline-heredoc shell entrypoints are
+# fragile. A host cronjob is simpler, easier to debug, and survives compose
+# regenerations cleanly.

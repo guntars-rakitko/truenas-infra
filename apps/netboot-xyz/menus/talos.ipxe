@@ -1,0 +1,26 @@
+#!ipxe
+# Talos installer menu — chains the dynamically-generated menu
+# produced by the talos-updater cronjob on the NAS.
+#
+# The cronjob (registered by phase apps) runs daily, fetches the
+# latest Talos release, builds vmlinuz + initramfs for our schematic,
+# and writes a menu at /mnt/tank/system/pxe/assets/talos-menu.ipxe
+# (served over HTTP :8080 by the netboot-xyz container's nginx).
+#
+# See docs/talos-pxe-updater.md for the cronjob's flow.
+
+:start
+chain --autofree http://10.10.5.10:8080/talos-menu.ipxe || goto no-menu
+
+:no-menu
+echo
+echo ERROR: http://10.10.5.10:8080/talos-menu.ipxe not available.
+echo The talos-updater cronjob has not produced the menu yet.
+echo
+echo Check on the NAS:
+echo   * ls -la /mnt/tank/system/pxe/assets/talos-menu.ipxe
+echo   * tail /mnt/tank/system/apps-config/talos-updater/talos-updater.log
+echo   * midclt call cronjob.query    (look for talos-updater)
+echo
+prompt Press any key to return to the main menu...
+exit 1
