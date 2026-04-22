@@ -5,13 +5,13 @@
 # Chained from ipxe.efi's embedded boot script on every PXE boot.
 #
 # Design:
-#   * This is the ONLY menu logic — no upstream fallback, no
+#   * This is the ONLY menu logic -- no upstream fallback, no
 #     netboot.xyz heritage. What you see here is what you get.
 #   * Sub-menus (menus/*.ipxe) are hand-curated; no auto-extraction
 #     of tarballs, no signature verification, no third-party
 #     indirection.
 #   * Kernel/initrd URLs in sub-menus point at http://10.10.5.10:8080
-#     (our own nginx serving NAS-cached assets) — mirrored from
+#     (our own nginx serving NAS-cached assets) -- mirrored from
 #     upstream distro origins by the `pxe-cache` cronjob.
 
 chain --autofree tftp://10.10.5.10/boot.cfg || echo boot.cfg not found, using defaults
@@ -33,7 +33,7 @@ item shell        Drop to iPXE shell
 item netinfo      Show network info
 item reboot       Reboot
 # Esc / timeout / no-choice → back to main menu (NOT local-boot).
-# Local boot is explicit — operator picks it. This prevents accidentally
+# Local boot is explicit -- operator picks it. This prevents accidentally
 # losing the menu when someone taps Esc.
 choose --default local --timeout 60000 selected || goto main
 goto ${selected}
@@ -44,7 +44,7 @@ goto ${selected}
 # `|| goto main` after chain catches FAILURE (file missing, network
 # issue). Without an extra `goto main` after the `||` line, iPXE
 # would fall through to the NEXT label when the chain succeeds and
-# the sub-menu exits — silently running the next menu in source order.
+# the sub-menu exits -- silently running the next menu in source order.
 # Each item block is now self-terminating either way.
 
 :talos
@@ -95,6 +95,6 @@ reboot
 
 :local
 # sanboot the first local disk. On success, iPXE exits into the OS.
-# On failure, loop back to menu (don't `exit` — there's no upstream
+# On failure, loop back to menu (don't `exit` -- there's no upstream
 # fallback, so `exit` would just reboot the node and we'd loop PXE).
 sanboot --no-describe --drive 0x80 || goto main

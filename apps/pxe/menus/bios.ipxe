@@ -1,5 +1,5 @@
 #!ipxe
-# BIOS apply — sanboots the FAT disk image built by
+# BIOS apply -- sanboots the FAT disk image built by
 # bios-config/tools/build-bios-apply-img.sh. UEFI firmware mounts
 # the image as a virtual disk, boots EFI/BOOT/BOOTX64.EFI, which
 # auto-runs startup.nsh → setup_var.efi → applies settings.txt.

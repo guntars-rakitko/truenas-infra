@@ -591,11 +591,13 @@ PXE_HTTP_DIR = "/mnt/tank/system/pxe/http"
 PXE_BUILD_CONTEXT_DIR = Path("apps/pxe/build")
 PXE_BUILD_CONTEXT_REMOTE_DIR = "/mnt/tank/system/apps-config/pxe/build"
 
-# No pxe-cache script — see commentary on ensure_pxe_cache above.
-# nginx inside the pxe container handles caching as a lazy
-# reverse-proxy. Disk: /mnt/tank/system/pxe/cache, bind-mounted into
-# the container at /srv/cache/pxe.
-PXE_CACHE_DIR = "/mnt/tank/system/pxe/cache"
+# Local-asset scripts — run on the NAS host to populate
+# /mnt/tank/system/pxe/http/extras/ with ISOs + auxiliary files and
+# regenerate the dynamic menu listings. No proxying, no caching
+# magic — just curl → local file → nginx static-serves.
+PXE_DOWNLOAD_SCRIPT_PATH = Path("apps/pxe/pxe-download.sh")
+PXE_GENMENU_SCRIPT_PATH  = Path("apps/pxe/pxe-genmenu.sh")
+PXE_SCRIPTS_REMOTE_DIR   = "/mnt/tank/system/apps-config/pxe"
 
 # bios-config PXE bios-apply image — built in the sibling `bios-config`
 # repo by `./tools/build-bios-apply-img.sh`; uploaded here so
@@ -721,8 +723,7 @@ def run(
     if only in (None, "pxe"):
         _ensure_pxe_build_context_via_ctx(cli, ctx, log)
         _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
-        # pxe-cache.sh removed — nginx inside the container handles
-        # caching as a lazy reverse-proxy (see apps/pxe/build/nginx.conf).
+        _ensure_pxe_scripts_via_ctx(cli, ctx, log)
         _ensure_pxe_bios_apply_img_via_ctx(cli, ctx, log)
 
     # 5. TLS cert export + rotation scripts. Ships to /mnt/tank/system/tls/
@@ -1062,6 +1063,52 @@ def _ensure_pxe_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         log.info("pxe_menu_ensured",
                  path=f"{PXE_TFTP_DIR}/{name}",
                  action=diff.action, changed=diff.changed)
+
+
+def _ensure_pxe_scripts_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload pxe-download.sh + pxe-genmenu.sh to the NAS and register
+    a cronjob that triggers the downloader. Script runs curl on the
+    NAS to pull each curated asset into
+    /mnt/tank/system/pxe/http/extras/, then calls pxe-genmenu.sh to
+    rewrite the auto-generated utils/distros/live menus based on
+    whatever ISOs it finds.
+
+    Cronjob schedule: weekly Sunday 02:30. Operator can trigger
+    on-demand via `midclt call cronjob.run <id>` (e.g. after editing
+    the script to add a new ISO URL)."""
+    upload = _pxe_upload_helper(cli, ctx)
+    diffs: list[tuple[str, Diff]] = []
+    for p in (PXE_DOWNLOAD_SCRIPT_PATH, PXE_GENMENU_SCRIPT_PATH):
+        if not p.exists():
+            continue
+        remote = f"{PXE_SCRIPTS_REMOTE_DIR}/{p.name}"
+        d = ensure_file_on_nas(
+            cli, upload,
+            local_path=p, remote_path=remote,
+            mode=0o755, apply=ctx.apply,
+        )
+        diffs.append((p.name, d))
+        log.info("pxe_script_ensured", path=remote,
+                 action=d.action, changed=d.changed)
+
+    # Weekly cronjob for the downloader (which also calls genmenu
+    # at the end). Sunday 02:30 because the talos-updater runs at
+    # 03:00 and we don't want them overlapping on the ZFS pool.
+    remote_dl = f"{PXE_SCRIPTS_REMOTE_DIR}/{PXE_DOWNLOAD_SCRIPT_PATH.name}"
+    cron_cmd = (
+        f'/bin/bash -c "/bin/bash {remote_dl} '
+        f'>> {PXE_SCRIPTS_REMOTE_DIR}/pxe-download.log 2>&1"'
+    )
+    cron = ensure_cronjob(
+        cli,
+        description="pxe-download",
+        command=cron_cmd,
+        schedule={"minute": "30", "hour": "2", "dom": "*", "month": "*", "dow": "0"},
+        user="root",
+        apply=ctx.apply,
+    )
+    log.info("pxe_download_cronjob_ensured",
+             action=cron.action, changed=cron.changed)
 
 
 def _ensure_pxe_bios_apply_img_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

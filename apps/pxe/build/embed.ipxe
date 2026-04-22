@@ -3,7 +3,7 @@
 #
 # Baked into the iPXE binary at build time via `make EMBED=embed.ipxe`.
 # Runs first thing when UEFI PXE-loads ipxe.efi. The script is a fresh
-# start each reboot — no state carried over.
+# start each reboot -- no state carried over.
 #
 # Flow:
 #   1. DHCP to get IP + next-server + DHCP option 67 (bootfile name).
@@ -13,14 +13,14 @@
 #      so the operator can diagnose interactively.
 
 :start
-echo Homelab iPXE — booting...
+echo Homelab iPXE -- booting...
 dhcp || goto retry
 chain tftp://${next-server}/menu.ipxe || goto retry
 exit 0
 
 :retry
 echo
-echo Boot failed — iPXE shell available for diagnostics.
+echo Boot failed -- iPXE shell available for diagnostics.
 echo   'config'            edit network settings
 echo   'chain tftp://...'  manual chain retry
 echo   'exit'              reboot

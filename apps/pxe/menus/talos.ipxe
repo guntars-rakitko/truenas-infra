@@ -1,5 +1,5 @@
 #!ipxe
-# Talos Linux installer menu — enhanced with flexibility knobs.
+# Talos Linux installer menu -- enhanced with flexibility knobs.
 #
 # The talos-updater cronjob on the NAS fetches the latest Talos
 # release, builds vmlinuz + initramfs for our schematic, and symlinks
@@ -10,11 +10,11 @@
 # don't have to remember Talos kernel args at 02:00.
 
 :start
-menu Talos — installer
+menu Talos -- installer
 item --gap -- --- Install ---
-item install        Install (or re-install) Talos — latest, wipe disks
-item install-serial Install — serial console (ttyS0 @ 115200n8)
-item install-keep   Install — keep existing data partitions
+item install        Install (or re-install) Talos -- latest, wipe disks
+item install-serial Install -- serial console (ttyS0 @ 115200n8)
+item install-keep   Install -- keep existing data partitions
 item --gap -- --- Diagnostics ---
 item rescue         Boot Talos in maintenance mode (shell)
 item chain-menu     Chain the talos-updater generated menu (raw)
@@ -26,21 +26,21 @@ goto ${target}
 # ─── Install variants ──────────────────────────────────────────────
 
 :install
-echo Installing Talos — latest image, default console, wipe install disk
+echo Installing Talos -- latest image, default console, wipe install disk
 imgfree
 kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 talos.hostname=${hostname} ip=dhcp
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :install-serial
-echo Installing Talos — serial console (ttyS0 @ 115200n8)
+echo Installing Talos -- serial console (ttyS0 @ 115200n8)
 imgfree
 kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 console=ttyS0,115200n8 talos.hostname=${hostname} ip=dhcp
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :install-keep
-echo Installing Talos — preserve existing partitions (reset=system)
+echo Installing Talos -- preserve existing partitions (reset=system)
 imgfree
 kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 talos.hostname=${hostname} ip=dhcp talos.experimental.wipe=system
 initrd ${cache_url}/talos/initramfs
@@ -75,8 +75,8 @@ goto start
 :fail
 echo
 echo ERROR: boot failed. Possible causes:
-echo   * ${cache_url}/talos/vmlinuz returns 404 — run pxe-cache cron
-echo   * Network route missing — check nginx on the NAS
+echo   * ${cache_url}/talos/vmlinuz returns 404 -- run pxe-cache cron
+echo   * Network route missing -- check nginx on the NAS
 echo
 prompt Press any key to return...
 goto start
