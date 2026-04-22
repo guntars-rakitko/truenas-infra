@@ -60,6 +60,15 @@ goto ${target}
 # Other Alpine live framework bits:
 #   modules=loop,squashfs,sd-mod,usb-storage   -- load so modloop can mount
 #   console=tty0                               -- visible on AMT KVM
+#   video=1920x1080 nomodeset                  -- pin framebuffer to 1080p
+#     The nodes use 4K passive HDMI dummy plugs (standardised fleet-wide
+#     in bios-config v1.1.0). The iGPU reads their EDID and boots Linux
+#     into a 3840x2160 framebuffer; AMT KVM then downscales that to its
+#     ~1024x800 viewport, which leaves the console text sub-pixel
+#     microscopic. `nomodeset` keeps i915's KMS off (we're not doing
+#     anything graphical anyway), pinning the firmware efifb, and
+#     `video=1920x1080` asks that efifb to initialise at 1080p --
+#     readable in AMT KVM.
 #
 # Keep the base args identical across profiles so the only variable is
 # stress.profile / stress.hold. Simplifies debugging.
@@ -67,14 +76,14 @@ goto ${target}
 :quick
 echo Booting hw-validation quick profile (guard smoke test)...
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 stress.profile=quick
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=quick
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
 :hold
 echo Booting hw-validation with stress.hold=1 -- drops to shell after init
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 stress.profile=quick stress.hold=1
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=quick stress.hold=1
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
