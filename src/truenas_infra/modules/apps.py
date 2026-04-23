@@ -687,6 +687,14 @@ AMTCTL_LOCAL_DIR = Path("apps/amtctl")
 AMTCTL_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/code"
 AMTCTL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/config"
 
+# stress-dashboard — FastAPI + Jinja2 app that renders hw-validation JSON
+# reports from /mnt/tank/system/stress-results/ (mounted RW so the UI can
+# delete individual reports). Same deploy pattern as amtctl: the container
+# is a stock python:3.13-alpine image, and we upload main.py + templates/
+# to the pool where they get bind-mounted into /app. No image to build.
+STRESS_DASHBOARD_LOCAL_DIR = Path("apps/stress-dashboard")
+STRESS_DASHBOARD_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/stress-dashboard/code"
+
 
 def run(
     cli: Any,
@@ -725,6 +733,8 @@ def run(
         _ensure_meshcentral_config_via_ctx(cli, ctx, log)
     if only in (None, "amtctl"):
         _ensure_amtctl_config_via_ctx(cli, ctx, log)
+    if only in (None, "stress-dashboard"):
+        _ensure_stress_dashboard_config_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -942,6 +952,54 @@ def _ensure_amtctl_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             mode=0o644, apply=ctx.apply,
         )
         log.info("amtctl_file_ensured", path=remote,
+                 action=diff.action, changed=diff.changed)
+
+
+def _ensure_stress_dashboard_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload stress-dashboard app source (main.py + templates/) to the pool.
+
+    Layout on the pool:
+        .../apps-config/stress-dashboard/code/   — bind-mounted /app
+            ├── main.py
+            └── templates/*.html
+
+    Reads from /mnt/tank/system/stress-results/ at runtime (bind-mounted /data,
+    RW so the delete button works). That dataset is provisioned in
+    config/storage.yaml + shares.yaml — not in scope here.
+
+    Files NOT uploaded: docker-compose.yaml (owned by ensure_custom_app).
+    """
+    if not STRESS_DASHBOARD_LOCAL_DIR.is_dir():
+        log.warning("stress_dashboard_config_skipped",
+                    reason="source_missing", path=str(STRESS_DASHBOARD_LOCAL_DIR))
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    SKIP = {"docker-compose.yaml"}
+    for local in sorted(STRESS_DASHBOARD_LOCAL_DIR.rglob("*")):
+        if not local.is_file():
+            continue
+        if local.name in SKIP:
+            continue
+        rel = local.relative_to(STRESS_DASHBOARD_LOCAL_DIR).as_posix()
+        remote = f"{STRESS_DASHBOARD_CODE_REMOTE_DIR}/{rel}"
+        diff = ensure_file_on_nas(
+            cli, _upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("stress_dashboard_file_ensured", path=remote,
                  action=diff.action, changed=diff.changed)
 
 

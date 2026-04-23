@@ -51,6 +51,9 @@ records:
   - name: amtctl.w1.lv
     address: 10.10.5.20
     comment: AMT power control dashboard (via Traefik → 10.10.5.10:8000)
+  - name: stress.w1.lv
+    address: 10.10.5.20
+    comment: hw-validation JSON report viewer (via Traefik → 10.10.5.10:8010)
 
   # ─── NAS infra plane (direct) ───────────────────────────────────────────
   - name: nas.w1.lv

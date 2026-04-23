@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}fleet matrix · stress-dashboard{% endblock %}
+{% block body %}
+<h2>Fleet matrix — latest run per (node × profile)</h2>
+{% if hosts and profiles %}
+<table>
+  <thead>
+    <tr>
+      <th>Node</th>
+      {% for p in profiles %}<th>{{ p }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for h in hosts %}
+    <tr>
+      <td><strong>{{ h }}</strong></td>
+      {% for p in profiles %}
+        {% set cell = grid[h][p] %}
+        <td>
+          {% if cell %}
+            <a href="/report/{{ cell.filename }}">
+              {% if cell.overall_pass %}<span class="badge-pass">PASS</span>
+              {% else %}<span class="badge-fail">FAIL ({{ cell.fail_count }})</span>{% endif %}
+            </a>
+            <div class="muted" style="font-size:11px">{{ cell.started_at[:16] }}</div>
+          {% else %}
+            <span class="badge-empty">—</span>
+          {% endif %}
+        </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No reports yet.</p>
+{% endif %}
+{% endblock %}

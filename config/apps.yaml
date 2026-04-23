@@ -78,6 +78,13 @@ apps:
     bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts amtctl.w1.lv
     description: "Intel AMT power control + status dashboard for K8s nodes"
 
+  - name: stress-dashboard
+    enabled: true
+    compose: apps/stress-dashboard/docker-compose.yaml
+    secrets: null                              # no auth — mgmt VLAN isolation
+    bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts stress.w1.lv
+    description: "hw-validation JSON report viewer (reads /mnt/tank/system/stress-results)"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false

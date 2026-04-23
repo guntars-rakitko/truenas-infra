@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}reports · stress-dashboard{% endblock %}
+{% block body %}
+<div class="stat-row">
+  <div class="stat"><div class="label">Reports</div><div class="value">{{ total }}</div></div>
+  <div class="stat"><div class="label">Passing</div><div class="value badge-pass">{{ passing }}</div></div>
+  <div class="stat"><div class="label">Failing</div><div class="value badge-fail">{{ failing }}</div></div>
+</div>
+
+{% if reports %}
+<table>
+  <thead>
+    <tr>
+      <th>Node</th>
+      <th>Profile</th>
+      <th>Started</th>
+      <th>Duration</th>
+      <th>Tests</th>
+      <th>Result</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in reports %}
+    <tr>
+      <td><a href="/report/{{ r.filename }}">{{ r.hostname }}</a></td>
+      <td>{{ r.profile }}</td>
+      <td class="muted">{{ r.started_at }}</td>
+      <td class="muted">{% if r.duration_s is not none %}{{ r.duration_s }}s{% else %}—{% endif %}</td>
+      <td>
+        {% if r.pass_count %}<span class="badge-pass">{{ r.pass_count }}✓</span>{% endif %}
+        {% if r.fail_count %}<span class="badge-fail">{{ r.fail_count }}✗</span>{% endif %}
+        {% if not r.pass_count and not r.fail_count %}<span class="badge-empty">—</span>{% endif %}
+      </td>
+      <td>
+        {% if r.overall_pass %}<span class="badge-pass">PASS</span>
+        {% elif r.fail_count %}<span class="badge-fail">FAIL</span>
+        {% else %}<span class="badge-empty">—</span>{% endif %}
+      </td>
+      <td>
+        <form method="POST" action="/report/{{ r.filename }}/delete"
+              onsubmit="return confirm('Delete {{ r.filename }}?');"
+              style="display:inline">
+          <button class="btn-delete" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No reports yet — run a hw-validation profile on a node and it'll land here.</p>
+{% endif %}
+{% endblock %}

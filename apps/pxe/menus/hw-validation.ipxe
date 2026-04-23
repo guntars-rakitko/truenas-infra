@@ -2,146 +2,162 @@
 # hw-validation -- PXE-booted stress test for the 6-node K8s cluster.
 #
 # Boots a custom Alpine Linux live image that stress-tests CPU / RAM /
-# NVMe / SATA / both NICs with thermal telemetry, logs JSON to NAS NFS.
-# Companion to bios-config (applies firmware settings) -- this validates
-# the hardware those settings run on.
+# NVMe / SATA / both NICs with thermal telemetry, uploads a JSON report
+# to NAS NFS. Companion to bios-config (applies firmware settings) --
+# this validates the hardware those settings run on.
 #
 # Built in the sibling hw-validation repo:
 #   cd ~/Documents/github/hw-validation && ./tools/build-image.sh
 #   cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
 #
-# The builder emits build/latest/{vmlinuz-lts, initramfs-lts,
-# modloop-lts, overlay.cpio.gz}. `phase apps --apply` uploads those to
-# ${cache_url}/hw-validation/latest/ -- the URLs this menu references.
+# ─── Menu structure ─────────────────────────────────────────────────
 #
-# Phase A (current): only the `quick` profile is wired up -- boots
-# Alpine, runs the disk-safety guard smoke test against real disks
-# (expects all refuses on a Talos-provisioned node), reboots. No
-# destructive I/O, no stress load yet. Later phases add standard /
-# burnin / shell / memtest86+ parallel entries.
-
-:start
-menu hw-validation -- stress test
-item --gap -- --- Profiles ---
-item quick     Phase A smoke test (guards round-trip on real disks, ~2 min)
-item cpu       Phase B-alpha CPU stress (60s all-core + thermal telemetry)
-item ram       Phase C RAM stress (60s stress-ng --vm --verify + telemetry)
-item nvme      Phase C NVMe read (60s fio seq-read @ 1MB, guard-gated, read-only)
-item ssd       Phase C SATA SSD read (60s fio seq-read @ 1MB, /dev/sda, read-only)
-item net-mgmt  Phase C mgmt NIC (I219-LM 1Gb, iperf3 → NAS 10.10.5.10)
-item net-data  Phase C data NIC (I226-V 2.5Gb, iperf3 → NAS prd/dev VLAN)
-item --gap -- --- Advanced ---
-item hold      Boot image, drop to shell (operator debug)
-item --gap -- ---
-item back      Back to main menu
-choose --timeout 30000 --default quick target || goto back
-goto ${target}
-
+# Two-level: top menu picks the profile, then a sub-menu picks the
+# duration. The only value injected into the kernel cmdline is
+# stress.profile=${profile} stress.duration=${duration} -- a single
+# shared :boot-image label does the actual netboot, avoiding duplicate
+# kernel/initrd lines for each (profile × duration) combination.
+#
+# Profiles:
+#   safety        Disk-safety guards round-trip; no stress, no I/O load.
+#                 Fixed ~2 min; no duration submenu.
+#   cpu, ram, nvme, ssd, net-mgmt, net-data
+#                 Single-component stress. Duration submenu: 1/10/30/60 min.
+#   all           Sequential run of all six components. Each component
+#                 gets STRESS_DURATION seconds. Combined submenu: 10/30/60 min.
+#   burnin        Concurrent run of all six. Same combined submenu.
+#
+# Destructive tier (writes to NVMe / SATA -- requires disk already wipe'd):
+#   nvme-write, ssd-write, disk-burnin
+#                 Carry stress.destructive=1. Still guard-gated -- a
+#                 drive with any signature or partition table is refused
+#                 up-front. Operator wipes the drive explicitly before
+#                 running these (stress.profile=safety's round-trip does
+#                 exactly that).
+#
 # ─── Kernel args ────────────────────────────────────────────────────
 #
-# Alpine netboot uses a STOCK initramfs that is just a bootstrap -- it
-# has no /sbin/init of its own. At boot, Alpine's init script parses
-# the kernel cmdline for:
-#
-#   modloop=<URL>      squashfs of kernel modules (sd-mod, nvme, etc.)
+# Alpine netboot uses a stock initramfs as bootstrap. At boot it parses
+# the cmdline for:
+#   modloop=<URL>      squashfs of kernel modules
 #   apkovl=<URL>       our overlay: scripts + /etc/apk/world + repositories
 #   ip=dhcp            both NICs DHCP
 #
-# It fetches both over HTTP, untars the apkovl, then runs `apk add`
-# against the repo listed in /etc/apk/repositories to install
-# alpine-base + our packages. THAT creates /sbin/init. Only then does
-# OpenRC run /etc/local.d/stresstest.start.
+# stresstest.start reads the stress.* keys to pick profile, duration,
+# destructive mode, hold-for-shell, and debug verbosity:
+#   stress.profile=safety|cpu|ram|nvme|ssd|net-mgmt|net-data|all|burnin
+#                                              |nvme-write|ssd-write|disk-burnin
+#   stress.duration=<seconds>                  override default 60s
+#   stress.destructive=1                       permit fio writes
+#   stress.hold=1                              drop to shell after run
+#   stress.debug=1                             verbose modloop/PCI/hwmon dumps
 #
-# Do NOT try to ship apkovl.tar.gz as a second `initrd` directive --
-# the kernel would concatenate it with the stock initramfs (both cpio)
-# and the tar inside would confuse the cpio loader. apkovl is HTTP.
+# Other Alpine live framework bits (same across all entries):
+#   modules=loop,squashfs,sd-mod,usb-storage   load so modloop can mount
+#   console=tty0                               visible on AMT KVM
+#   video=1920x1080 nomodeset                  pin efifb to 1080p for AMT KVM
+#                                              readability (fleet uses 4K
+#                                              passive HDMI dummy plugs)
+#   acpi_enforce_resources=lax                 lets it87/nct6775 bind despite
+#                                              ACPI-claimed Super I/O ports
+
+:start
+menu hw-validation -- stress test
+item --gap -- --- Safety ---
+item safety     Disk-safety guards round-trip (~2 min, no stress)
+item --gap -- --- Single-component (duration submenu) ---
+item cpu        CPU stress (all cores)
+item ram        RAM stress + verify
+item nvme       NVMe read matrix (seq 1M, seq 64k, rand 4k qd32/qd1)
+item ssd        SATA SSD read matrix (same 4 stages)
+item net-mgmt   Mgmt NIC  (I219-LM 1Gb iperf3 -> NAS)
+item net-data   Data NIC  (I226-V 2.5Gb iperf3 -> NAS)
+item --gap -- --- Combined (duration submenu) ---
+item all        All 6 components sequential
+item burnin     All 6 components CONCURRENT (thermal/VRM exercise)
+item --gap -- --- Destructive (bringup only -- wipes target) ---
+item nvme-write   [!] NVMe read + write matrix (stress.destructive=1)
+item ssd-write    [!] SATA SSD read + write matrix (stress.destructive=1)
+item disk-burnin  [!] Both drives, read+write, concurrent
+item --gap -- --- Advanced ---
+item hold       Boot to shell (operator debug)
+item --gap -- ---
+item back       Back to main menu
+choose --timeout 30000 --default cpu target || goto back
+goto ${target}
+
+# ─── Profile selection: set vars, route to duration picker ──────────
+
+:safety     set profile safety    && set duration 120 && goto boot-image
+:cpu        set profile cpu       && goto pick_single
+:ram        set profile ram       && goto pick_single
+:nvme       set profile nvme      && goto pick_single
+:ssd        set profile ssd       && goto pick_single
+:net-mgmt   set profile net-mgmt  && goto pick_single
+:net-data   set profile net-data  && goto pick_single
+:all        set profile all       && goto pick_combined
+:burnin     set profile burnin    && goto pick_combined
+
+# Destructive entries — set profile AND stress.destructive=1. All three
+# go through the same submenu (durations 1/10/30/60 min). The write tier
+# for each drive is just the normal profile with destructive=1; there's
+# no separate test code path.
+:nvme-write    set profile nvme   && set destructive 1 && goto pick_single
+:ssd-write     set profile ssd    && set destructive 1 && goto pick_single
+:disk-burnin   set profile burnin && set destructive 1 && goto pick_combined
+
+# ─── Duration submenus ──────────────────────────────────────────────
 #
-# Cmdline contract with image/init/stresstest.start (hw-validation repo):
-#   stress.profile=quick|standard|burnin|shell -- which profile runs
-#   stress.role=server|client                  -- iperf3 pairing (Phase E+)
-#   stress.duration=<seconds>                  -- overrides profile default
-#   stress.destructive=1                       -- permit fio writes
-#   stress.hold=1                              -- drop to shell instead of reboot
+# Share one set of time-setter labels (d-1m / d-10m / d-30m / d-60m).
+# Single-component tests get 1/10/30/60 min. Combined tests get
+# 10/30/60 min (1 min doesn't make sense for "all 6 sequential").
+
+:pick_single
+menu duration for ${profile}${destructive:+ (DESTRUCTIVE)}
+item d-1m    1 minute
+item d-10m   10 minutes
+item d-30m   30 minutes
+item d-60m   60 minutes
+item back    <- back to main menu
+choose --default d-1m durtarget || goto start
+goto ${durtarget}
+
+:pick_combined
+menu duration for ${profile}${destructive:+ (DESTRUCTIVE)}
+item d-10m   10 minutes (each component gets this time; concurrent = 10 min total)
+item d-30m   30 minutes
+item d-60m   60 minutes
+item back    <- back to main menu
+choose --default d-10m durtarget || goto start
+goto ${durtarget}
+
+:d-1m     set duration 60    && goto boot-image
+:d-10m    set duration 600   && goto boot-image
+:d-30m    set duration 1800  && goto boot-image
+:d-60m    set duration 3600  && goto boot-image
+
+# ─── Shared netboot label ───────────────────────────────────────────
 #
-# Other Alpine live framework bits:
-#   modules=loop,squashfs,sd-mod,usb-storage   -- load so modloop can mount
-#   console=tty0                               -- visible on AMT KVM
-#   video=1920x1080 nomodeset                  -- pin framebuffer to 1080p
-#     The nodes use 4K passive HDMI dummy plugs (standardised fleet-wide
-#     in bios-config v1.1.0). The iGPU reads their EDID and boots Linux
-#     into a 3840x2160 framebuffer; AMT KVM then downscales that to its
-#     ~1024x800 viewport, which leaves the console text sub-pixel
-#     microscopic. `nomodeset` keeps i915's KMS off (we're not doing
-#     anything graphical anyway), pinning the firmware efifb, and
-#     `video=1920x1080` asks that efifb to initialise at 1080p --
-#     readable in AMT KVM.
-#
-# Keep the base args identical across profiles so the only variable is
-# stress.profile / stress.hold. Simplifies debugging.
+# One kernel/initrd pair serves every (profile × duration) combination.
+# ${destructive} is unset for read-only runs and set to 1 for the
+# destructive tier; iPXE substitutes empty string on unset vars, so
+# the kernel line is well-formed either way -- stress.destructive=
+# with empty value reads the same as absent in stresstest.start's
+# kcmdline parser.
 
-:quick
-echo Booting hw-validation quick profile (guard smoke test)...
+:boot-image
+echo Booting hw-validation: profile=${profile} duration=${duration}s destructive=${destructive}
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=quick
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=${profile} stress.duration=${duration} stress.destructive=${destructive}
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
-:cpu
-echo Booting hw-validation cpu profile (Phase B-alpha — 60s stress-ng all-core)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=cpu
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
-
-:ram
-echo Booting hw-validation ram profile (Phase C — 60s stress-ng --vm --verify)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=ram
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
-
-:nvme
-echo Booting hw-validation nvme profile (Phase C — 60s fio read-only seq-read)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
-
-:ssd
-echo Booting hw-validation ssd profile (Phase C — 60s fio read-only seq-read on /dev/sda)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=ssd
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
-
-:net-data
-# Data NIC counterpart. NAS iperf3 container binds on prd
-# (10.10.10.10) and dev (10.10.15.10) VLANs as well as mgmt;
-# net-data.sh auto-picks the target from whichever data VLAN the
-# node's I226-V DHCP'd into (kub-prd-* → VLAN 10, kub-dev-* → VLAN 15,
-# set by Mikrotik switch port config). No operator input needed.
-echo Booting hw-validation net-data profile (Phase C — iperf3 over I226-V 2.5Gb)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=net-data
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
-
-:net-mgmt
-# Single-entry design: the NAS runs an always-on iperf3 server
-# container (apps/iperf3/) bound to 10.10.5.10:5201. Every fleet node
-# targets that — no pair-node orchestration, no operator-typed IP.
-# If the NAS-side service is down, check `docker logs iperf3` on the
-# NAS; `phase apps --apply` (re)deploys it.
-echo Booting hw-validation net-mgmt profile (Phase C — iperf3 -c 10.10.5.10 via I219-LM)...
-imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=net-mgmt
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
-boot || goto fail
+# ─── Debug / hold ───────────────────────────────────────────────────
 
 :hold
 echo Booting hw-validation with stress.hold=1 -- drops to shell after init
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=quick stress.hold=1
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=safety stress.hold=1
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
@@ -164,7 +180,7 @@ echo     curl -I ${cache_url}/hw-validation/latest/apkovl.tar.gz
 echo     (and check the node's mgmt-VLAN internet access -- the
 echo      netboot init pulls ~15 MB from dl-cdn.alpinelinux.org)
 echo
-echo Runbook: https://wiki.w1.lv/runbooks/hw-validation/  (Phase F)
+echo Runbook: https://wiki.w1.lv/runbooks/hw-validation/
 echo
 prompt Press any key to return to the main menu...
 goto back

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}stress-dashboard{% endblock %}</title>
+<style>
+:root {
+  --bg: #0e1116; --panel: #161b22; --text: #c9d1d9; --muted: #768390;
+  --accent: #2f81f7; --pass: #3fb950; --fail: #f85149; --warn: #d29922;
+  --border: #30363d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       background: var(--bg); color: var(--text); }
+header { background: var(--panel); border-bottom: 1px solid var(--border);
+         padding: 14px 24px; display: flex; align-items: center; gap: 24px; }
+header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+header a { color: var(--muted); text-decoration: none; font-size: 14px; }
+header a:hover, header a.active { color: var(--text); }
+main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+h2 { font-weight: 500; font-size: 15px; color: var(--muted);
+     text-transform: uppercase; letter-spacing: 0.5px; margin: 24px 0 8px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel);
+        border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+         font-size: 13px; }
+th { background: #0d1117; color: var(--muted); font-weight: 500; text-transform: uppercase;
+     font-size: 11px; letter-spacing: 0.5px; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.badge-pass { color: var(--pass); font-weight: 600; }
+.badge-fail { color: var(--fail); font-weight: 600; }
+.badge-empty { color: var(--muted); }
+.stat-row { display: flex; gap: 24px; margin-bottom: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+        padding: 12px 18px; min-width: 120px; }
+.stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.stat .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+.btn-delete { background: transparent; color: var(--fail); border: 1px solid var(--fail);
+              border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+.btn-delete:hover { background: var(--fail); color: var(--bg); }
+.muted { color: var(--muted); }
+pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+      padding: 12px; overflow: auto; font-size: 12px; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.grid .card { background: var(--panel); border: 1px solid var(--border);
+              border-radius: 6px; padding: 14px; }
+.grid .card h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted);
+                 text-transform: uppercase; letter-spacing: 0.5px; }
+.kv { display: flex; justify-content: space-between; font-size: 13px;
+      padding: 3px 0; border-bottom: 1px solid var(--border); }
+.kv:last-child { border-bottom: none; }
+.kv .k { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔥 stress-dashboard</h1>
+  <nav>
+    <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Reports</a>
+    &nbsp;·&nbsp;
+    <a href="/matrix" {% if request.url.path == "/matrix" %}class="active"{% endif %}>Fleet matrix</a>
+  </nav>
+</header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

@@ -66,6 +66,12 @@ http:
       service: amtctl
       entryPoints: [websecure]
       tls: {}
+    # hw-validation JSON report viewer.
+    stress-dashboard:
+      rule: "Host(`stress.w1.lv`)"
+      service: stress-dashboard
+      entryPoints: [websecure]
+      tls: {}
 
   services:
     meshcentral:
@@ -109,6 +115,11 @@ http:
         servers:
           # FastAPI in the `amtctl` Custom App. Host port 8000.
           - url: "http://10.10.5.10:8000"
+    stress-dashboard:
+      loadBalancer:
+        servers:
+          # FastAPI in the `stress-dashboard` Custom App. Host port 8010.
+          - url: "http://10.10.5.10:8010"
 
   # Reusable backend transport: skip-verify for NAS-loopback HTTPS hops
   # where the hostname in the URL doesn't match the *.w1.lv cert SAN

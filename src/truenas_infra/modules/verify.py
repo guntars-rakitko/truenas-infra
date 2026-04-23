@@ -246,6 +246,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_app(cli, app_name="wiki"),
         check_app(cli, app_name="homepage"),
         check_app(cli, app_name="amtctl"),
+        check_app(cli, app_name="stress-dashboard"),
         check_app(cli, app_name="iperf3"),
         # TLS + DNS checks (phase 3 added these)
         check_cert_expiry(cli, cert_name="w1-wildcard"),
@@ -275,6 +276,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         ("wiki.w1.lv", 443),
         ("home.w1.lv", 443),
         ("amtctl.w1.lv", 443),
+        ("stress.w1.lv", 443),
         ("s3-prd.w1.lv", 9000),
         ("s3-dev.w1.lv", 9000),
     ]:

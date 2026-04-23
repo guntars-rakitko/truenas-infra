@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.hostname }} · {{ doc.profile }} · stress-dashboard{% endblock %}
+{% block body %}
+<p><a href="/">← all reports</a></p>
+
+<h2>{{ doc.hostname }} — {{ doc.profile }}</h2>
+
+<div class="grid">
+  <div class="card">
+    <h3>Run</h3>
+    <div class="kv"><span class="k">started_at</span><span>{{ doc.started_at }}</span></div>
+    <div class="kv"><span class="k">ended_at</span><span>{{ doc.ended_at }}</span></div>
+    <div class="kv"><span class="k">kernel</span><span>{{ doc.kernel }}</span></div>
+    <div class="kv"><span class="k">image_version</span><span>{{ doc.image_version or "—" }}</span></div>
+    <div class="kv"><span class="k">schema</span><span>v{{ doc.schema_version }}</span></div>
+  </div>
+  <div class="card">
+    <h3>Hardware</h3>
+    <div class="kv"><span class="k">board</span><span>{{ hardware.board_vendor }} {{ hardware.board_name }} {{ hardware.board_version }}</span></div>
+    <div class="kv"><span class="k">bios</span><span>{{ hardware.bios_version }}</span></div>
+    <div class="kv"><span class="k">cpu</span><span>{{ hardware.cpu_model }}</span></div>
+    <div class="kv"><span class="k">threads</span><span>{{ hardware.cpu_threads }}</span></div>
+    <div class="kv"><span class="k">memory</span><span>{% if hardware.mem_total_kb %}{{ (hardware.mem_total_kb / 1024 / 1024)|round(1) }} GiB{% else %}—{% endif %}</span></div>
+  </div>
+  <div class="card">
+    <h3>Disks</h3>
+    {% for d in hardware.disks or [] %}
+      <div class="kv"><span class="k">{{ d.dev }}</span><span>{{ d.model }} ({{ (d.size_bytes / 1e9)|round(0) }} GB)</span></div>
+    {% else %}
+      <p class="muted">no disks detected</p>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <h3>NICs</h3>
+    {% for n in hardware.nics or [] %}
+      <div class="kv"><span class="k">{{ n.iface }}</span><span>{{ n.driver }} · {% if n.speed_mbps %}{{ n.speed_mbps }} Mbps{% else %}—{% endif %}</span></div>
+    {% endfor %}
+  </div>
+</div>
+
+<h2>Tests ({{ tests|length }})</h2>
+{% if tests %}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Tool</th>
+      <th>Result</th>
+      <th>Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in tests %}
+    <tr>
+      <td><strong>{{ t.name }}</strong></td>
+      <td>{{ t.tool }}</td>
+      <td>
+        {% if t.rc == 0 %}<span class="badge-pass">PASS</span>
+        {% else %}<span class="badge-fail">FAIL rc={{ t.rc }}</span>{% endif %}
+      </td>
+      <td class="muted" style="font-size:12px">
+        {% for k, v in t.items() %}{% if k not in ["name", "tool", "rc"] %}<span>{{ k }}={{ v }}</span>&nbsp;{% endif %}{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Telemetry ({{ sample_count }} samples)</h2>
+{% if sample_count %}
+<div class="card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px;">
+  <canvas id="tempchart" height="120"></canvas>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+const ts = {{ chart_ts|safe }};
+const t0 = ts[0] || 0;
+const labels = ts.map(t => Math.round(t - t0) + "s");
+new Chart(document.getElementById("tempchart"), {
+  type: "line",
+  data: {
+    labels: labels,
+    datasets: [
+      { label: "CPU pkg °C", data: {{ chart_cpu|safe }}, borderColor: "#f85149",
+        tension: 0.25, pointRadius: 0 },
+      { label: "NVMe °C",    data: {{ chart_nvme|safe }}, borderColor: "#2f81f7",
+        tension: 0.25, pointRadius: 0 },
+      { label: "SSD °C",     data: {{ chart_ssd|safe }},  borderColor: "#3fb950",
+        tension: 0.25, pointRadius: 0 },
+    ],
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: "index", intersect: false },
+    plugins: { legend: { labels: { color: "#c9d1d9" } } },
+    scales: {
+      x: { ticks: { color: "#768390" }, grid: { color: "#30363d" } },
+      y: { ticks: { color: "#768390" }, grid: { color: "#30363d" },
+           title: { display: true, text: "°C", color: "#768390" } },
+    },
+  },
+});
+</script>
+{% else %}
+<p class="muted">no samples recorded</p>
+{% endif %}
+
+<h2>Raw JSON</h2>
+<p><a href="/api/report/{{ filename }}">open raw JSON</a> · <a href="/api/reports">all reports (JSON)</a></p>
+
+<div style="margin-top: 32px; border-top: 1px solid var(--border); padding-top: 16px;">
+  <form method="POST" action="/report/{{ filename }}/delete"
+        onsubmit="return confirm('Delete this report? This cannot be undone.');">
+    <button class="btn-delete" type="submit">Delete this report</button>
+  </form>
+</div>
+{% endblock %}

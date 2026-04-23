@@ -1,0 +1,48 @@
+# stress-dashboard — FastAPI app that renders hw-validation JSON reports.
+#
+# Reads /mnt/tank/system/stress-results/*.json (the NFS share hw-validation
+# nodes write their reports to). Bind-mounts the directory RW so the
+# dashboard can delete individual reports via a Traefik-fronted UI.
+#
+# Image strategy mirrors amtctl: python:3.13-alpine base, persistent /venv
+# bind mount for pip deps, app source bind-mounted read-only from the
+# pool. No image to build or push — "deploying" means uploading main.py
+# and templates/ via phase apps.
+services:
+  stress-dashboard:
+    image: python:3.13-alpine
+    container_name: stress-dashboard
+    restart: unless-stopped
+    ports:
+      # Mgmt VLAN bind only — Traefik fronts stress.w1.lv.
+      - "10.10.5.10:8010:8010"
+    volumes:
+      - /mnt/tank/system/apps-config/stress-dashboard/code:/app:ro
+      # RW — the UI's delete button unlinks reports here.
+      - /mnt/tank/system/stress-results:/data:rw
+      - /mnt/tank/system/apps-config/stress-dashboard/venv:/venv
+    environment:
+      - STRESS_RESULTS_DIR=/data
+      - PATH=/venv/bin:/usr/local/bin:/usr/bin:/bin
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ ! -x /venv/bin/uvicorn ]; then
+          echo "bootstrapping venv…"
+          python -m venv /venv
+          /venv/bin/pip install --no-cache-dir -q \
+            'fastapi==0.118.*' \
+            'uvicorn[standard]==0.35.*' \
+            'jinja2==3.1.*'
+          echo "venv ready"
+        fi
+        exec /venv/bin/uvicorn main:app --host 0.0.0.0 --port 8010 --log-level info
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge

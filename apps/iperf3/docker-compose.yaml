@@ -1,47 +1,68 @@
 services:
-  iperf3:
-    # Tiny Alpine-based image with iperf3 baked in. Rebuilds from upstream
-    # Alpine on first pull; versions re-pinned when we bump Alpine in
-    # hw-validation. networkstatic/iperf3 is the de-facto community image
-    # — Alpine 3.x + iperf3 from main repo, ~10 MB.
+  # Two parallel iperf3 server daemons on distinct ports so that Phase D
+  # burnin — which runs net-mgmt and net-data concurrently on the same
+  # node — doesn't collide on a single iperf3 -s process.
+  #
+  # iperf3 servers accept ONE client at a time; a second concurrent client
+  # gets "the server is busy running a test. try again later" and the
+  # run fails. Splitting by port keeps the two NIC tests independent.
+  #
+  #   :5201  — mgmt VLAN 5  (I219-LM clients via net-mgmt.sh)
+  #   :5202  — data VLANs 10+15 (I226-V clients via net-data.sh)
+  #
+  # Both images are the tiny ~10 MB networkstatic/iperf3 (Alpine + iperf3
+  # from main repo). networkstatic/iperf3's entrypoint is `iperf3`, so
+  # `command:` below is just its argv.
+
+  iperf3-mgmt:
     image: networkstatic/iperf3:latest
-    container_name: iperf3
+    container_name: iperf3-mgmt
     restart: unless-stopped
     network_mode: bridge
-    # Listen on all three fleet-facing NAS IPs:
-    #   10.10.5.10  — mgmt VLAN 5   (I219-LM clients; net-mgmt profile)
-    #   10.10.10.10 — prd data VLAN 10 (I226-V clients on kub-prd-*; net-data)
-    #   10.10.15.10 — dev data VLAN 15 (I226-V clients on kub-dev-*; net-data)
-    # The fleet's I226-V NICs are split by physical switch port: prd nodes
-    # land on VLAN 10, dev nodes on VLAN 15. net-data.sh auto-picks the
-    # right NAS IP from whichever subnet the node's own DHCP lease put it in.
-    # TCP + UDP both exposed — Phase C uses TCP (-P 4); leaving UDP
-    # available for future jitter/loss measurements.
+    # Bind on the mgmt-VLAN NAS IP only. Other VLANs have their own
+    # daemon (iperf3-data) so we don't accidentally allow a data-NIC
+    # client to hit this server via the wrong route.
     ports:
       - "10.10.5.10:5201:5201/tcp"
       - "10.10.5.10:5201:5201/udp"
-      - "10.10.10.10:5201:5201/tcp"
-      - "10.10.10.10:5201:5201/udp"
-      - "10.10.15.10:5201:5201/tcp"
-      - "10.10.15.10:5201:5201/udp"
-    # `-s` runs as server. `-D` NOT used — we want iperf3 in foreground
-    # so Docker sees the process and `restart: unless-stopped` works.
-    # `-V` verbose logging so `docker logs iperf3` shows connecting
-    # clients (useful when debugging a node that claims the server
-    # didn't answer — we can confirm on the NAS whether the SYN arrived).
-    command: ["-s", "-V"]
-# Why always-on (vs one-shot per test run):
+    # -s server, -V verbose ("docker logs iperf3-mgmt" shows connecting
+    # clients for debug), -p pin to 5201 (also the default, but explicit
+    # so the two services document their role).
+    command: ["-s", "-V", "-p", "5201"]
+
+  iperf3-data:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data
+    restart: unless-stopped
+    network_mode: bridge
+    # Bind on BOTH data-VLAN NAS IPs. prd nodes (kub-prd-*) land on
+    # 10.10.10.0/24 and hit 10.10.10.10:5202; dev nodes (kub-dev-*) land
+    # on 10.10.15.0/24 and hit 10.10.15.10:5202. net-data.sh auto-picks
+    # the right IP from its own DHCP subnet.
+    ports:
+      - "10.10.10.10:5202:5202/tcp"
+      - "10.10.10.10:5202:5202/udp"
+      - "10.10.15.10:5202:5202/tcp"
+      - "10.10.15.10:5202:5202/udp"
+    command: ["-s", "-V", "-p", "5202"]
+
+# Why always-on + split by port (vs one-shot per test run, or single
+# daemon with client queueing):
 #
-#   * No operator pairing dance — any node can boot net-mgmt anytime
-#     and just work. Previous pair-nodes design required booting one
-#     node first as server, copying its IP into the next node's cmdline.
-#     Always-on NAS collapses that to a single menu entry.
-#   * NAS sits on a 2.5 Gb link to the switch — won't bottleneck the
-#     1 Gb I219-LM client traffic. (net-data.sh will saturate the 2.5 Gb
-#     client side; still fine because NAS-side uplink is also 2.5 Gb
-#     and otherwise mostly idle during a single-node stress run.)
-#   * Idle iperf3 -s consumes <1 MB RSS, 0% CPU — zero cost when
-#     no clients are running. Starts once, never touched.
+#   * No operator pairing dance — any node can boot net-mgmt/net-data
+#     anytime and just work.
+#   * Phase D burnin runs net-mgmt + net-data concurrently on the same
+#     node. A single iperf3 -s would reject the second client ("server
+#     is busy") — observed on the first burnin dry-run. Two servers on
+#     two ports removes the collision without any client-side retry
+#     logic.
+#   * NAS sits on a 2.5 Gb link to the switch. Saturating both NIC
+#     tests (1 Gb mgmt + 2.5 Gb data = 3.5 Gb theoretical) would
+#     exceed NAS uplink; in practice burnin is a stress test, not a
+#     throughput benchmark, so some contention is acceptable and
+#     documented as expected drift in the fleet matrix.
+#   * Idle iperf3 -s consumes <1 MB RSS, 0% CPU — two of them is still
+#     negligible. Starts once, never touched.
 #
 # Only node that's NOT a test target: the NAS itself. Everything else
-# in the fleet (the 6 K8s nodes) uses this service.
+# in the fleet (the 6 K8s nodes) uses these services.
