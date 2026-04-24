@@ -107,12 +107,10 @@ http:
     homepage:
       loadBalancer:
         servers:
-          # gethomepage/homepage in the `homepage` Custom App. Runs with
-          # network_mode: host (so widgets source from deterministic NAS
-          # IP 10.10.5.10 — see apps/homepage/docker-compose.yaml for the
-          # full rationale on why bridge+MASQUERADE was breaking widgets).
-          # Next.js v16 hardcodes port 3000 and ignores PORT env overrides.
-          - url: "http://10.10.5.10:3000"
+          # gethomepage/homepage in the `homepage` Custom App. Plain Docker
+          # bridge networking + host-port 3001 → container :3000 (Next.js
+          # hardcodes 3000, ignores PORT env overrides).
+          - url: "http://10.10.5.10:3001"
     amtctl:
       loadBalancer:
         servers:

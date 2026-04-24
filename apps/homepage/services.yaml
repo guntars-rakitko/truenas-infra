@@ -1,16 +1,6 @@
 # Homepage service catalog — declarative.
 # https://gethomepage.dev/configs/services/
 #
-# 2026-04-24: mikrotik widgets stuck at "empty dashes" post-Phase-8.
-# Tried: app.redeploy, app.stop/start, services.yaml size-delta →
-# phase apps --apply (this comment was the delta, config reloaded).
-# NONE recovered the widgets — Homepage makes ZERO outbound packets
-# to any MikroTik REST endpoint (verified via router firewall logs +
-# connection tracking over multiple 20s windows). Docker bindings +
-# env vars + DNS extra_hosts all verified correct remotely.
-# Next debug step requires SSH into NAS: docker logs on homepage
-# container + curl from inside container to router.w1.lv.
-#
 # Each entry becomes a card. `siteMonitor` does an HTTP probe for up/down
 # indicator; no credentials required. `widget:` stanzas that call service
 # APIs (MinIO, TrueNAS, Traefik) are intentionally held out of MVP to
@@ -19,72 +9,17 @@
 # ⚠️ WIKI MIRROR: Adding/removing a service here ALSO requires updating:
 #   wiki/docs/architecture/hostnames.md  (admin / data / infra plane tables)
 #   wiki/docs/reference/links.md         (dashboards table)
+#
+# ⚠️ No MikroTik cards by design (2026-04-24). We removed Router / CRS310 /
+# CRS326 / cAP ax / LMT 5G because the `mikrotik` widget only works if the
+# NAS can reach the device's REST :80, which required opening /ip service
+# www + firewall carve-outs from mgmt → base-vlan. That's a widened attack
+# surface (WebFig + REST) for a convenience dashboard — not worth it.
+# Winbox on base-vlan covers GUI admin; manage.sh SSH covers automation.
+# Revisit only if we can keep the whole fleet `service www` disabled (e.g.
+# over WireGuard from a trusted admin host).
 
 - Infrastructure:
-    # ─── MikroTik devices (all 5, REST API via firewall carve-out) ──
-    - MikroTik Router:
-        icon: mikrotik.png
-        href: http://router.w1.lv/
-        description: "RB5009 — router / firewall / DHCP / DNS"
-        siteMonitor: http://router.w1.lv/
-        widget:
-          type: mikrotik
-          url: http://router.w1.lv
-          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
-          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
-          # Drop numberOfLeases — noise ("0") on devices that don't
-          # serve DHCP (switches, AP, LTE modem). Router still runs
-          # DHCP but leases count isn't dashboard-grade info anyway.
-          fields: ["uptime", "cpuLoad", "memoryUsed"]
-
-    - Switch (CRS310 — data):
-        icon: mikrotik.png
-        href: http://sw-data.w1.lv/
-        description: "CRS310-8G+2S+ — 2.5G traffic + 10G uplinks"
-        siteMonitor: http://sw-data.w1.lv/
-        widget:
-          type: mikrotik
-          url: http://sw-data.w1.lv
-          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
-          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
-          fields: ["uptime", "cpuLoad", "memoryUsed"]
-
-    - Switch (CRS326 — mgmt):
-        icon: mikrotik.png
-        href: http://sw-mgmt.w1.lv/
-        description: "CRS326-24G-2S+ — 1G mgmt + 10G SFP+"
-        siteMonitor: http://sw-mgmt.w1.lv/
-        widget:
-          type: mikrotik
-          url: http://sw-mgmt.w1.lv
-          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
-          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
-          fields: ["uptime", "cpuLoad", "memoryUsed"]
-
-    - WiFi AP (cAP ax):
-        icon: mikrotik.png
-        href: http://wifi.w1.lv/
-        description: "cAP ax dual-band WiFi 6 (CAP mode)"
-        siteMonitor: http://wifi.w1.lv/
-        widget:
-          type: mikrotik
-          url: http://wifi.w1.lv
-          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
-          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
-          fields: ["uptime", "cpuLoad", "memoryUsed"]
-
-    - LTE Modem (LMT 5G):
-        icon: mikrotik.png
-        href: http://lte.w1.lv/
-        description: "LMT 5G — WAN uplink via BITE Latvia"
-        siteMonitor: http://lte.w1.lv/
-        widget:
-          type: mikrotik
-          url: http://lte.w1.lv
-          username: "{{HOMEPAGE_VAR_MIKROTIK_USER}}"
-          password: "{{HOMEPAGE_VAR_MIKROTIK_PASS}}"
-          fields: ["uptime", "cpuLoad", "memoryUsed"]
-
     # ── K8s nodes (hardware layer via AMT) ──────────────────────
     # Split prd / dev into two cards, 3 rows each. Each line shows
     # "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl.w1.lv for

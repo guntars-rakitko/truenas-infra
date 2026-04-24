@@ -6,42 +6,25 @@
 # explicitly in apps/homepage/services.yaml, same way Traefik routes
 # live in routes.yaml.
 #
-# Fronted by NAS Traefik: home.w1.lv → http://10.10.5.10:3000. Mgmt VLAN
+# Fronted by NAS Traefik: home.w1.lv → http://10.10.5.10:3001. Mgmt VLAN
 # only; workloads on prd/dev can't route here.
+#
+# ⚠️ Plain Docker bridge networking — intentional. A brief detour through
+# `network_mode: host` (to stabilise outbound source-IP for the MikroTik
+# widget) was reverted when we dropped MikroTik cards in services.yaml:
+# without that widget there's nothing here that needs host-stack source
+# determinism, and bridge keeps the container properly isolated.
 services:
   homepage:
     image: ghcr.io/gethomepage/homepage:v1.12.3
     container_name: homepage
     restart: unless-stopped
-    # HOST networking — same rationale as apps/pxe/docker-compose.yaml.
-    #
-    # Why: Homepage's widgets poll MikroTik REST endpoints at 10.10.0.1–.5
-    # (base-vlan). The request path is Homepage → NAS kernel → default
-    # gateway 10.10.5.1 → router forwards to its own base-vlan IP. Router
-    # firewall rule `accept nas homepage widget to router rest` only matches
-    # src-address=10.10.5.10. With Docker's default bridge + MASQUERADE,
-    # the observed source IP on a multi-homed NAS (4 sub-interfaces) isn't
-    # deterministic — SYNs would sometimes show up with src=10.10.5.10
-    # (234 accepted), then stop, and the router would silently drop the
-    # rest. Verified via container json.log: every request to 10.10.0.1:80
-    # returns `Error: connect ETIMEDOUT`.
-    #
-    # Host networking bypasses Docker's NAT entirely. Homepage's outbound
-    # goes through the NAS network stack directly → source IP is selected
-    # per-destination from the host routing table → consistently 10.10.5.10
-    # for any dst reached via the default gateway. Firewall rule matches
-    # every time, widgets populate.
-    #
-    # Same shape as PXE: TFTP reply-source-IP bug was the same class of
-    # Docker MASQUERADE weirdness on multi-homed host.
-    network_mode: host
-    # No `ports:` block with host networking — the container binds its
-    # own listener directly on the host network stack. The Homepage
-    # image (Next.js v16.1.7) hardcodes port 3000 and does NOT honor
-    # PORT / HOMEPAGE_PORT env overrides (verified empirically 2026-04-24:
-    # HOMEPAGE_PORT=3001 was silently ignored, container still served
-    # on :3000). Traefik upstream updated to http://10.10.5.10:3000
-    # to match — see apps/traefik/routes.yaml.
+    ports:
+      # Mgmt VLAN bind. Host :3001 clear of every existing service on
+      # 10.10.5.10 (:8080 PXE nginx, :4480 meshcentral, :8088 wiki).
+      # Container :3000 is Next.js's hardcoded port (PORT/HOMEPAGE_PORT
+      # env overrides are silently ignored — verified 2026-04-24).
+      - "10.10.5.10:3001:3000"
     volumes:
       # All Homepage YAMLs (services, bookmarks, widgets, settings, etc.)
       # uploaded by phase apps via _ensure_homepage_config_via_ctx.
@@ -73,8 +56,6 @@ services:
       - HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY=${HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY}
       - HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY=${HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY}
       - HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY=${HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY}
-      - HOMEPAGE_VAR_MIKROTIK_USER=${HOMEPAGE_VAR_MIKROTIK_USER}
-      - HOMEPAGE_VAR_MIKROTIK_PASS=${HOMEPAGE_VAR_MIKROTIK_PASS}
     # Internal DNS — without these, siteMonitor probes against *.w1.lv
     # hostnames hit NXDOMAIN (container uses Docker's embedded resolver
     # which forwards to /etc/resolv.conf; depending on host resolver
@@ -102,19 +83,15 @@ services:
       # MinIO S3 data plane (direct)
       - "s3-prd.w1.lv:10.10.10.10"
       - "s3-dev.w1.lv:10.10.15.10"
-      # MikroTik devices — base-vlan (needs firewall carve-out, see
-      # mikrotik-infra/configs/fleet.yaml "accept nas homepage widget to
-      # ..." entries in firewall.input + firewall.forward).
-      - "router.w1.lv:10.10.0.1"
-      - "sw-data.w1.lv:10.10.0.2"
-      - "sw-mgmt.w1.lv:10.10.0.3"
-      - "wifi.w1.lv:10.10.0.4"
-      - "lte.w1.lv:10.10.0.5"
     # Intentionally no `healthcheck:` — the Homepage ghcr.io/gethomepage
     # image doesn't ship wget and is minimal by design. TrueNAS uses the
     # absence of a failing healthcheck as the "running" signal; if we
     # defined one that always fails (wget: not found → exit 127), the app
     # gets marked DEPLOYING forever and may be auto-restarted.
     # Restart policy above handles the "container crashed" case anyway.
-    #
-    # No `networks:` section — network_mode: host preempts it.
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
