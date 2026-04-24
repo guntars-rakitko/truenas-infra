@@ -1,20 +1,69 @@
-# Talos Linux factory schematic — defines what extensions are baked into
-# the kernel + initramfs images for our K8s node bring-up.
+# Talos Linux factory schematic — defines what extensions + kernel args
+# are baked into the kernel + initramfs images served by this PXE app
+# (at http://10.10.5.10:8080/talos/vmlinuz + /initramfs).
 #
-# Sent to https://factory.talos.dev/schematics to receive a schematic ID;
-# that ID is then used to fetch vmlinuz / initramfs from pxe.factory.talos.dev.
+# ⚠️  SHARED WITH kube-infra — this file MUST stay byte-identical to
+#    kube-infra/talos-os/schematic.yaml so both sides resolve to the
+#    same factory.talos.dev schematic ID. The same image is used:
+#      - by THIS PXE app to serve the first-boot kernel+initramfs, AND
+#      - by the installed OS (machine.install.image in
+#        kube-infra/talos-os/patches/general.yaml) for post-install boots.
+#    Divergence between the two causes EEE flaps during install
+#    (igc.eee_enable=0 missing at PXE time) and makes first-boot
+#    interface names differ from post-install names (net.ifnames).
 #
-# Docs: https://factory.talos.dev/docs/#/configuration
+# Submit to https://factory.talos.dev/schematics to receive a schematic
+# ID (SHA256). The ID is then referenced by:
+#   - talos-updater.sh (on the NAS, via this same schematic.yaml synced
+#     to /mnt/tank/system/apps-config/talos-updater/schematic.yaml)
+#   - kube-infra/talos-os/patches/general.yaml (machine.install.image)
+#
+# Docs: https://factory.talos.dev/docs/
+#
+# ⚠️  When extensions or kernel args change:
+#    1. Submit:  curl -s -X POST --data-binary @apps/pxe/schematic.yaml \
+#                  https://factory.talos.dev/schematics
+#    2. Mirror the file to kube-infra/talos-os/schematic.yaml (byte-exact)
+#    3. Update the SHA in kube-infra/talos-os/patches/general.yaml
+#       (`machine.install.image: factory.talos.dev/installer/<SHA>:<ver>`)
+#    4. Re-run `./manage.sh phase apps --apply` here to sync this file
+#       to the NAS, then force a talos-updater cycle.
 
 customization:
+  extraKernelArgs:
+    # IPv6 disabled fleet-wide (see kube-infra/CLAUDE.md § Cluster)
+    - ipv6.disable=1
+    # Numbered interfaces (eth0 = I219-LM mgmt, eth1 = I226-V traffic)
+    - net.ifnames=0
+    # Memory hardening — clear freshly-allocated pages
+    - init_on_alloc=1
+    # Anti-heap-spray — don't merge slab caches
+    - slab_nomerge
+    # Meltdown mitigation — page table isolation
+    - pti=on
+    # IMA policy — TCB (trusted-computing-base) verified execution
+    - ima_policy=tcb
+    # SELinux enabled
+    - selinux=1
+    # Kernel lockdown — block runtime kernel patching + /dev/mem access
+    - lockdown=confidentiality
+    # I226-V EEE (Energy Efficient Ethernet) mitigation — disable via
+    # igc driver module param since Talos has no declarative EEE field.
+    # Companion to the BIOS "PCIe ASPM = Disabled" setting already in
+    # bios-config/amt/canonical.yaml. Both layers needed to prevent
+    # the "igc link drops" reported upstream on Linux + i226.
+    - igc.eee_enable=0
   systemExtensions:
     officialExtensions:
-      # Graceful shutdown on UPS events (NUT client on each K8s node, paired
-      # with the NUT server running on this NAS at 10.10.5.10:3493).
-      - siderolabs/nut-client
-      # Intel microcode updates — the ASUS Q170S1 nodes are all Intel, and
-      # microcode errata fixes matter for reliability under load.
+      # Intel microcode updates — the ASUS Q170S1 nodes are all Intel
       - siderolabs/intel-ucode
-      # gVisor — userland sandbox; enables runsc as a container runtime
-      # option for stricter workload isolation alongside standard runc.
-      - siderolabs/gvisor
+      # NUT client — graceful shutdown on UPS events. Server is the NAS
+      # (NUT master at 10.10.5.10:3493, UPS name `apc1`, monuser `upsmon`).
+      # ExtensionServiceConfig is provided via the machine config patches.
+      - siderolabs/nut-client
+      # iscsi-tools — required by Longhorn (open-iscsi client for
+      # attaching Longhorn volumes as block devices via iSCSI)
+      - siderolabs/iscsi-tools
+      # util-linux-tools — required by Longhorn for `nsenter` and
+      # `fstrim` operations against the host filesystem
+      - siderolabs/util-linux-tools
