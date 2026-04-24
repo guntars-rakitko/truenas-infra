@@ -1,6 +1,16 @@
 # Homepage service catalog — declarative.
 # https://gethomepage.dev/configs/services/
 #
+# 2026-04-24: mikrotik widgets stuck at "empty dashes" post-Phase-8.
+# Tried: app.redeploy, app.stop/start, services.yaml size-delta →
+# phase apps --apply (this comment was the delta, config reloaded).
+# NONE recovered the widgets — Homepage makes ZERO outbound packets
+# to any MikroTik REST endpoint (verified via router firewall logs +
+# connection tracking over multiple 20s windows). Docker bindings +
+# env vars + DNS extra_hosts all verified correct remotely.
+# Next debug step requires SSH into NAS: docker logs on homepage
+# container + curl from inside container to router.w1.lv.
+#
 # Each entry becomes a card. `siteMonitor` does an HTTP probe for up/down
 # indicator; no credentials required. `widget:` stanzas that call service
 # APIs (MinIO, TrueNAS, Traefik) are intentionally held out of MVP to
