@@ -113,6 +113,12 @@
             - field: kub-dev-03
               label: kub-dev-03
 
+    - hw-validation stress:
+        icon: mdi-pulse
+        href: https://stress.w1.lv/
+        description: "Stress-test reports + fleet pass/fail matrix"
+        siteMonitor: https://stress.w1.lv/
+
     - NAS Traefik:
         icon: traefik.png
         href: https://traefik-nas.w1.lv/dashboard/
@@ -145,12 +151,6 @@
           key: "{{HOMEPAGE_VAR_TRUENAS_API_KEY}}"
           enablePools: true   # show tank pool size + health
           nasType: scale      # TrueNAS SCALE / Community Edition
-
-    - PXE assets:
-        icon: mdi-server-network
-        href: https://pxe.w1.lv/
-        description: "Browse pre-cached ISOs, Talos images, netboot kernels"
-        siteMonitor: https://pxe.w1.lv/
 
     - Internal Wiki:
         icon: mkdocs.png
@@ -208,15 +208,15 @@
         href: https://github.com/guntars-rakitko/bios-config
         description: "ASUS Q170S1 BIOS settings"
 
+    - GitHub — hw-validation:
+        icon: github.png
+        href: https://github.com/guntars-rakitko/hw-validation
+        description: "PXE stress test image (the source of stress.w1.lv)"
+
     - GitHub — wiki:
         icon: github.png
         href: https://github.com/guntars-rakitko/wiki
         description: "This internal wiki (source)"
-
-    - Anthropic docs:
-        icon: anthropic-light.png
-        href: https://docs.claude.com/claude-code
-        description: "Claude Code reference"
 
 - Media (planned):
     - Plex (deferred):
