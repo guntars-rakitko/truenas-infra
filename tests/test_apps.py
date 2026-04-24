@@ -90,7 +90,7 @@ def test_ensure_custom_app_creates_when_missing(tmp_path: Path) -> None:
 
     cli = _mk_cli([
         [],                                       # app.query
-        {"id": "pxe", "state": "RUNNING"},
+        {"id": "pxe", "state": "RUNNING"},        # app.create (job=True → result)
     ])
 
     spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
@@ -102,12 +102,15 @@ def test_ensure_custom_app_creates_when_missing(tmp_path: Path) -> None:
     assert payload["app_name"] == "pxe"
     assert payload["custom_app"] is True
     assert "services:" in payload["custom_compose_config_string"]
+    # Should be invoked with job=True so the client blocks until redeploy
+    # finishes and surfaces FAILED as an exception.
+    assert create.kwargs.get("job") is True
 
 
 def test_ensure_custom_app_noop_when_compose_matches(tmp_path: Path) -> None:
-    """Note: TrueNAS doesn't let us read back the custom compose directly,
-    so we hash + compare. If there's a matching app already, treat as noop
-    for now; a `--force` update path can come later.
+    """Drift-check compares the local compose (parsed) against `app.config`
+    (TrueNAS returns the stored compose as a dict). Deep-equal → noop, no
+    `app.update` call, no redeploy.
     """
     from truenas_infra.modules.apps import AppSpec, ensure_custom_app
 
@@ -115,13 +118,83 @@ def test_ensure_custom_app_noop_when_compose_matches(tmp_path: Path) -> None:
     compose_path.write_text("services:\n  foo:\n    image: hello-world\n")
 
     existing = {"id": "pxe", "name": "pxe", "state": "RUNNING", "custom_app": True}
-    cli = _mk_cli([[existing]])
+    stored_compose = {"services": {"foo": {"image": "hello-world"}}}
+    cli = _mk_cli([[existing], stored_compose])
 
     spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
     diff = ensure_custom_app(cli, spec=spec, apply=True)
 
     assert diff.changed is False
     names = [c.args[0] for c in cli.call.call_args_list]
+    assert "app.create" not in names
+    assert "app.update" not in names
+
+
+def test_ensure_custom_app_updates_when_compose_drifts(tmp_path: Path) -> None:
+    """Real-world trigger: we flip `network_mode: bridge` → `host` in the
+    committed compose. Drift-check sees the mismatch → app.update pushes
+    the new YAML and TrueNAS redeploys the container in the same job.
+    """
+    from truenas_infra.modules.apps import AppSpec, ensure_custom_app
+
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text(
+        "services:\n  pxe:\n"
+        "    image: homelab-pxe:latest\n"
+        "    network_mode: host\n"
+    )
+
+    existing = {"id": "pxe", "name": "pxe", "state": "RUNNING", "custom_app": True}
+    # Stored state still has the old bridge mode — the very drift we want
+    # ensure_custom_app to reconcile.
+    stored_compose = {
+        "services": {
+            "pxe": {
+                "image": "homelab-pxe:latest",
+                "network_mode": "bridge",
+            }
+        }
+    }
+    cli = _mk_cli([[existing], stored_compose, None])  # None = app.update return
+
+    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    diff = ensure_custom_app(cli, spec=spec, apply=True)
+
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "app.update")
+    # app.update(name, {custom_compose_config_string: ...}, job=True)
+    assert update.args[1] == "pxe"
+    assert "network_mode: host" in update.args[2]["custom_compose_config_string"]
+    assert update.kwargs.get("job") is True
+    # No create call (app already exists).
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "app.create" not in names
+
+
+def test_ensure_custom_app_dryrun_reports_drift_without_calling_update(
+    tmp_path: Path,
+) -> None:
+    """`apply=False` must never mutate: detect drift, return a Diff.update
+    for the caller to display, but no `app.update` call."""
+    from truenas_infra.modules.apps import AppSpec, ensure_custom_app
+
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text(
+        "services:\n  pxe:\n    image: homelab-pxe:latest\n    network_mode: host\n"
+    )
+
+    existing = {"id": "pxe", "name": "pxe", "state": "RUNNING", "custom_app": True}
+    stored_compose = {
+        "services": {"pxe": {"image": "homelab-pxe:latest", "network_mode": "bridge"}}
+    }
+    cli = _mk_cli([[existing], stored_compose])
+
+    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    diff = ensure_custom_app(cli, spec=spec, apply=False)
+
+    assert diff.changed is True
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "app.update" not in names
     assert "app.create" not in names
 
 

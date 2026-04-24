@@ -43,13 +43,21 @@ install -o nbxyz -g nbxyz -m 0644 \
     /opt/ipxe-bin/memtest.bin /srv/tftp/memtest.bin
 echo "[entrypoint] memtest.bin deployed to /srv/tftp/memtest.bin"
 
-echo "[entrypoint] dnsmasq serving TFTP from /srv/tftp (port 69/udp)"
-echo "[entrypoint] nginx  serving HTTP from /srv/http (port 80)"
+echo "[entrypoint] dnsmasq serving TFTP on 10.10.5.10:69/udp (/srv/tftp)"
+echo "[entrypoint] nginx  serving HTTP on 10.10.5.10:8080/tcp (/srv/http)"
 
 # Launch dnsmasq in background. --port=0 disables DNS (we only want
 # TFTP). --tftp-secure restricts serving to files readable by the
 # dnsmasq user, which is why every file we upload to the TFTP root
 # must be chowned to uid 1000 (see apps.py::ensure_pxe_menu_files).
+#
+# --listen-address + --bind-interfaces: we run with Docker
+# network_mode=host (see docker-compose.yaml comment block). Without
+# explicit binding, dnsmasq would listen on ALL host IPs, which on a
+# multi-homed NAS (4 sub-interfaces: mgmt/prd/dev/home) means UDP
+# replies can originate from the wrong IP — the TFTP client then
+# rejects with "received packet from wrong source". Pinning to the
+# mgmt VLAN IP fixes this.
 dnsmasq \
     --port=0 \
     --enable-tftp \
@@ -59,7 +67,9 @@ dnsmasq \
     --keep-in-foreground \
     --log-facility=- \
     --log-dhcp \
-    --log-queries &
+    --log-queries \
+    --listen-address=10.10.5.10 \
+    --bind-interfaces &
 DNSMASQ_PID=$!
 echo "[entrypoint] dnsmasq pid=${DNSMASQ_PID}"
 

@@ -153,29 +153,67 @@ def ensure_docker_pool(
 
 
 def ensure_custom_app(cli: Any, *, spec: AppSpec, apply: bool) -> Diff:
-    """Register (or update) a Custom App using the compose file content.
+    """Register or update a Custom App from the committed compose YAML.
 
-    TrueNAS Custom Apps accept a compose YAML string via
-    `custom_compose_config_string`. Updates to an existing app currently
-    no-op (TODO: add --force path to redeploy with new compose).
+    Three paths:
+
+      1. App doesn't exist → `app.create` (first-time install).
+      2. App exists, stored compose == local compose → noop.
+      3. App exists, compose drift → `app.update` with the new
+         `custom_compose_config_string`; TrueNAS rewrites the compose
+         AND redeploys the container in one job (observed as
+         "Updating docker resources" in job progress).
+
+    Drift detection: `app.config <name>` returns the stored compose as
+    a parsed dict. We parse the local YAML the same way and deep-equal
+    the two. This is robust to whitespace + comment differences because
+    both sides go through the YAML parser. Structural changes (e.g.
+    `network_mode: bridge` → `host`, `ports:` added/removed, a new
+    volume) show up immediately.
+
+    Note on build-context files (Dockerfile, entrypoint.sh, nginx.conf):
+    those live under /mnt/tank/system/apps-config/<app>/build/ and are
+    refreshed by `pxe_build_context_ensured` / equivalent BEFORE this
+    function runs. When `app.update` re-pushes the compose, Docker's
+    `build:` step re-evaluates the context and rebuilds only layers
+    whose inputs changed — typical turnaround is <5s when just the
+    final-stage COPY files changed.
     """
     existing = cli.call("app.query", [["name", "=", spec.name]])
-    if existing:
-        # TrueNAS doesn't expose the stored compose for diffing. Treat as noop;
-        # operator uses `app.redeploy` / `app.delete` + re-create to update.
+    compose_yaml = _render_compose(spec.compose_path, spec.secrets_path)
+
+    # First-time create.
+    if not existing:
+        payload: dict[str, Any] = {
+            "app_name": spec.name,
+            "custom_app": True,
+            "custom_compose_config_string": compose_yaml,
+        }
+        if apply:
+            created = cli.call("app.create", payload, job=True)
+            return Diff.create(created)
+        return Diff.create(payload)
+
+    # Exists: drift-check via parsed compose deep-equal.
+    live_compose = cli.call("app.config", spec.name)
+    desired_compose = yaml.safe_load(compose_yaml)
+
+    if live_compose == desired_compose:
         return Diff.noop(existing[0])
 
-    compose_yaml = _render_compose(spec.compose_path, spec.secrets_path)
-    payload: dict[str, Any] = {
-        "app_name": spec.name,
-        "custom_app": True,
-        "custom_compose_config_string": compose_yaml,
-    }
+    if not apply:
+        return Diff.update(before=live_compose, after=desired_compose)
 
-    if apply:
-        created = cli.call("app.create", payload)
-        return Diff.create(created)
-    return Diff.create(payload)
+    # Job-returning method — pass `job=True` so the client blocks and
+    # raises on FAILED. Completion (including container redeploy) is
+    # synchronous from our POV.
+    cli.call(
+        "app.update",
+        spec.name,
+        {"custom_compose_config_string": compose_yaml},
+        job=True,
+    )
+    return Diff.update(before=live_compose, after=desired_compose)
 
 
 # ─── ensure_cronjob ──────────────────────────────────────────────────────────

@@ -2,7 +2,24 @@ services:
   pxe:
     container_name: pxe
     restart: unless-stopped
-    network_mode: bridge
+    # HOST networking (not bridge) — critical for TFTP.
+    #
+    # Why: TFTP (UDP) replies must originate from the same IP the
+    # client sent the original query to (10.10.5.10), otherwise the
+    # client rejects with "received packet from wrong source". With
+    # Docker's default bridge + MASQUERADE, UDP replies can be
+    # rewritten with a different NAS sub-interface IP on a multi-
+    # homed host — our NAS has 4 IPs (mgmt/prd/dev/home), and the
+    # kernel routing + Docker SNAT combined don't reliably pick
+    # 10.10.5.10 as the reply source.
+    #
+    # Host networking bypasses Docker's port NAT entirely. dnsmasq
+    # and nginx now bind directly to NAS's network stack — we pin
+    # them to 10.10.5.10 explicitly (see build/entrypoint.sh for
+    # dnsmasq --listen-address, and build/nginx.conf listen directive).
+    # This also avoids port :80 collision with Traefik on 10.10.5.20
+    # (each service binds to its own host IP).
+    network_mode: host
     # Build context lives on the NAS at the path below (uploaded by
     # `phase apps --apply`). First start takes ~5 min to clone iPXE
     # + compile; subsequent starts use Docker layer cache.
@@ -15,9 +32,10 @@ services:
       dockerfile: Dockerfile
     image: homelab-pxe:latest
     pull_policy: build
-    ports:
-      - "10.10.5.10:69:69/udp"   # TFTP — iPXE binary + menu tree
-      - "10.10.5.10:8080:80"     # HTTP — cached distro/utility assets
+    # No `ports:` section with network_mode=host — ports are determined
+    # by what dnsmasq + nginx bind to inside the container (directly on
+    # host network stack). TFTP :69/udp + HTTP :8080/tcp, both bound to
+    # 10.10.5.10 only.
     volumes:
       # TFTP root — our menu tree (uploaded by phase apps --apply) plus
       # the image-baked iPXE binary (written here by entrypoint.sh on
