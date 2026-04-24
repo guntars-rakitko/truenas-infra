@@ -4,11 +4,11 @@
 #     wiki/docs/architecture/hostnames.md  (inventory tables)
 #     wiki/docs/reference/links.md         (if the new host is a browser URL)
 #     mikrotik-infra/configs/dns.yaml      (keep in lockstep)
-#     mikrotik-infra/configs/01-config-router.rsc  (restore coherence)
+#     mikrotik-infra/configs/fleet.yaml    (if shared-VLAN / firewall touches)
 # Then: cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
 #
 # Consumed by:
-#   - mikrotik-infra/manage.sh (option 15, "Sync DNS static records")
+#   - mikrotik-infra/manage.sh (option 6, "Sync DNS static records")
 #   - truenas-infra/modules/verify.py (check_dns_records)
 #
 # Split-horizon layout:
@@ -91,9 +91,9 @@ records:
   # ─── MikroTik device admin FQDNs (base-vlan 99) ─────────────────────────
   # Used by the Homepage `mikrotik` widget to poll each device's REST API.
   # Requires a narrow firewall carve-out on MikroTik (see
-  # mikrotik-infra/configs/01-config-router.rsc — "accept nas homepage
-  # widget to ..." rules) since mgmt-vlan (NAS) normally cannot reach
-  # base-vlan admin services.
+  # mikrotik-infra/configs/fleet.yaml — firewall.input + firewall.forward
+  # "accept nas homepage widget to ..." rules) since mgmt-vlan (NAS)
+  # normally cannot reach base-vlan admin services.
   - name: router.w1.lv
     address: 10.10.0.1
     comment: MikroTik RB5009 router (primary)

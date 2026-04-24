@@ -21,7 +21,8 @@ system:
   timezone: UTC
 
   # NTP servers: use the MikroTik router's internal NTP service (ntp.w1.lv
-  # resolves to 10.10.0.1 per mikrotik-infra/configs/01-config-router.rsc).
+  # resolves to 10.10.0.1 — static record carried through from the router's
+  # pre-declarative era, preserved in mikrotik-infra/configs/dns.yaml).
   # This keeps time sync on the internal network and survives WAN outages.
   ntp_servers:
     - ntp.w1.lv
