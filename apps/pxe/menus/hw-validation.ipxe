@@ -18,14 +18,35 @@
 # shared :boot-image label does the actual netboot, avoiding duplicate
 # kernel/initrd lines for each (profile × duration) combination.
 #
+# Duration accounting — CRITICAL for setting operator expectations:
+#   * Single-component read-only (cpu/ram/nvme/ssd/net-*):
+#       picked duration = wall time.
+#   * Single-component destructive (nvme-write/ssd-write):
+#       read matrix THEN write matrix, each using STRESS_DURATION
+#       → wall time ~= 2 × picked.
+#   * Sequential `all`:
+#       six components back-to-back, each getting STRESS_DURATION
+#       → wall time ~= 6 × picked (10 min picked = ~60 min run).
+#   * Concurrent `burnin`:
+#       all six in parallel → picked duration = wall time.
+#   * Concurrent + destructive `disk-burnin`:
+#       both drives concurrent, but each does read+write
+#       → wall time ~= 2 × picked.
+#
+# The submenus below hardcode these totals into each item label so the
+# operator sees the real wall time before committing. Separate :pick_*
+# labels per mode avoid relying on iPXE variable-expansion tricks that
+# don't actually work (iPXE's ${name:type} only does type conversion,
+# not bash-style ${name:+value} fallback).
+#
 # Profiles:
 #   safety        Disk-safety guards round-trip; no stress, no I/O load.
 #                 Fixed ~2 min; no duration submenu.
 #   cpu, ram, nvme, ssd, net-mgmt, net-data
 #                 Single-component stress. Duration submenu: 1/10/30/60 min.
 #   all           Sequential run of all six components. Each component
-#                 gets STRESS_DURATION seconds. Combined submenu: 10/30/60 min.
-#   burnin        Concurrent run of all six. Same combined submenu.
+#                 gets STRESS_DURATION seconds → total is ~6× picked.
+#   burnin        Concurrent run of all six. Picked duration = total.
 #
 # Destructive tier (writes to NVMe / SATA -- requires disk already wipe'd):
 #   nvme-write, ssd-write, disk-burnin
@@ -33,7 +54,8 @@
 #                 drive with any signature or partition table is refused
 #                 up-front. Operator wipes the drive explicitly before
 #                 running these (stress.profile=safety's round-trip does
-#                 exactly that).
+#                 exactly that). Write matrix size-capped at ~50 GiB
+#                 per drive per full run (see scripts/lib/fio-matrix.sh).
 #
 # ─── Kernel args ────────────────────────────────────────────────────
 #
@@ -65,68 +87,111 @@
 menu hw-validation -- stress test
 item --gap -- --- Safety ---
 item safety     Disk-safety guards round-trip (~2 min, no stress)
-item --gap -- --- Single-component (duration submenu) ---
+item --gap -- --- Single-component (picked duration = wall time) ---
 item cpu        CPU stress (all cores)
 item ram        RAM stress + verify
 item nvme       NVMe read matrix (seq 1M, seq 64k, rand 4k qd32/qd1)
 item ssd        SATA SSD read matrix (same 4 stages)
 item net-mgmt   Mgmt NIC  (I219-LM 1Gb iperf3 -> NAS)
 item net-data   Data NIC  (I226-V 2.5Gb iperf3 -> NAS)
-item --gap -- --- Combined (duration submenu) ---
-item all        All 6 components sequential
-item burnin     All 6 components CONCURRENT (thermal/VRM exercise)
-item --gap -- --- Destructive (bringup only -- wipes target) ---
-item nvme-write   [!] NVMe read + write matrix (stress.destructive=1)
-item ssd-write    [!] SATA SSD read + write matrix (stress.destructive=1)
-item disk-burnin  [!] Both drives, read+write, concurrent
+item --gap -- --- Combined ---
+item all        All 6 components SEQUENTIAL (~6x picked duration total)
+item burnin     All 6 components CONCURRENT (picked duration = wall time)
+item --gap -- --- Destructive (bringup only -- writes up to ~50 GiB/drive) ---
+item nvme-write   [!] NVMe read + write matrix (~2x picked; writes ~50 GiB)
+item ssd-write    [!] SATA SSD read + write matrix (~2x picked; writes ~50 GiB)
+item disk-burnin  [!] Both drives concurrent, read + write (~2x picked)
 item --gap -- --- Advanced ---
-item hold       Boot to shell (operator debug)
+item hold       Boot to shell (no stress, operator debug)
 item --gap -- ---
 item back       Back to main menu
 choose --timeout 30000 --default cpu target || goto back
 goto ${target}
 
-# ─── Profile selection: set vars, route to duration picker ──────────
+# ─── Profile selection: set vars, route to correct duration picker ──
+#
+# Five pickers: read-only single, read+write single, sequential, concurrent,
+# concurrent+destructive. Each hardcodes the wall-time math in its labels so
+# the operator sees "10 min picked = ~60 min total" before committing.
 
 :safety     set profile safety    && set duration 120 && goto boot-image
-:cpu        set profile cpu       && goto pick_single
-:ram        set profile ram       && goto pick_single
-:nvme       set profile nvme      && goto pick_single
-:ssd        set profile ssd       && goto pick_single
-:net-mgmt   set profile net-mgmt  && goto pick_single
-:net-data   set profile net-data  && goto pick_single
-:all        set profile all       && goto pick_combined
-:burnin     set profile burnin    && goto pick_combined
+:cpu        set profile cpu       && goto pick_ro
+:ram        set profile ram       && goto pick_ro
+:nvme       set profile nvme      && goto pick_ro
+:ssd        set profile ssd       && goto pick_ro
+:net-mgmt   set profile net-mgmt  && goto pick_ro
+:net-data   set profile net-data  && goto pick_ro
+:all        set profile all       && goto pick_seq
+:burnin     set profile burnin    && goto pick_con
 
-# Destructive entries — set profile AND stress.destructive=1. All three
-# go through the same submenu (durations 1/10/30/60 min). The write tier
-# for each drive is just the normal profile with destructive=1; there's
-# no separate test code path.
-:nvme-write    set profile nvme   && set destructive 1 && goto pick_single
-:ssd-write     set profile ssd    && set destructive 1 && goto pick_single
-:disk-burnin   set profile burnin && set destructive 1 && goto pick_combined
+# Destructive entries — set profile AND stress.destructive=1. Each routes
+# to a submenu that accounts for the read-then-write ~2x doubling in labels.
+:nvme-write    set profile nvme   && set destructive 1 && goto pick_rw
+:ssd-write     set profile ssd    && set destructive 1 && goto pick_rw
+:disk-burnin   set profile burnin && set destructive 1 && goto pick_con_rw
 
 # ─── Duration submenus ──────────────────────────────────────────────
 #
-# Share one set of time-setter labels (d-1m / d-10m / d-30m / d-60m).
-# Single-component tests get 1/10/30/60 min. Combined tests get
-# 10/30/60 min (1 min doesn't make sense for "all 6 sequential").
+# Shared time-setter labels (d-1m / d-10m / d-30m / d-60m). Each picker
+# below surfaces different totals to the operator — the underlying
+# stress.duration value is identical across pickers.
 
-:pick_single
-menu duration for ${profile}${destructive:+ (DESTRUCTIVE)}
-item d-1m    1 minute
-item d-10m   10 minutes
-item d-30m   30 minutes
-item d-60m   60 minutes
+# Read-only single-component (cpu / ram / nvme / ssd / net-mgmt / net-data):
+# wall time = picked duration.
+:pick_ro
+menu duration for ${profile}  (single component, wall time = picked)
+item d-1m    1 min
+item d-10m   10 min
+item d-30m   30 min
+item d-60m   60 min
 item back    <- back to main menu
-choose --default d-1m durtarget || goto start
+choose --default d-10m durtarget || goto start
 goto ${durtarget}
 
-:pick_combined
-menu duration for ${profile}${destructive:+ (DESTRUCTIVE)}
-item d-10m   10 minutes (each component gets this time; concurrent = 10 min total)
-item d-30m   30 minutes
-item d-60m   60 minutes
+# Read+write single-component (nvme-write / ssd-write): fio runs the
+# 4-stage read matrix (STRESS_DURATION total) THEN the 4-stage write
+# matrix (another STRESS_DURATION). Wall time ~= 2x picked.
+:pick_rw
+menu duration for ${profile}  (DESTRUCTIVE - read then write, ~2x wall time)
+item d-1m    1 min read + 1 min write    (~2 min total)
+item d-10m   10 min read + 10 min write  (~20 min total)
+item d-30m   30 min read + 30 min write  (~60 min total)
+item d-60m   60 min read + 60 min write  (~2 h total)
+item back    <- back to main menu
+choose --default d-10m durtarget || goto start
+goto ${durtarget}
+
+# Sequential `all`: six components back-to-back, each gets STRESS_DURATION.
+# Wall time ~= 6x picked.
+:pick_seq
+menu duration for 'all'  (SEQUENTIAL - 6 components back-to-back, ~6x wall time)
+item d-1m    1 min per component   (~6 min total)
+item d-10m   10 min per component  (~1 h total)
+item d-30m   30 min per component  (~3 h total)
+item d-60m   60 min per component  (~6 h total)
+item back    <- back to main menu
+choose --default d-10m durtarget || goto start
+goto ${durtarget}
+
+# Concurrent `burnin`: all six in parallel. Picked duration = wall time.
+:pick_con
+menu duration for 'burnin'  (CONCURRENT - all 6 in parallel, wall time = picked)
+item d-1m    1 min total
+item d-10m   10 min total
+item d-30m   30 min total
+item d-60m   1 h total
+item back    <- back to main menu
+choose --default d-10m durtarget || goto start
+goto ${durtarget}
+
+# Concurrent + destructive `disk-burnin`: both drives in parallel, each
+# doing read+write = ~2x picked.
+:pick_con_rw
+menu duration for 'disk-burnin'  (CONCURRENT + DESTRUCTIVE - ~2x wall time)
+item d-1m    1 min read + 1 min write    (~2 min total)
+item d-10m   10 min read + 10 min write  (~20 min total)
+item d-30m   30 min read + 30 min write  (~60 min total)
+item d-60m   60 min read + 60 min write  (~2 h total)
 item back    <- back to main menu
 choose --default d-10m durtarget || goto start
 goto ${durtarget}
