@@ -24,6 +24,8 @@ table { width: 100%; border-collapse: collapse; background: var(--panel);
         border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
          font-size: 13px; }
+table.wrap { table-layout: fixed; }
+table.wrap td { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
 th { background: #0d1117; color: var(--muted); font-weight: 500; text-transform: uppercase;
      font-size: 11px; letter-spacing: 0.5px; }
 tr:last-child td { border-bottom: none; }
@@ -53,6 +55,34 @@ pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
       padding: 3px 0; border-bottom: 1px solid var(--border); }
 .kv:last-child { border-bottom: none; }
 .kv .k { color: var(--muted); }
+.host-groups { display: flex; flex-direction: column; gap: 12px; }
+.host-group { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.host-group > summary { cursor: pointer; list-style: none; padding: 12px 16px;
+                        display: flex; align-items: center; justify-content: space-between;
+                        user-select: none; }
+.host-group > summary::-webkit-details-marker { display: none; }
+.host-group > summary::before { content: "▸"; color: var(--muted); margin-right: 10px;
+                                transition: transform 0.15s ease; display: inline-block; }
+.host-group[open] > summary::before { transform: rotate(90deg); }
+.host-group > summary:hover { background: rgba(255,255,255,0.03); border-radius: 6px; }
+.host-group .host-name { font-weight: 600; font-size: 14px; flex: 0 0 auto; margin-right: auto; }
+.host-group .host-meta { display: flex; align-items: center; gap: 14px; font-size: 12px; }
+.host-group table { border: none; border-top: 1px solid var(--border); border-radius: 0; }
+.host-group table th { background: transparent; }
+.bar-wrap { display: inline-block; width: 90px; height: 6px; background: #0d1117;
+            border-radius: 3px; overflow: hidden; vertical-align: middle;
+            margin-left: 6px; position: relative; }
+.bar-wrap .bar { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+.bar-wrap .bar-good { background: var(--pass); }
+.bar-wrap .bar-warn { background: var(--warn); }
+.bar-wrap .bar-fail { background: var(--fail); }
+/* Dashed tick at the 100 % (= target) mark. 100 % of a 140 % range = 71.4 % across. */
+.bar-wrap::before { content: ""; position: absolute; top: 0; bottom: 0; left: 71.4%;
+                    width: 1px; background: var(--muted); opacity: 0.6; }
+.score-val-good { color: var(--pass); font-weight: 600; }
+.score-val-warn { color: var(--warn); font-weight: 600; }
+.score-val-fail { color: var(--fail); font-weight: 600; }
+.score-note { color: var(--muted); font-size: 10px; margin-left: 4px; }
 </style>
 </head>
 <body>

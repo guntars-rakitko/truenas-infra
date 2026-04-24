@@ -5,49 +5,78 @@
   <div class="stat"><div class="label">Reports</div><div class="value">{{ total }}</div></div>
   <div class="stat"><div class="label">Passing</div><div class="value badge-pass">{{ passing }}</div></div>
   <div class="stat"><div class="label">Failing</div><div class="value badge-fail">{{ failing }}</div></div>
+  <div class="stat"><div class="label">Nodes</div><div class="value">{{ groups|length }}</div></div>
 </div>
 
-{% if reports %}
-<table>
-  <thead>
-    <tr>
-      <th>Node</th>
-      <th>Profile</th>
-      <th>Started</th>
-      <th>Duration</th>
-      <th>Tests</th>
-      <th>Result</th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for r in reports %}
-    <tr>
-      <td><a href="/report/{{ r.filename }}">{{ r.hostname }}</a></td>
-      <td>{{ r.profile }}</td>
-      <td class="muted">{{ r.started_at }}</td>
-      <td class="muted">{% if r.duration_s is not none %}{{ r.duration_s }}s{% else %}—{% endif %}</td>
-      <td>
-        {% if r.pass_count %}<span class="badge-pass">{{ r.pass_count }}✓</span>{% endif %}
-        {% if r.fail_count %}<span class="badge-fail">{{ r.fail_count }}✗</span>{% endif %}
-        {% if not r.pass_count and not r.fail_count %}<span class="badge-empty">—</span>{% endif %}
-      </td>
-      <td>
-        {% if r.overall_pass %}<span class="badge-pass">PASS</span>
-        {% elif r.fail_count %}<span class="badge-fail">FAIL</span>
-        {% else %}<span class="badge-empty">—</span>{% endif %}
-      </td>
-      <td>
-        <form method="POST" action="/report/{{ r.filename }}/delete"
-              onsubmit="return confirm('Delete {{ r.filename }}?');"
-              style="display:inline">
-          <button class="btn-delete" type="submit">Delete</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% if groups %}
+<div class="host-groups">
+{% for g in groups %}
+  <details class="host-group" {% if loop.first %}open{% endif %}>
+    <summary>
+      <span class="host-name">{{ g.hostname }}</span>
+      <span class="host-meta">
+        <span class="muted">{{ g.reports|length }} report{% if g.reports|length != 1 %}s{% endif %}</span>
+        {% if g.pass_count %}<span class="badge-pass">{{ g.pass_count }} PASS</span>{% endif %}
+        {% if g.fail_count %}<span class="badge-fail">{{ g.fail_count }} FAIL</span>{% endif %}
+        <span class="muted">latest {{ g.latest_started_at or "?" }}</span>
+      </span>
+    </summary>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:18%">Started</th>
+          <th style="width:10%">Profile</th>
+          <th>Details</th>
+          <th style="width:8%">Duration</th>
+          <th style="width:8%">Tests</th>
+          <th style="width:8%">Result</th>
+          <th style="width:8%"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in g.reports %}
+        <tr>
+          <td class="muted">
+            <a href="/report/{{ r.filename }}">{{ r.started_at or "?" }}</a>
+          </td>
+          <td><strong>{{ r.profile }}</strong></td>
+          <td class="muted" style="font-size:12px">
+            {% if r.components %}
+              <span>{{ r.components|join(", ") }}</span>
+            {% else %}
+              <span>—</span>
+            {% endif %}
+            {% if r.destructive %}
+              &nbsp;·&nbsp;<span class="badge-fail" title="fio write matrix was executed (stress.destructive=1)">⚠ DESTRUCTIVE (read+write)</span>
+            {% else %}
+              &nbsp;·&nbsp;<span class="muted" title="read-only fio matrix (default)">read-only</span>
+            {% endif %}
+          </td>
+          <td class="muted">{% if r.duration_s is not none %}{{ r.duration_s }}s{% else %}—{% endif %}</td>
+          <td>
+            {% if r.pass_count %}<span class="badge-pass">{{ r.pass_count }}✓</span>{% endif %}
+            {% if r.fail_count %}<span class="badge-fail">{{ r.fail_count }}✗</span>{% endif %}
+            {% if not r.pass_count and not r.fail_count %}<span class="badge-empty">—</span>{% endif %}
+          </td>
+          <td>
+            {% if r.overall_pass %}<span class="badge-pass">PASS</span>
+            {% elif r.fail_count %}<span class="badge-fail">FAIL</span>
+            {% else %}<span class="badge-empty">—</span>{% endif %}
+          </td>
+          <td>
+            <form method="POST" action="/report/{{ r.filename }}/delete"
+                  onsubmit="return confirm('Delete {{ r.filename }}?');"
+                  style="display:inline">
+              <button class="btn-delete" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+{% endfor %}
+</div>
 {% else %}
 <p class="muted">No reports yet — run a hw-validation profile on a node and it'll land here.</p>
 {% endif %}

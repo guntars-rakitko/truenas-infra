@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ doc.hostname }} · {{ doc.profile }} · stress-dashboard{% endblock %}
 {% block body %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <p><a href="/">← all reports</a></p>
 
 <h2>{{ doc.hostname }} — {{ doc.profile }}</h2>
@@ -32,15 +33,457 @@
   </div>
   <div class="card">
     <h3>NICs</h3>
-    {% for n in hardware.nics or [] %}
-      <div class="kv"><span class="k">{{ n.iface }}</span><span>{{ n.driver }} · {% if n.speed_mbps %}{{ n.speed_mbps }} Mbps{% else %}—{% endif %}</span></div>
+    {% for n in nics_with_model %}
+      <div class="kv">
+        <span class="k">{{ n.iface }}</span>
+        <span>
+          {{ n.model }}
+          {% if n.speed_mbps and n.speed_mbps > 0 %}
+            · <strong>{{ n.speed_mbps }}</strong> Mbps
+          {% else %}
+            · <span class="badge-fail">no link</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv muted" style="font-size:11px;padding-left:8px">
+        <span>driver={{ n.driver }}</span><span>mac={{ n.mac }}</span>
+      </div>
     {% endfor %}
   </div>
 </div>
 
-<h2>Tests ({{ tests|length }})</h2>
-{% if tests %}
-<table>
+{% if drive_state_by_disk or cpu_state_by_disk %}
+<h2>Drive + CPU state (at test time)</h2>
+<div class="grid">
+{% for disk, cs in cpu_state_by_disk.items() %}
+  <div class="card">
+    <h3>{{ disk }} — CPU state</h3>
+    {% set os = cs.one_shot %}
+    {% if os.governor %}
+      <div class="kv">
+        <span class="k">governor</span>
+        <span {% if os.governor == "performance" %}class="badge-pass"{% else %}style="color:var(--warn)"{% endif %}>{{ os.governor }}</span>
+      </div>
+    {% endif %}
+    {# Governor pin pre → post. Pass if pin landed (cpu_governor_pin_ok=1
+       OR post="performance"); fail if pin was requested but didn't take. #}
+    {% if cs.pre.governor or cs.post.governor or os.governor_pin_ok is defined %}
+      <div class="kv">
+        <span class="k">governor pin</span>
+        <span
+          {% if os.governor_pin_ok|string == "1" or cs.post.governor == "performance" %}
+            class="badge-pass" title="performance governor was active during fio"
+          {% else %}
+            class="badge-fail" title="pin requested but governor is still {{ cs.post.governor or cs.pre.governor }} — intel_pstate may have refused the write"
+          {% endif %}>
+          {{ cs.pre.governor or "?" }} → <strong>{{ cs.post.governor or "?" }}</strong>
+          {% if os.governor_pin_ok|string == "1" %} ✓{% elif os.governor_pin_ok|string == "0" %} ✗{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.intel_pstate_status %}
+      <div class="kv">
+        <span class="k">intel_pstate</span>
+        <span {% if os.intel_pstate_status == "active" %}style="color:var(--warn)" title="active mode: CPU controls P-states via HWP; governor is advisory"{% endif %}>
+          {{ os.intel_pstate_status }}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.energy_perf_pref %}
+      <div class="kv"><span class="k">energy pref</span><span>{{ os.energy_perf_pref }}</span></div>
+    {% endif %}
+    {% if os.dimm_channel_layout %}
+      <div class="kv">
+        <span class="k">DIMMs</span>
+        <span {% if os.dimm_populated_count|string == "1" %}class="badge-fail" title="single-channel — memory BW halved vs dual-channel; affects NVMe DMA throughput"{% else %}class="badge-pass"{% endif %}>
+          {{ os.dimm_channel_layout }}{% if os.dimm_speed_mts %} @ {{ os.dimm_speed_mts }} MT/s{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.freq_driver %}
+      <div class="kv"><span class="k">cpufreq driver</span><span>{{ os.freq_driver }}</span></div>
+    {% endif %}
+    {% if os.idle_driver %}
+      <div class="kv"><span class="k">idle driver</span><span>{{ os.idle_driver }}{% if os.idle_states_count %} ({{ os.idle_states_count }} states){% endif %}</span></div>
+    {% endif %}
+    {% if os.no_turbo is defined %}
+      <div class="kv">
+        <span class="k">turbo</span>
+        <span {% if os.no_turbo|string == "0" %}class="badge-pass"{% else %}class="badge-fail"{% endif %}>
+          {% if os.no_turbo|string == "0" %}enabled{% else %}DISABLED{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.freq_min_ghz is defined and os.freq_max_ghz is defined %}
+      <div class="kv"><span class="k">freq range</span><span>{{ os.freq_min_ghz }} – {{ os.freq_max_ghz }} GHz</span></div>
+    {% endif %}
+    {% if cs.pre.freq_mean_ghz is defined or cs.post.freq_mean_ghz is defined %}
+      <div class="kv">
+        <span class="k">freq during test</span>
+        <span>
+          {{ cs.pre.freq_mean_ghz|default("?") }} GHz → <strong>{{ cs.post.freq_mean_ghz|default("?") }} GHz</strong>
+        </span>
+      </div>
+    {% endif %}
+    {% if cs.delta.cstate_residency_usec %}
+      {# Show the deepest-state delta — that's the one with exit-latency cost. #}
+      {% set deep = namespace(name=None, usec=0.0) %}
+      {% for n, u in cs.delta.cstate_residency_usec.items() %}
+        {% if u > deep.usec %}{% set deep.name = n %}{% set deep.usec = u %}{% endif %}
+      {% endfor %}
+      {% if deep.name %}
+        <div class="kv">
+          <span class="k">deep C-state residency</span>
+          <span {% if deep.usec > 1_000_000 %}style="color:var(--warn)" title="CPU spent >1s in {{ deep.name }} during this run — QD1 latency penalty suspect"{% endif %}>
+            {{ deep.name }} · {{ (deep.usec / 1000)|round(0) }} ms
+          </span>
+        </div>
+      {% endif %}
+    {% endif %}
+    {% for k, v in os.items() if k.startswith("sched_") %}
+      <div class="kv"><span class="k">{{ k.replace("sched_", "") }} scheduler</span>
+        <span {% if v == "none" %}class="badge-pass"{% else %}style="color:var(--warn)"{% endif %}>{{ v }}</span>
+      </div>
+    {% endfor %}
+  </div>
+{% endfor %}
+{% for disk, ds in drive_state_by_disk.items() %}
+  <div class="card">
+    <h3>{{ disk }}</h3>
+    {% set os = ds.one_shot %}
+    {% if os.device_model %}
+      <div class="kv"><span class="k">model</span><span>{{ os.device_model }}</span></div>
+    {% endif %}
+    {% if os.firmware_rev %}
+      <div class="kv"><span class="k">firmware</span><span>{{ os.firmware_rev }}</span></div>
+    {% endif %}
+    {# PCIe / SATA link — the headline diagnostic. Flag downgrades red. #}
+    {% if ds.pre.pcie_link_speed %}
+      {% set ls = ds.pre.pcie_link_speed %}
+      {% set lw = ds.pre.pcie_link_width %}
+      <div class="kv">
+        <span class="k">PCIe link</span>
+        <span {% if ls and ("8" not in (ls|string) and "16" not in (ls|string)) %}class="badge-fail"{% else %}class="badge-pass"{% endif %}>
+          {{ ls }} × {{ lw }}
+        </span>
+      </div>
+      {% if ds.post.pcie_link_speed and ds.post.pcie_link_speed != ds.pre.pcie_link_speed %}
+        <div class="kv"><span class="k">PCIe link (post)</span><span class="badge-fail">{{ ds.post.pcie_link_speed }} × {{ ds.post.pcie_link_width }} ← FLAPPED</span></div>
+      {% endif %}
+    {% endif %}
+    {# Real lspci LnkSta — authoritative vs the sysfs view. A downgrade
+       here means the link is actually running slower/narrower than the
+       endpoint advertises, even if sysfs says otherwise. Catches the
+       "current_link_width reports 4 but only 2 lanes trained" trap. #}
+    {% if ds.pre.lnksta_speed %}
+      {% set sp_ok = ds.pre.lnksta_speed_ok|string == "1" %}
+      {% set w_ok  = ds.pre.lnksta_width_ok|string == "1" %}
+      <div class="kv">
+        <span class="k">LnkSta (actual)</span>
+        <span {% if sp_ok and w_ok %}class="badge-pass"{% else %}class="badge-fail" title="lspci reports a trained-link downgrade — throughput is physically capped regardless of what current_link_* says"{% endif %}>
+          {{ ds.pre.lnksta_speed }} × {{ ds.pre.lnksta_width }}
+          {% if not sp_ok %} · speed DOWNGRADED{% endif %}
+          {% if not w_ok %} · width DOWNGRADED{% endif %}
+          {% if sp_ok and w_ok %} · ok{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {# AER correctable errors. If the pre and post flag strings differ,
+       something flipped during the run — classic replay-storm signal. #}
+    {% if ds.pre.aer_cesta or ds.post.aer_cesta %}
+      {% set ce_pre = ds.pre.aer_cesta|default("") %}
+      {% set ce_post = ds.post.aer_cesta|default("") %}
+      {% set ce_changed = ce_pre != ce_post %}
+      {# A healthy CESta has every flag ending with `-` (e.g. RxErr-).
+         Values are comma-separated (see drive-state.sh note on why not
+         `+`-joined). A flag is "set" when it ends in `+`, which appears
+         in the joined string as either `+,` or a trailing `+`. #}
+      {% set ce_dirty_post = ("+," in ce_post) or ce_post.endswith("+") %}
+      <div class="kv">
+        <span class="k">AER correctable</span>
+        <span {% if ce_dirty_post or ce_changed %}class="badge-fail" title="correctable-error flags set or changed during this run — link is retransmitting TLPs"{% else %}class="badge-pass"{% endif %}>
+          {% if ce_changed %}
+            {{ ce_pre }} → <strong>{{ ce_post }}</strong>
+          {% elif ce_dirty_post %}
+            {{ ce_post }}
+          {% else %}
+            clean
+          {% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if ds.post.aer_uesta and (("+," in ds.post.aer_uesta) or ds.post.aer_uesta.endswith("+")) %}
+      <div class="kv">
+        <span class="k">AER uncorrectable</span>
+        <span class="badge-fail">{{ ds.post.aer_uesta }}</span>
+      </div>
+    {% endif %}
+    {# PCIe ASPM — the prime suspect for QD1 latency gaps. L1 exit is
+       50-70 µs on Kaby Lake root ports, exactly the observed dev-02
+       vs dev-03 gap (23 µs → 83 µs mean). Flag L1 enabled as warn. #}
+    {% if os.pcie_aspm %}
+      <div class="kv">
+        <span class="k">PCIe ASPM</span>
+        <span
+          {% if "Disabled" in os.pcie_aspm %}
+            class="badge-pass" title="no link-level power management → no per-request wake cost"
+          {% elif "L1" in os.pcie_aspm %}
+            class="badge-fail" title="L1 exit latency (50-70 µs on i7-7700T) adds to every QD1 request"
+          {% else %}
+            style="color:var(--warn)"
+          {% endif %}>
+          {{ os.pcie_aspm }}{% if os.pcie_aspm_cap and os.pcie_aspm_cap != os.pcie_aspm %}<span class="muted"> (cap: {{ os.pcie_aspm_cap }})</span>{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {# NVMe IRQ spread — if all queues land on cpu0, submitter contends
+       with its own completion handler. Flag spread==1 as warn. #}
+    {% if os.nvme_irq_cpu_spread is defined %}
+      <div class="kv">
+        <span class="k">NVMe IRQs</span>
+        <span {% if os.nvme_irq_cpu_spread|string == "1" %}class="badge-fail" title="all queues pinned to one CPU — submitter and completion contend"{% else %}class="badge-pass"{% endif %}>
+          {{ os.nvme_irq_count or "?" }} IRQs across {{ os.nvme_irq_cpu_spread }} CPU{% if os.nvme_irq_cpu_spread|string != "1" %}s{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if ds.pre.sata_link_gbps %}
+      {% set sl = ds.pre.sata_link_gbps %}
+      <div class="kv">
+        <span class="k">SATA link</span>
+        <span {% if sl and (sl|string).startswith("6") %}class="badge-pass"{% else %}class="badge-fail"{% endif %}>
+          {{ sl }} Gb/s
+        </span>
+      </div>
+    {% endif %}
+    {# Temperature — pre/post and computed delta. #}
+    {% if ds.pre.temp_c is defined or ds.post.temp_c is defined %}
+      <div class="kv">
+        <span class="k">temp</span>
+        <span>
+          {{ ds.pre.temp_c or "?" }} °C → <strong>{{ ds.post.temp_c or "?" }} °C</strong>
+          {% if ds.delta.temp_c is defined %}
+            <span class="muted">(Δ {{ ds.delta.temp_c|round(1) }} °C)</span>
+          {% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {# Thermal throttle DURING THIS RUN. Non-zero delta = throttled. #}
+    {% if ds.delta.throttle_t1_count is defined or ds.delta.throttle_t2_count is defined %}
+      {% set t1c = ds.delta.throttle_t1_count|default(0) %}
+      {% set t1s = ds.delta.throttle_t1_seconds|default(0) %}
+      {% set t2c = ds.delta.throttle_t2_count|default(0) %}
+      {% set t2s = ds.delta.throttle_t2_seconds|default(0) %}
+      {% set throttled = (t1c > 0) or (t2c > 0) %}
+      <div class="kv">
+        <span class="k">throttled this run</span>
+        <span {% if throttled %}class="badge-fail"{% else %}class="badge-pass"{% endif %}>
+          {% if throttled %}
+            yes · T1 {{ t1c|int }}× ({{ t1s|int }}s) · T2 {{ t2c|int }}× ({{ t2s|int }}s)
+          {% else %}
+            no
+          {% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.apst_enabled is defined %}
+      <div class="kv">
+        <span class="k">APST</span>
+        <span {% if os.apst_enabled|string == "1" %}style="color:var(--warn)" title="APST on — QD1 bursts pay PS-exit latency"{% endif %}>
+          {% if os.apst_enabled|string == "1" %}enabled{% else %}disabled{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {# NVMe power-state probe — the critical field for the 3-tier QD1
+       latency mystery. If pwr_state_current differs across nodes that
+       otherwise behave identically, THAT is the knob that's driving
+       the 60 µs QD1 tax. Compare: pwr_state_exlat_us is the drive's
+       own spec for how long it costs to wake up from this state. #}
+    {% if os.pwr_state_current is defined %}
+      <div class="kv">
+        <span class="k">pwr state (floor)</span>
+        <span {% if os.pwr_state_current|string != "0" %}class="badge-warn" title="non-zero floor = drive may park in a deeper idle state between I/Os"{% endif %}>
+          PS{{ os.pwr_state_current }}{% if os.pwr_state_exlat_us is defined %} · exlat {{ os.pwr_state_exlat_us }}µs{% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {% if os.pwr_max_exlat_us is defined %}
+      <div class="kv">
+        <span class="k">pwr max exlat</span><span>{{ os.pwr_max_exlat_us }}µs{% if os.pwr_nop_ps_count is defined %} ({{ os.pwr_nop_ps_count }} non-op PS){% endif %}</span>
+      </div>
+    {% endif %}
+    {% if os.irq_coalesce_thr is defined %}
+      <div class="kv">
+        <span class="k">IRQ coalesce</span>
+        <span {% if os.irq_coalesce_thr|string != "0" or (os.irq_coalesce_time_us is defined and os.irq_coalesce_time_us|string != "0") %}class="badge-fail" title="IRQ coalescing enabled — adds QD1 completion latency tax"{% else %}class="badge-pass"{% endif %}>
+          {% if os.irq_coalesce_thr|string == "0" and (os.irq_coalesce_time_us is not defined or os.irq_coalesce_time_us|string == "0") %}
+            disabled
+          {% else %}
+            thr={{ os.irq_coalesce_thr }}{% if os.irq_coalesce_time_us is defined %} time={{ os.irq_coalesce_time_us }}µs{% endif %}
+          {% endif %}
+        </span>
+      </div>
+    {% endif %}
+    {# APST transition table — the prime suspect for the QD1 mystery.
+       Show one row per source PS that has a programmed transition:
+       "PSn → PSm after N ms idle". Nodes showing short ITPT to a
+       high-exit-latency PS are the ones paying the QD1 tax. Lines
+       are suppressed when ITPT == 0 (no transition programmed). #}
+    {% set apst_rows = [] %}
+    {% for n in range(5) %}
+      {% set itpt = os.get('apst_ps' ~ n ~ '_itpt_ms') %}
+      {% set itps = os.get('apst_ps' ~ n ~ '_itps') %}
+      {% if itpt is not none and itpt|string != "0" %}
+        {% set _ = apst_rows.append((n, itpt, itps)) %}
+      {% endif %}
+    {% endfor %}
+    {% if apst_rows %}
+      <div class="kv"><span class="k">APST transitions</span><span></span></div>
+      {% for n, itpt, itps in apst_rows %}
+        <div class="kv" style="padding-left:1em;">
+          <span class="k">PS{{ n }} → PS{{ itps }}</span>
+          <span {% if itpt|int < 500 %}class="badge-warn" title="short idle timeout — drive parks in deep PS aggressively, costs QD1 latency"{% endif %}>after {{ itpt }} ms idle</span>
+        </div>
+      {% endfor %}
+    {% endif %}
+    {% if os.percent_used is defined %}
+      <div class="kv"><span class="k">percent_used</span><span>{{ os.percent_used }}%</span></div>
+    {% endif %}
+    {% if os.wear_remaining_pct is defined %}
+      <div class="kv"><span class="k">wear remaining</span><span>{{ os.wear_remaining_pct }}%</span></div>
+    {% endif %}
+    {% if os.available_spare is defined %}
+      <div class="kv"><span class="k">available_spare</span><span>{{ os.available_spare }}%</span></div>
+    {% endif %}
+    {% if os.power_cycles is defined %}
+      <div class="kv"><span class="k">power cycles</span><span>{{ os.power_cycles }}</span></div>
+    {% endif %}
+    {% if os.power_on_hours is defined %}
+      <div class="kv"><span class="k">power-on hours</span><span>{{ os.power_on_hours }}</span></div>
+    {% endif %}
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if fio_by_disk %}
+<h2>Disk I/O (fio matrix)</h2>
+<div class="grid">
+{% for disk, dirs in fio_by_disk.items() %}
+  <div class="card" style="grid-column: span 2;">
+    <h3>{{ disk }}</h3>
+    {% for direction, stages in dirs.items() %}
+      <div style="margin-top:4px"><strong style="color:{% if direction == 'read' %}var(--accent){% else %}var(--warn){% endif %}">{{ direction|upper }}</strong></div>
+      <table style="margin:4px 0 10px; font-size:12px">
+        <thead>
+          <tr><th>Stage</th><th style="text-align:right">IOPS</th><th style="text-align:right">BW MiB/s</th><th style="text-align:right">Lat mean µs</th><th style="text-align:right">Lat p99 µs</th></tr>
+        </thead>
+        <tbody>
+        {% for tag, row in stages.items() %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td style="text-align:right">{{ row.iops if row.iops is defined else "—" }}</td>
+            <td style="text-align:right"><strong>{{ row.bw_mibps if row.bw_mibps is defined else "—" }}</strong></td>
+            <td style="text-align:right">{{ row.lat_us_mean if row.lat_us_mean is defined else "—" }}</td>
+            <td style="text-align:right">{{ row.lat_us_p99 if row.lat_us_p99 is defined else "—" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endfor %}
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if net_tests %}
+<h2>Network (iperf3)</h2>
+<div class="grid">
+{% for t in net_tests %}
+  <div class="card" style="grid-column: span 2;">
+    <h3>
+      {{ t.name }}
+      {% if t.rc == 0 %}<span class="badge-pass">PASS</span>
+      {% else %}<span class="badge-fail">FAIL rc={{ t.rc }}</span>{% endif %}
+    </h3>
+    <div class="kv"><span class="k">iface</span><span>{{ t.iface or "—" }}</span></div>
+    <div class="kv"><span class="k">link speed</span><span>{% if t.speed_mbps %}{{ t.speed_mbps }} Mbps{% else %}—{% endif %}</span></div>
+    <div class="kv"><span class="k">server</span><span>{{ t.server or "—" }}</span></div>
+    <div class="kv">
+      <span class="k">bandwidth</span>
+      <span><strong>{{ t.bw_mbps if t.bw_mbps is defined else "—" }}</strong> Mbps</span>
+    </div>
+    <div class="kv">
+      <span class="k">retransmits</span>
+      <span {% if t.retransmits is defined and t.retransmits > 0 %}style="color:var(--warn)"{% endif %}>
+        {{ t.retransmits if t.retransmits is defined else "—" }}
+      </span>
+    </div>
+    {% if t.speed_mbps and t.bw_mbps is defined %}
+      {% set pct = ((t.bw_mbps|float) / (t.speed_mbps|float) * 100)|round(0) %}
+      <div class="kv"><span class="k">link utilisation</span>
+        <span {% if pct < 80 %}style="color:var(--warn)"{% else %}style="color:var(--pass)"{% endif %}>{{ pct }}%</span>
+      </div>
+      <div style="margin-top:8px; height: 8px; background:#0d1117; border-radius:4px; overflow:hidden;">
+        <div style="width:{{ pct if pct <= 100 else 100 }}%; height:100%; background:{% if pct < 80 %}var(--warn){% else %}var(--pass){% endif %};"></div>
+      </div>
+    {% endif %}
+    {% if t.bw_series and t.bw_series|length > 1 %}
+      <div style="margin-top:10px">
+        <canvas id="netchart-{{ loop.index }}" height="80"></canvas>
+      </div>
+      <script>
+      (function(){
+        const bw   = {{ t.bw_series|tojson }};
+        const retr = {{ t.retr_series|tojson }};
+        const linkSpeed = {{ (t.speed_mbps|float) if t.speed_mbps else 0 }};
+        const labels = bw.map((_, i) => (i+1) + "s");
+        new Chart(document.getElementById("netchart-{{ loop.index }}"), {
+          data: {
+            labels: labels,
+            datasets: [
+              { type: "line", label: "bandwidth Mbps", yAxisID: "y",
+                data: bw, borderColor: "#3fb950", tension: 0.25, pointRadius: 0 },
+              { type: "line", label: "link speed", yAxisID: "y",
+                data: bw.map(_ => linkSpeed), borderColor: "#30363d",
+                borderDash: [4,3], pointRadius: 0, fill: false },
+              { type: "bar",  label: "retransmits", yAxisID: "y2",
+                data: retr, backgroundColor: "#d29922" },
+            ],
+          },
+          options: {
+            responsive: true,
+            interaction: { mode: "index", intersect: false },
+            plugins: { legend: { labels: { color: "#c9d1d9", boxWidth: 12 } } },
+            scales: {
+              x:  { ticks: { color: "#768390", maxTicksLimit: 12 }, grid: { color: "#30363d" } },
+              y:  { position: "left",  beginAtZero: true,
+                    ticks: { color: "#3fb950" }, grid: { color: "#30363d" },
+                    title: { display: true, text: "Mbps", color: "#3fb950" } },
+              y2: { position: "right", beginAtZero: true,
+                    ticks: { color: "#d29922", precision: 0 },
+                    grid: { drawOnChartArea: false },
+                    title: { display: true, text: "retrans", color: "#d29922" } },
+            },
+          },
+        });
+      })();
+      </script>
+    {% endif %}
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% set visible_tests = tests | rejectattr("name", "equalto", "nic_i226v") | list %}
+<h2>All Tests ({{ visible_tests|length }})</h2>
+{% if visible_tests %}
+<table class="wrap">
+  <colgroup>
+    <col style="width:12%">
+    <col style="width:8%">
+    <col style="width:10%">
+    <col style="width:70%">
+  </colgroup>
   <thead>
     <tr>
       <th>Name</th>
@@ -50,7 +493,7 @@
     </tr>
   </thead>
   <tbody>
-    {% for t in tests %}
+    {% for t in visible_tests %}
     <tr>
       <td><strong>{{ t.name }}</strong></td>
       <td>{{ t.tool }}</td>
@@ -69,35 +512,90 @@
 
 <h2>Telemetry ({{ sample_count }} samples)</h2>
 {% if sample_count %}
-<div class="card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px;">
-  <canvas id="tempchart" height="120"></canvas>
+<div class="grid">
+  <div class="card" style="grid-column: 1 / -1;">
+    <h3>Temperatures (°C)</h3>
+    <canvas id="tempchart" height="110"></canvas>
+  </div>
+  <div class="card" style="grid-column: 1 / -1;">
+    <h3>CPU frequency (MHz) · CPU fan (RPM) · CPU temp (°C)</h3>
+    <canvas id="cpuchart" height="110"></canvas>
+  </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
 const ts = {{ chart_ts|safe }};
-const t0 = ts[0] || 0;
-const labels = ts.map(t => Math.round(t - t0) + "s");
+const t0 = ts.length ? ts[0] : 0;
+const labels = ts.map(t => {
+  const s = t - t0;
+  if (!isFinite(s)) return "?";
+  if (s < 60)   return Math.round(s) + "s";
+  if (s < 3600) return Math.round(s/60) + "m";
+  return (s/3600).toFixed(1) + "h";
+});
+
+const commonScales = (yTitle) => ({
+  x: { ticks: { color: "#768390", maxTicksLimit: 10 }, grid: { color: "#30363d" } },
+  y: { ticks: { color: "#768390" }, grid: { color: "#30363d" },
+       title: { display: true, text: yTitle, color: "#768390" } },
+});
+const commonOpts = (yTitle) => ({
+  responsive: true,
+  interaction: { mode: "index", intersect: false },
+  plugins: { legend: { labels: { color: "#c9d1d9" } } },
+  scales: commonScales(yTitle),
+  spanGaps: true,
+});
+
 new Chart(document.getElementById("tempchart"), {
   type: "line",
   data: {
     labels: labels,
     datasets: [
-      { label: "CPU pkg °C", data: {{ chart_cpu|safe }}, borderColor: "#f85149",
+      { label: "CPU °C",    data: {{ chart_cpu_c|safe }}, borderColor: "#f85149",
         tension: 0.25, pointRadius: 0 },
-      { label: "NVMe °C",    data: {{ chart_nvme|safe }}, borderColor: "#2f81f7",
+      { label: "NVMe °C",   data: {{ chart_nvme|safe }},  borderColor: "#2f81f7",
         tension: 0.25, pointRadius: 0 },
-      { label: "SSD °C",     data: {{ chart_ssd|safe }},  borderColor: "#3fb950",
+      { label: "SSD °C",    data: {{ chart_ssd|safe }},   borderColor: "#3fb950",
         tension: 0.25, pointRadius: 0 },
+      { label: "Mobo °C",   data: {{ chart_mb|safe }},    borderColor: "#d29922",
+        tension: 0.25, pointRadius: 0, borderDash: [4,3] },
+    ],
+  },
+  options: commonOpts("°C"),
+});
+
+new Chart(document.getElementById("cpuchart"), {
+  type: "line",
+  data: {
+    labels: labels,
+    datasets: [
+      { label: "CPU MHz",     yAxisID: "y",  data: {{ chart_cpu_mhz|safe }},
+        borderColor: "#2f81f7", tension: 0.25, pointRadius: 0 },
+      { label: "CPU fan RPM", yAxisID: "y2", data: {{ chart_fan_cpu|safe }},
+        borderColor: "#d29922", tension: 0.25, pointRadius: 0, borderDash: [4,3] },
+      { label: "CPU °C",      yAxisID: "y3", data: {{ chart_cpu_c|safe }},
+        borderColor: "#f85149", tension: 0.25, pointRadius: 0 },
     ],
   },
   options: {
     responsive: true,
     interaction: { mode: "index", intersect: false },
     plugins: { legend: { labels: { color: "#c9d1d9" } } },
+    spanGaps: true,
     scales: {
-      x: { ticks: { color: "#768390" }, grid: { color: "#30363d" } },
-      y: { ticks: { color: "#768390" }, grid: { color: "#30363d" },
-           title: { display: true, text: "°C", color: "#768390" } },
+      x: { ticks: { color: "#768390", maxTicksLimit: 10 }, grid: { color: "#30363d" } },
+      y:  { position: "left",  ticks: { color: "#2f81f7" },
+            grid: { color: "#30363d" },
+            title: { display: true, text: "MHz", color: "#2f81f7" } },
+      y2: { position: "right", ticks: { color: "#d29922" },
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "RPM", color: "#d29922" } },
+      // 3rd y-axis — rendered on the right but offset so the RPM axis
+      // stays readable. Chart.js supports multiple axes on the same side
+      // by default (stacked to the right).
+      y3: { position: "right", ticks: { color: "#f85149" },
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "°C", color: "#f85149" } },
     },
   },
 });
