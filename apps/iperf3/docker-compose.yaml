@@ -1,68 +1,164 @@
 services:
-  # Two parallel iperf3 server daemons on distinct ports so that Phase D
-  # burnin — which runs net-mgmt and net-data concurrently on the same
-  # node — doesn't collide on a single iperf3 -s process.
+  # Per-node iperf3 servers — 12 daemons, one port per (node, NIC-family).
   #
-  # iperf3 servers accept ONE client at a time; a second concurrent client
-  # gets "the server is busy running a test. try again later" and the
-  # run fails. Splitting by port keeps the two NIC tests independent.
+  # Why 12 and not 2 (mgmt + data):
   #
-  #   :5201  — mgmt VLAN 5  (I219-LM clients via net-mgmt.sh)
-  #   :5202  — data VLANs 10+15 (I226-V clients via net-data.sh)
+  # iperf3 -s accepts ONE client at a time; a second concurrent client gets
+  # "the server is busy running a test. try again later" and the run fails.
+  # For SINGLE-NODE burnin that's fine — we used to ship one iperf3-mgmt
+  # (:5201) and one iperf3-data (:5202) and they handled net-mgmt + net-data
+  # on the same node concurrently because they were on different ports.
   #
-  # Both images are the tiny ~10 MB networkstatic/iperf3 (Alpine + iperf3
-  # from main repo). networkstatic/iperf3's entrypoint is `iperf3`, so
-  # `command:` below is just its argv.
+  # For FLEET burnin (all 6 nodes hitting `burnin` simultaneously) that's
+  # broken: 6 clients → 1 server = 5 rejected. So we run one iperf3 -s
+  # process per (node, NIC-family) and the client in hw-validation derives
+  # its port from hostname:
+  #
+  #   node        mgmt port (I219-LM, 1Gb, VLAN 5)   data port (I226-V, 2.5Gb, VLAN 10/15)
+  #   kub-prd-01  10.10.5.10:5201                    10.10.10.10:5211
+  #   kub-prd-02  10.10.5.10:5202                    10.10.10.10:5212
+  #   kub-prd-03  10.10.5.10:5203                    10.10.10.10:5213
+  #   kub-dev-01  10.10.5.10:5204                    10.10.15.10:5214
+  #   kub-dev-02  10.10.5.10:5205                    10.10.15.10:5215
+  #   kub-dev-03  10.10.5.10:5206                    10.10.15.10:5216
+  #
+  # The mapping lives in hw-validation's scripts/tests/net-mgmt.sh and
+  # scripts/tests/net-data.sh (case statement on `hostname`). Unknown
+  # hostnames fall back to offset 1 — single-node use works transparently,
+  # two unknown nodes concurrently would re-collide (documented, rare).
+  #
+  # Resource cost: each idle iperf3 -s is <1 MB RSS, 0% CPU. 12 of them is
+  # still <15 MB RSS total and invisible on `docker stats`. Starts once
+  # with TrueNAS, never touched.
+  #
+  # NAS uplink is 2.5 Gb shared → under 6-way concurrent burnin, each
+  # client measures ~400 Mbps mgmt (1 Gb nominal) and ~400 Mbps data
+  # (2.5 Gb nominal). Tests COMPLETE; numbers are contended but a dead
+  # NIC still shows 0, a 100 Mb-negotiated link still shows ~95 Mbps,
+  # so the pass/fail signal remains valid. Fleet-burnin network numbers
+  # are pessimistic vs solo-node runs — document on dashboard readings.
 
-  iperf3-mgmt:
+  # ─── Mgmt VLAN (I219-LM clients, VLAN 5, 10.10.5.0/24) ───────────────
+  iperf3-mgmt-01:
     image: networkstatic/iperf3:latest
-    container_name: iperf3-mgmt
+    container_name: iperf3-mgmt-01
     restart: unless-stopped
     network_mode: bridge
-    # Bind on the mgmt-VLAN NAS IP only. Other VLANs have their own
-    # daemon (iperf3-data) so we don't accidentally allow a data-NIC
-    # client to hit this server via the wrong route.
     ports:
       - "10.10.5.10:5201:5201/tcp"
       - "10.10.5.10:5201:5201/udp"
-    # -s server, -V verbose ("docker logs iperf3-mgmt" shows connecting
-    # clients for debug), -p pin to 5201 (also the default, but explicit
-    # so the two services document their role).
     command: ["-s", "-V", "-p", "5201"]
 
-  iperf3-data:
+  iperf3-mgmt-02:
     image: networkstatic/iperf3:latest
-    container_name: iperf3-data
+    container_name: iperf3-mgmt-02
     restart: unless-stopped
     network_mode: bridge
-    # Bind on BOTH data-VLAN NAS IPs. prd nodes (kub-prd-*) land on
-    # 10.10.10.0/24 and hit 10.10.10.10:5202; dev nodes (kub-dev-*) land
-    # on 10.10.15.0/24 and hit 10.10.15.10:5202. net-data.sh auto-picks
-    # the right IP from its own DHCP subnet.
     ports:
-      - "10.10.10.10:5202:5202/tcp"
-      - "10.10.10.10:5202:5202/udp"
-      - "10.10.15.10:5202:5202/tcp"
-      - "10.10.15.10:5202:5202/udp"
+      - "10.10.5.10:5202:5202/tcp"
+      - "10.10.5.10:5202:5202/udp"
     command: ["-s", "-V", "-p", "5202"]
 
-# Why always-on + split by port (vs one-shot per test run, or single
-# daemon with client queueing):
-#
-#   * No operator pairing dance — any node can boot net-mgmt/net-data
-#     anytime and just work.
-#   * Phase D burnin runs net-mgmt + net-data concurrently on the same
-#     node. A single iperf3 -s would reject the second client ("server
-#     is busy") — observed on the first burnin dry-run. Two servers on
-#     two ports removes the collision without any client-side retry
-#     logic.
-#   * NAS sits on a 2.5 Gb link to the switch. Saturating both NIC
-#     tests (1 Gb mgmt + 2.5 Gb data = 3.5 Gb theoretical) would
-#     exceed NAS uplink; in practice burnin is a stress test, not a
-#     throughput benchmark, so some contention is acceptable and
-#     documented as expected drift in the fleet matrix.
-#   * Idle iperf3 -s consumes <1 MB RSS, 0% CPU — two of them is still
-#     negligible. Starts once, never touched.
-#
-# Only node that's NOT a test target: the NAS itself. Everything else
-# in the fleet (the 6 K8s nodes) uses these services.
+  iperf3-mgmt-03:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-mgmt-03
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.5.10:5203:5203/tcp"
+      - "10.10.5.10:5203:5203/udp"
+    command: ["-s", "-V", "-p", "5203"]
+
+  iperf3-mgmt-04:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-mgmt-04
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.5.10:5204:5204/tcp"
+      - "10.10.5.10:5204:5204/udp"
+    command: ["-s", "-V", "-p", "5204"]
+
+  iperf3-mgmt-05:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-mgmt-05
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.5.10:5205:5205/tcp"
+      - "10.10.5.10:5205:5205/udp"
+    command: ["-s", "-V", "-p", "5205"]
+
+  iperf3-mgmt-06:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-mgmt-06
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.5.10:5206:5206/tcp"
+      - "10.10.5.10:5206:5206/udp"
+    command: ["-s", "-V", "-p", "5206"]
+
+  # ─── Data VLAN 10 prd (I226-V clients, VLAN 10, 10.10.10.0/24) ───────
+  # Bound on the NAS prd-VLAN IP only — dev nodes can't reach
+  # 10.10.10.0/24 by L2 and shouldn't be routed inter-VLAN for this.
+  iperf3-data-01:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-01
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.10.10:5211:5211/tcp"
+      - "10.10.10.10:5211:5211/udp"
+    command: ["-s", "-V", "-p", "5211"]
+
+  iperf3-data-02:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-02
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.10.10:5212:5212/tcp"
+      - "10.10.10.10:5212:5212/udp"
+    command: ["-s", "-V", "-p", "5212"]
+
+  iperf3-data-03:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-03
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.10.10:5213:5213/tcp"
+      - "10.10.10.10:5213:5213/udp"
+    command: ["-s", "-V", "-p", "5213"]
+
+  # ─── Data VLAN 15 dev (I226-V clients, VLAN 15, 10.10.15.0/24) ───────
+  iperf3-data-04:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-04
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.15.10:5214:5214/tcp"
+      - "10.10.15.10:5214:5214/udp"
+    command: ["-s", "-V", "-p", "5214"]
+
+  iperf3-data-05:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-05
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.15.10:5215:5215/tcp"
+      - "10.10.15.10:5215:5215/udp"
+    command: ["-s", "-V", "-p", "5215"]
+
+  iperf3-data-06:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3-data-06
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - "10.10.15.10:5216:5216/tcp"
+      - "10.10.15.10:5216:5216/udp"
+    command: ["-s", "-V", "-p", "5216"]
