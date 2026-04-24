@@ -6,17 +6,42 @@
 # explicitly in apps/homepage/services.yaml, same way Traefik routes
 # live in routes.yaml.
 #
-# Fronted by NAS Traefik: home.w1.lv → http://10.10.5.10:3001. Mgmt VLAN
+# Fronted by NAS Traefik: home.w1.lv → http://10.10.5.10:3000. Mgmt VLAN
 # only; workloads on prd/dev can't route here.
 services:
   homepage:
     image: ghcr.io/gethomepage/homepage:v1.12.3
     container_name: homepage
     restart: unless-stopped
-    ports:
-      # Mgmt VLAN bind. Host :3001 clear of every existing service on
-      # 10.10.5.10 (:8080 PXE nginx, :4480 meshcentral, :8088 wiki).
-      - "10.10.5.10:3001:3000"
+    # HOST networking — same rationale as apps/pxe/docker-compose.yaml.
+    #
+    # Why: Homepage's widgets poll MikroTik REST endpoints at 10.10.0.1–.5
+    # (base-vlan). The request path is Homepage → NAS kernel → default
+    # gateway 10.10.5.1 → router forwards to its own base-vlan IP. Router
+    # firewall rule `accept nas homepage widget to router rest` only matches
+    # src-address=10.10.5.10. With Docker's default bridge + MASQUERADE,
+    # the observed source IP on a multi-homed NAS (4 sub-interfaces) isn't
+    # deterministic — SYNs would sometimes show up with src=10.10.5.10
+    # (234 accepted), then stop, and the router would silently drop the
+    # rest. Verified via container json.log: every request to 10.10.0.1:80
+    # returns `Error: connect ETIMEDOUT`.
+    #
+    # Host networking bypasses Docker's NAT entirely. Homepage's outbound
+    # goes through the NAS network stack directly → source IP is selected
+    # per-destination from the host routing table → consistently 10.10.5.10
+    # for any dst reached via the default gateway. Firewall rule matches
+    # every time, widgets populate.
+    #
+    # Same shape as PXE: TFTP reply-source-IP bug was the same class of
+    # Docker MASQUERADE weirdness on multi-homed host.
+    network_mode: host
+    # No `ports:` block with host networking — the container binds its
+    # own listener directly on the host network stack. The Homepage
+    # image (Next.js v16.1.7) hardcodes port 3000 and does NOT honor
+    # PORT / HOMEPAGE_PORT env overrides (verified empirically 2026-04-24:
+    # HOMEPAGE_PORT=3001 was silently ignored, container still served
+    # on :3000). Traefik upstream updated to http://10.10.5.10:3000
+    # to match — see apps/traefik/routes.yaml.
     volumes:
       # All Homepage YAMLs (services, bookmarks, widgets, settings, etc.)
       # uploaded by phase apps via _ensure_homepage_config_via_ctx.
@@ -91,9 +116,5 @@ services:
     # defined one that always fails (wget: not found → exit 127), the app
     # gets marked DEPLOYING forever and may be auto-restarted.
     # Restart policy above handles the "container crashed" case anyway.
-    networks:
-      - default
-
-networks:
-  default:
-    driver: bridge
+    #
+    # No `networks:` section — network_mode: host preempts it.
