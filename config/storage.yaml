@@ -44,16 +44,17 @@ datasets:
     kind: parent
   - name: tank/kube/prd
     kind: parent
-  - name: tank/kube/prd/longhorn
-    recordsize: 128K
   - name: tank/kube/prd/velero
     recordsize: 1M
+  # tank/kube/prd/longhorn dataset removed 2026-04-27: Longhorn switched
+  # to MinIO S3 BackupTarget on the same NAS (volume backups land in
+  # bucket `longhorn` under the existing MinIO instance, not a separate
+  # NFS-exported dataset). Closes kube-infra issue #26.
   - name: tank/kube/dev
     kind: parent
-  - name: tank/kube/dev/longhorn
-    recordsize: 128K
   - name: tank/kube/dev/velero
     recordsize: 1M
+  # tank/kube/dev/longhorn dataset removed 2026-04-27, same as prd above.
 
   - name: tank/media
     quota: 4T
@@ -129,8 +130,10 @@ smart:
     disks: all
 
 snapshots:
-  # Per-environment recursive snapshots: one task per env covers all services
-  # (longhorn + velero) atomically — useful for consistent backups.
+  # Per-environment recursive snapshots: one task per env covers all
+  # K8s-tracked datasets atomically. Today that's just velero (after
+  # longhorn was removed 2026-04-27 — closes kube-infra #26); the
+  # recursive task auto-picks-up future siblings if added.
   - dataset: tank/kube/prd
     recursive: true
     schedule: "0 1 * * *"         # daily 01:00

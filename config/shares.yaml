@@ -17,30 +17,10 @@ nfs:
       - 10.10.10.10
       - 10.10.15.10
   shares:
-    # ─── DEPRECATED 2026-04-27 ─────────────────────────────────────
-    # The longhorn-{prd,dev} NFS exports are no longer used:
-    # Longhorn switched to MinIO S3 BackupTarget on the same NAS
-    # (kube-infra commit aa12172, closes kube-infra issue #26).
-    #
-    # Bucket `longhorn` lives under the existing MinIO instance
-    # (s3-{prd,dev}.w1.lv:9000) — single backup-destination story
-    # for both Velero (cluster state) and Longhorn (volume data).
-    #
-    # The two share entries are removed here, but the NAS-side
-    # state remains until the operator manually:
-    #   1. Verifies Longhorn S3 backups work (kubectl get
-    #      backuptarget -n longhorn-system → Available=true) and at
-    #      least one Backup CR completes successfully.
-    #   2. Deletes the NFS exports via TrueNAS UI (System > Shares >
-    #      NFS) — `manage.sh phase shares` is additive-only and
-    #      won't prune removed entries.
-    #   3. (Optional) Retains the datasets `tank/kube/{prd,dev}/
-    #      longhorn` for one rotation cycle as escape hatch, then
-    #      deletes them via TrueNAS UI (or remove from
-    #      config/storage.yaml + add a destructive cleanup module).
-    #
-    # Once the NAS-side cleanup is complete, this comment block can
-    # be removed too.
+    # The longhorn-{prd,dev} NFS exports were removed 2026-04-27 when
+    # Longhorn switched to MinIO S3 BackupTarget (kube-infra #26).
+    # NAS-side share + underlying dataset both deleted at the same
+    # time via the TrueNAS API.
     - name: stress-results
       path: /mnt/tank/system/stress-results
       networks: [10.10.5.0/24]
