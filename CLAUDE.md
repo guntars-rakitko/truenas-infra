@@ -184,6 +184,30 @@ All configuration is applied via TrueNAS REST API using scripts in `scripts/`. T
 3. Scripts are idempotent — safe to re-run
 4. A top-level `configure.sh` runs all scripts in order (or provides an interactive menu)
 
+### MinIO bucket internals (lifecycle, ILM)
+
+TrueNAS API doesn't reach inside the MinIO container — bucket-level
+config (lifecycle, retention, replication) lives there. We drive `mc`
+directly via `scripts/setup-minio-lifecycle.sh`, which is idempotent
+(replaces the bucket's full ILM config wholesale on every run) and
+uses the operator's pre-configured `nas-prd` / `nas-dev` aliases.
+
+Current rules:
+
+| Bucket | Expiration | Why |
+|---|---|---|
+| `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
+
+Velero / Longhorn / etcd-snapshot buckets are intentionally not in
+this script — Velero and Longhorn manage their own retention via
+controller TTL, and etcd-snapshots is curated by hand for now.
+
+Run after MinIO (re-)bootstrap or after editing the rule list:
+
+```sh
+./scripts/setup-minio-lifecycle.sh
+```
+
 ---
 
 ## Secrets — SOPS + age
