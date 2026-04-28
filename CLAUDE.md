@@ -184,15 +184,59 @@ All configuration is applied via TrueNAS REST API using scripts in `scripts/`. T
 3. Scripts are idempotent — safe to re-run
 4. A top-level `configure.sh` runs all scripts in order (or provides an interactive menu)
 
-### MinIO bucket internals (lifecycle, ILM)
+### MinIO bucket internals (buckets, users, lifecycle)
 
 TrueNAS API doesn't reach inside the MinIO container — bucket-level
-config (lifecycle, retention, replication) lives there. We drive `mc`
-directly via `scripts/setup-minio-lifecycle.sh`, which is idempotent
-(replaces the bucket's full ILM config wholesale on every run) and
-uses the operator's pre-configured `nas-prd` / `nas-dev` aliases.
+config (creation, users, lifecycle, retention) lives there. We drive
+`mc` directly via three idempotent scripts under `scripts/`, all
+using the operator's pre-configured `nas-prd` / `nas-dev` aliases
+(set up once per laptop with `mc alias set` against the
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` from the
+`apps/minio-{prd,dev}/secrets.sops.yaml`).
 
-Current rules:
+**Order of operations after a fresh MinIO bootstrap:**
+
+```sh
+./scripts/setup-minio-buckets.sh      # 4 canonical buckets per cluster
+./scripts/setup-minio-users.sh        # service user + readwrite policy
+./scripts/setup-minio-lifecycle.sh    # ILM rules
+```
+
+All three are idempotent and safe to re-run.
+
+#### setup-minio-buckets.sh
+
+Creates the four canonical backup buckets on each MinIO instance:
+
+| Bucket | Consumer |
+|---|---|
+| `velero` | Velero — K8s manifest backups |
+| `longhorn` | Longhorn — volume + system backups |
+| `mssql-backups` | SQL Server — `BACKUP DATABASE TO URL` targets |
+| `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
+
+#### setup-minio-users.sh
+
+Provisions the cluster's service user. **One user per cluster**,
+shared across all backup tracks (Velero / Longhorn / MSSQL /
+etcd-snapshots), `readwrite` policy. Per-track IAM scoping isn't
+worth the operational overhead for this scale.
+
+**Source of truth for the credentials is kube-infra SOPS** — the
+cluster has to read them to USE the user, this script READS them to
+PROVISION the user (single canonical copy, no drift). Cross-repo
+read assumes `kube-infra` is checked out at `../kube-infra` (matches
+the operator-laptop layout described in kube-infra/CLAUDE.md).
+
+To rotate: generate a new key pair, update kube-infra SOPS files
+(`mssql-backup-creds`, `velero-minio`, `longhorn-s3` per env), run
+this script. It will `mc admin user add` with the new key (idempotent
+update). Old key continues to work until you `mc admin user remove`
+explicitly — useful for rolling rotation.
+
+#### setup-minio-lifecycle.sh
+
+Current ILM rules:
 
 | Bucket | Expiration | Why |
 |---|---|---|
@@ -201,12 +245,6 @@ Current rules:
 Velero / Longhorn / etcd-snapshot buckets are intentionally not in
 this script — Velero and Longhorn manage their own retention via
 controller TTL, and etcd-snapshots is curated by hand for now.
-
-Run after MinIO (re-)bootstrap or after editing the rule list:
-
-```sh
-./scripts/setup-minio-lifecycle.sh
-```
 
 ---
 
