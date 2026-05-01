@@ -1,0 +1,193 @@
+#!ipxe
+# nvme -- PXE-booted NVMe maintenance + diagnostic actions.
+#
+# Boots the SAME Alpine live image as hw-validation, but routes
+# stresstest.start into a single component test (scripts/tests/
+# nvmetools.sh) which dispatches on `nvme.action` from the kernel
+# cmdline. Sister menu to hw-validation.ipxe -- where hw-validation
+# *measures*, this menu *resets state* (TRIM / format / sanitize) and
+# captures a focused diagnostic dump without running fio.
+#
+# Built in the sibling hw-validation repo:
+#   cd ~/Documents/github/hw-validation && ./tools/build-image.sh
+#   cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+#
+# ─── Why this menu exists ───────────────────────────────────────────
+#
+# Background: the 6-node Q170S1 fleet runs aftermarket Samsung PM981
+# 256 GB pulls from used laptops. Identical model + identical fw_rev,
+# but bench numbers diverge by up to ~30 % across nodes. Phase K
+# already ruled out PCIe link width (all confirmed Gen3 x4) and
+# motherboard variance (slowness travels with the drive across slot
+# swaps). The remaining suspects are drive-internal: persisted feature
+# state, FTL fragmentation, or SLC-cache exhaustion -- all of which
+# are addressable without a firmware flash via TRIM / format / sanitize.
+#
+# This menu is the operator's entry point for that workflow. Native
+# M.2 slot (so PCIe x4 numbers are real), AMT-driven boot (no USB
+# enclosure or Mac-side tooling needed), per-action JSON report
+# uploaded to NFS for cross-node comparison.
+#
+# ─── Action surface ─────────────────────────────────────────────────
+#
+# Read-only (always safe):
+#   diagnose   Full per-drive state dump: nvme list / id-ctrl / id-ns /
+#              smart-log / get-feature 0x02 0x06 0x08 0x0c / lspci LnkSta /
+#              ASPM / IRQ affinity / APST table. No fio, no writes.
+#              Reuses lib/drive-state.sh; the dashboard sees the
+#              METRIC drv_nvme_* keys it already knows.
+#   bench      Quick fio read-only sweep (seq 1M, seq 64k, rand 4k qd32,
+#              rand 4k qd1). Same matrix as the `nvme` profile but no
+#              destructive write stage and a fixed 60 s/stage budget --
+#              for fast pre/post comparison around a state-reset action.
+#
+# Destructive (gated): all three require the disk-safety guard to PASS
+# (drive must be empty -- run stress.profile=safety first to wipe), AND
+# stress.destructive=1, AND nvme.confirm=DESTROY-PM981.
+#   trim       blkdiscard whole drive. FTL refresh; doesn't reset
+#              persisted feature state. Cheapest reset.
+#   format     nvme format -s 1 (user-data erase). Wipes data + clears
+#              namespace metadata + on most controllers also clears the
+#              saved feature table (APST / power-state floor / etc.).
+#   sanitize   nvme sanitize -a 2 (block erase). The factory-reset
+#              equivalent. Runs longer than format. Use as the last
+#              resort if format didn't restore performance.
+#
+# ─── Kernel args injected ───────────────────────────────────────────
+#
+# This menu sets exactly four cmdline keys per boot, atop the shared
+# Alpine framework args (modules, modloop, apkovl, ip, console, video,
+# acpi_enforce_resources):
+#   stress.profile=nvme-tools
+#   nvme.action=<diagnose|bench|trim|format|sanitize>
+#   stress.destructive=<empty|1>
+#   nvme.confirm=<empty|DESTROY-PM981>
+#
+# stresstest.start parses these, exports them as STRESS_PROFILE,
+# NVME_ACTION, STRESS_DESTRUCTIVE, NVME_CONFIRM, then dispatches the
+# `nvme-tools` profile case to scripts/tests/nvmetools.sh. The script
+# enforces safety + destructive + confirm in code -- the menu is just
+# the trigger.
+
+:start
+menu nvme -- maintenance + diagnostic actions
+item --gap -- --- Read-only (always safe) ---
+item diagnose   Capture full per-drive state (no fio, no writes)
+item bench      Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
+item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
+item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
+item format     [!!] nvme format -s 1 (user-data erase + feature reset)
+item sanitize   [!!] nvme sanitize -a 2 (factory reset, slowest + deepest)
+item --gap -- ---
+item back       Back to main menu
+choose --timeout 30000 --default diagnose target || goto back
+goto ${target}
+
+# ─── Action selection ───────────────────────────────────────────────
+#
+# Read-only actions go straight to :boot-image. Destructive actions
+# route through a per-action confirmation submenu so an operator can't
+# pick `sanitize` from muscle memory and walk away. Each confirm
+# submenu defaults the cursor to "back" so a timeout = no-op.
+#
+# We don't use a single shared confirm submenu because the labels on
+# the confirm screen should describe the SPECIFIC action -- "sanitize
+# wipes ALL data + resets to factory" reads differently from "trim
+# refreshes the FTL".
+
+:diagnose   set action diagnose && set destructive    && set confirm    && goto boot-image
+:bench      set action bench    && set destructive    && set confirm    && goto boot-image
+:trim       set action trim     && goto pick_trim
+:format     set action format   && goto pick_format
+:sanitize   set action sanitize && goto pick_sanitize
+
+# ─── Confirmation submenus ──────────────────────────────────────────
+
+:pick_trim
+menu trim confirmation -- DESTRUCTIVE
+item --gap -- --- About to run on /dev/nvme0n1 (drive must be wiped first) ---
+item --gap -- blkdiscard issues TRIM across the entire LBA range. FTL
+item --gap -- treats every block as erased. Resets internal SLC-cache
+item --gap -- accounting; does NOT clear persisted feature state.
+item --gap -- Drive must be EMPTY (no partition table, no signatures).
+item --gap -- Run stress.profile=safety first to wipe to baseline.
+item --gap -- ---
+item back       Back -- do nothing
+item confirm    YES, run blkdiscard /dev/nvme0n1
+choose --timeout 30000 --default back durtarget || goto start
+goto ${durtarget}
+
+:pick_format
+menu format confirmation -- DESTRUCTIVE
+item --gap -- --- About to run on /dev/nvme0n1 (drive must be wiped first) ---
+item --gap -- nvme format -s 1 issues a User-Data Erase to the
+item --gap -- controller. Wipes data + clears namespace metadata + on
+item --gap -- most controllers ALSO clears the saved feature table
+item --gap -- (APST / power-state floor / interrupt coalescing). This
+item --gap -- is the typical "reset all firmware settings" recovery.
+item --gap -- Drive must be EMPTY (run stress.profile=safety first).
+item --gap -- ---
+item back       Back -- do nothing
+item confirm    YES, run nvme format -s 1 /dev/nvme0n1
+choose --timeout 30000 --default back durtarget || goto start
+goto ${durtarget}
+
+:pick_sanitize
+menu sanitize confirmation -- DESTRUCTIVE (factory-reset equivalent)
+item --gap -- --- About to run on /dev/nvme0n1 (drive must be wiped first) ---
+item --gap -- nvme sanitize -a 2 (Block Erase) is the deepest reset
+item --gap -- the controller exposes. Runs minutes-to-tens-of-minutes.
+item --gap -- Resets ALL controller-internal state including FTL and
+item --gap -- saved features. Use as the final step if format didn't
+item --gap -- restore performance.
+item --gap -- Drive must be EMPTY (run stress.profile=safety first).
+item --gap -- ---
+item back       Back -- do nothing
+item confirm    YES, run nvme sanitize -a 2 /dev/nvme0n1
+choose --timeout 30000 --default back durtarget || goto start
+goto ${durtarget}
+
+# Confirm = arm destructive + confirm token; back = unwind to :start.
+# Same `confirm` label across all three submenus -- iPXE's `goto`
+# resolves to the local label, and we're already inside `:pick_<x>`
+# scope where `action` was set above.
+
+:confirm   set destructive 1 && set confirm DESTROY-PM981 && goto boot-image
+
+# ─── Shared netboot label ───────────────────────────────────────────
+#
+# One kernel/initrd pair across every action. Same image as
+# hw-validation -- nvme-cli, fio, blkdiscard (util-linux), pciutils
+# are all in the apkovl's /etc/apk/world. ${destructive} and
+# ${confirm} are unset for read-only actions; iPXE substitutes empty
+# string, and stresstest.start treats absent == empty == not-armed.
+
+:boot-image
+echo Booting nvme-tools: action=${action} destructive=${destructive} confirm=${confirm}
+imgfree
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm}
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
+boot || goto fail
+
+# ─── Failure handling ───────────────────────────────────────────────
+
+:fail
+echo
+echo ERROR: nvme-tools boot failed. Possible causes:
+echo   * ${cache_url}/hw-validation/latest/vmlinuz-lts 404 --
+echo     sibling hw-validation build artefact not uploaded.
+echo     Fix: cd ~/Documents/github/hw-validation
+echo          ./tools/build-image.sh
+echo          cd ../truenas-infra && ./manage.sh phase apps --apply
+echo
+echo   * modloop-lts / apkovl.tar.gz fetch failed --
+echo     curl -I ${cache_url}/hw-validation/latest/modloop-lts
+echo     curl -I ${cache_url}/hw-validation/latest/apkovl.tar.gz
+echo
+echo Runbook: https://wiki.w1.lv/runbooks/nvme-tools/
+echo
+prompt Press any key to return to the main menu...
+goto back
+
+:back
+exit

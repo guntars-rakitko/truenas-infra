@@ -37,6 +37,8 @@ apps/pxe/
 ├── menus/
 │   ├── talos.ipxe               # Talos installer — install / wipe / serial
 │   ├── bios.ipxe                # BIOS apply (bios-config MVP)
+│   ├── hw-validation.ipxe       # stress / burn-in (hw-validation Alpine)
+│   ├── nvme.ipxe                # NVMe maintenance — diagnose / TRIM / format / sanitize
 │   ├── utils.ipxe               # Memtest, GParted, SystemRescue, UEFI Shell
 │   ├── linux.ipxe               # Ubuntu Server + Debian netinst
 │   └── live.ipxe                # Ubuntu Desktop, Debian Live, SystemRescue
