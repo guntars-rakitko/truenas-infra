@@ -72,8 +72,9 @@
 :start
 menu nvme -- maintenance + diagnostic actions
 item --gap -- --- Read-only (always safe) ---
-item diagnose   Capture full per-drive state (no fio, no writes)
-item bench      Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
+item diagnose             Capture full per-drive state (no fio, no writes)
+item bench                Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
+item disable-apst-bench   Bench with APST disabled at runtime (test power-state hypothesis)
 item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
 item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
 item format     [!!] nvme format -s 1 (user-data erase + feature reset)
@@ -95,11 +96,12 @@ goto ${target}
 # wipes ALL data + resets to factory" reads differently from "trim
 # refreshes the FTL".
 
-:diagnose   set action diagnose && set destructive    && set confirm    && goto boot-image
-:bench      set action bench    && set destructive    && set confirm    && goto boot-image
-:trim       set action trim     && goto pick_trim
-:format     set action format   && goto pick_format
-:sanitize   set action sanitize && goto pick_sanitize
+:diagnose             set action diagnose             && set destructive    && set confirm    && goto boot-image
+:bench                set action bench                && set destructive    && set confirm    && goto boot-image
+:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && goto boot-image
+:trim                 set action trim                 && goto pick_trim
+:format               set action format               && goto pick_format
+:sanitize             set action sanitize             && goto pick_sanitize
 
 # ─── Confirmation submenus ──────────────────────────────────────────
 
