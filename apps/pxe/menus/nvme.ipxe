@@ -191,36 +191,43 @@ kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mo
 initrd ${cache_url}/${image_path}/latest/initramfs-lts
 boot || goto fail
 
-# ─── DEBUG-variant boot (stripped kernel cmdline) ───────────────────
+# ─── DEBUG-variant boot (kernel-cmdline bisect) ─────────────────────
 #
-# Used by `bench-debug` only. Reproduces the Debian baseline as
-# closely as a netboot-Alpine can. Removes three args present on the
-# production line and adds one new one, to isolate "kernel cmdline"
-# as the perf variable separately from "image content":
+# Used by `bench-debug` only. We're bisecting which of four cmdline
+# changes (3 removes + 1 add) is responsible for the ~880 → ~3000 MB/s
+# recovery seen in iteration v1.
 #
-#   removed: nomodeset                  (let i915 load like Debian does)
-#   removed: video=1920x1080            (no forced framebuffer mode)
-#   removed: acpi_enforce_resources=lax (let kernel reject conflicting
-#                                       ACPI MSR access — Debian-default)
-#   added:   nvme_core.default_ps_max_latency_us=0
-#                                       (disable APST entirely; PM981
-#                                       is a known APST-stall offender
-#                                       in Linux bug threads)
+# Iteration history of :boot-image-clean
+#
+#   v1 (committed 90f5a12, tested 2026-05-04 09:47Z on kub-dev-01):
+#     - removed: nomodeset
+#     - removed: video=1920x1080
+#     - removed: acpi_enforce_resources=lax
+#     - added:   nvme_core.default_ps_max_latency_us=0
+#     Result: seq 1M = 2988.9 MiB/s (vs prod ~880, Debian ~3000).
+#     Conclusion: kernel cmdline is the dominant variable. Need to
+#     bisect WHICH of the four changes did the work.
+#
+#   v2 (current — testing APST-disable in isolation):
+#     - re-added: nomodeset
+#     - re-added: video=1920x1080
+#     - re-added: acpi_enforce_resources=lax
+#     - kept:     nvme_core.default_ps_max_latency_us=0
+#     Hypothesis: APST-disable alone was the entire fix. PM981 is a
+#     known APST-stall offender in Linux bug threads, and the other
+#     three args looked plausible but unconfirmed. If v2 lands at ~3000
+#     too, ship the single-arg fix to the production :boot-image. If
+#     v2 is back at ~880, drop APST and bisect the three removes.
 #
 # Everything else (modules=, modloop=, apkovl=, ip=dhcp, console=tty0,
 # stress.* / nvme.* tags) is unchanged from :boot-image because they
 # are required for Alpine to even find its rootfs and for our wrapper
 # to dispatch the action.
-#
-# If this variant matches the Debian numbers, bisect by re-adding one
-# arg at a time to identify the single culprit. If it doesn't, the
-# delta is somewhere in image content (apkovl scripts, fio version,
-# kernel build) and we move to image-rebuild iterations.
 
 :boot-image-clean
-echo Booting nvme-tools (CLEAN cmdline): action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
+echo Booting nvme-tools (BISECT cmdline v2 — APST-disable only): action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
 imgfree
-kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
+kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
 initrd ${cache_url}/${image_path}/latest/initramfs-lts
 boot || goto fail
 
