@@ -69,31 +69,11 @@
 # enforces safety + destructive + confirm in code -- the menu is just
 # the trigger.
 
-# ─── Defensive defaults ─────────────────────────────────────────────
-#
-# Every kernel cmdline var consumed by :boot-image gets a default
-# here, so a label that forgets to set one won't construct a 404 URL.
-# Discovered the hard way: trim/format/sanitize labels jumped to
-# pick_* → :confirm → :boot-image without ever setting image_path,
-# producing http://nas/pxe//latest/vmlinuz-lts (double slash, no
-# image dir). Boot 404'd before Alpine ever ran, so the operator
-# saw "trim doesn't work" without nvmetools.sh having a chance.
-#
-# Read-only labels still set these explicitly for self-documentation
-# (and to override image_path for bench-debug, kernel_extra for
-# bench-no-cstates). Destructive labels can stay short.
-
-set image_path hw-validation
-set kernel_extra
-
 :start
 menu nvme -- maintenance + diagnostic actions
 item --gap -- --- Read-only (always safe) ---
 item diagnose             Capture full per-drive state (no fio, no writes)
 item bench                Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
-item disable-apst-bench   Bench with APST disabled at runtime (test power-state hypothesis)
-item bench-no-cstates     Bench with CPU C-states disabled at kernel (intel_idle.max_cstate=1)
-item bench-debug          Bench using DEBUG hw-validation image (A/B image-content test)
 item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
 item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
 item format     [!!] nvme format -s 1 (user-data erase + feature reset)
@@ -115,14 +95,11 @@ goto ${target}
 # wipes ALL data + resets to factory" reads differently from "trim
 # refreshes the FTL".
 
-:diagnose             set action diagnose             && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
-:bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
-:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
-:bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && set image_path hw-validation             && goto boot-image
-:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image
-:trim                 set action trim                 && goto pick_trim
-:format               set action format               && goto pick_format
-:sanitize             set action sanitize             && goto pick_sanitize
+:diagnose   set action diagnose   && set destructive && set confirm && goto boot-image
+:bench      set action bench      && set destructive && set confirm && goto boot-image
+:trim       set action trim       && goto pick_trim
+:format     set action format     && goto pick_format
+:sanitize   set action sanitize   && goto pick_sanitize
 
 # ─── Confirmation submenus ──────────────────────────────────────────
 
@@ -182,60 +159,39 @@ goto ${durtarget}
 # One kernel/initrd pair across every action. Same image as
 # hw-validation -- nvme-cli, fio, blkdiscard (util-linux), pciutils
 # are all in the apkovl's /etc/apk/world. ${destructive} and
-# ${confirm} are unset for read-only actions; iPXE substitutes empty
-# string, and stresstest.start treats absent == empty == not-armed.
-#
-# ${kernel_extra} is empty for normal actions and carries optional
-# kernel cmdline tweaks for hypothesis-test variants. The bench-no-
-# cstates entry sets it to `intel_idle.max_cstate=1` to force Linux's
-# intel_idle driver to expose only state 0 (C1) -- this is the only
-# reliable way to disable C-states on Skylake+ since intel_idle
-# bypasses BIOS-reported C-state config. iPXE substitutes empty
-# string when unset, so a trailing space on the kernel line is
-# harmless for the other actions.
-#
-# ${image_path} selects which hw-validation artefact to boot:
-#   "hw-validation"        — production image at /pxe/http/hw-validation/latest/
-#   "hw-validation-debug"  — sibling debug variant at /pxe/http/hw-validation-debug/latest/
-# The debug variant is built via `./tools/build-image.sh --variant debug`
-# in the sibling repo, lets us A/B test apkovl/cmdline changes without
-# disturbing production bench results.
+# ${confirm} are unset for read-only actions (diagnose / bench);
+# iPXE substitutes empty string, and stresstest.start treats absent
+# == empty == not-armed. The destructive trio (trim / format /
+# sanitize) routes through :confirm which sets both before reaching
+# :boot-image.
 #
 # ─── nvme_core.default_ps_max_latency_us=0 ──────────────────────────
 #
 # Disables APST (Autonomous Power State Transitions) at the NVMe
-# driver level. Was added 2026-05-04 after a bisect that started from
-# "fleet bench appears slow on Alpine PXE but matches spec on Debian"
-# and ended at this single arg.
+# driver level. Added 2026-05-04 after a bisect (separately documented
+# in commits 90f5a12 / 767d069 / 6727a6a) showed it single-handedly
+# recovers ~880 → ~3000 MB/s on PM981. Same arg also lives in
+# hw-validation.ipxe :boot-image so the regular `nvme` profile and
+# its destructive-write companions see honest numbers.
 #
-# History (committed in this menu):
-#   - 90f5a12 (v1): bench-debug stripped 3 Alpine args + added APST
-#                   disable simultaneously. Recovered ~880 → 2989 MB/s.
-#   - 767d069 (v2): bench-debug kept all 3 Alpine args, added ONLY
-#                   APST disable. Same 2993 MB/s recovery.
-#   Conclusion: APST disable is the entire fix; the other three were
-#   red herrings.
-#
-# Why PM981 specifically: Samsung PM981 (and its sibling SM961) is a
-# documented APST-stall offender on Linux across many distros. The
-# drive's saved feature table includes deep idle states with long
-# exit latencies, and the Linux nvme driver will park the drive in
-# them between IOs. The transition out is slow enough to dominate
-# tail latency on bursty / mid-QD workloads and tank steady-state
-# bandwidth. Setting default_ps_max_latency_us=0 tells the driver
+# Why PM981/SM961: documented APST-stall offenders on Linux. The
+# drive's saved feature table includes deep idle states with multi-
+# millisecond exit latencies, and the Linux nvme driver will park the
+# drive in them between IOs. The transition out is slow enough to
+# dominate tail latency on bursty / mid-QD workloads and tank steady-
+# state bandwidth. Setting default_ps_max_latency_us=0 tells the driver
 # "no power state with non-zero exit latency is acceptable" -- the
-# drive stays in PS0 for the entire boot, completely sidestepping
-# the controller bug.
+# drive stays in PS0 for the entire boot, sidestepping the bug.
 #
-# This is the standard recommended workaround in mainline kernel bug
-# threads going back years. Trade-off: ~25 mW higher idle power per
-# drive. Negligible at fleet scale.
+# Trade-off: ~25 mW higher idle power per drive. Negligible at fleet
+# scale and dwarfed by the ~12 W idle improvement we got from BIOS
+# tuning earlier in the project.
 
 :boot-image
-echo Booting nvme-tools: action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
+echo Booting nvme-tools: action=${action} destructive=${destructive} confirm=${confirm}
 imgfree
-kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
-initrd ${cache_url}/${image_path}/latest/initramfs-lts
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm}
+initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
 # ─── Failure handling ───────────────────────────────────────────────
