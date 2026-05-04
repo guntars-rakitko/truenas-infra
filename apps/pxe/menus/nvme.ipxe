@@ -76,7 +76,7 @@ item diagnose             Capture full per-drive state (no fio, no writes)
 item bench                Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
 item disable-apst-bench   Bench with APST disabled at runtime (test power-state hypothesis)
 item bench-no-cstates     Bench with CPU C-states disabled at kernel (intel_idle.max_cstate=1)
-item bench-debug          Bench using DEBUG hw-validation image (A/B test against production)
+item bench-debug          Bench using DEBUG hw-validation image (A/B image-content test)
 item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
 item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
 item format     [!!] nvme format -s 1 (user-data erase + feature reset)
@@ -102,7 +102,7 @@ goto ${target}
 :bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
 :disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
 :bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && set image_path hw-validation             && goto boot-image
-:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image-clean
+:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image
 :trim                 set action trim                 && goto pick_trim
 :format               set action format               && goto pick_format
 :sanitize             set action sanitize             && goto pick_sanitize
@@ -183,49 +183,39 @@ goto ${durtarget}
 # The debug variant is built via `./tools/build-image.sh --variant debug`
 # in the sibling repo, lets us A/B test apkovl/cmdline changes without
 # disturbing production bench results.
+#
+# ─── nvme_core.default_ps_max_latency_us=0 ──────────────────────────
+#
+# Disables APST (Autonomous Power State Transitions) at the NVMe
+# driver level. Was added 2026-05-04 after a bisect that started from
+# "fleet bench appears slow on Alpine PXE but matches spec on Debian"
+# and ended at this single arg.
+#
+# History (committed in this menu):
+#   - 90f5a12 (v1): bench-debug stripped 3 Alpine args + added APST
+#                   disable simultaneously. Recovered ~880 → 2989 MB/s.
+#   - 767d069 (v2): bench-debug kept all 3 Alpine args, added ONLY
+#                   APST disable. Same 2993 MB/s recovery.
+#   Conclusion: APST disable is the entire fix; the other three were
+#   red herrings.
+#
+# Why PM981 specifically: Samsung PM981 (and its sibling SM961) is a
+# documented APST-stall offender on Linux across many distros. The
+# drive's saved feature table includes deep idle states with long
+# exit latencies, and the Linux nvme driver will park the drive in
+# them between IOs. The transition out is slow enough to dominate
+# tail latency on bursty / mid-QD workloads and tank steady-state
+# bandwidth. Setting default_ps_max_latency_us=0 tells the driver
+# "no power state with non-zero exit latency is acceptable" -- the
+# drive stays in PS0 for the entire boot, completely sidestepping
+# the controller bug.
+#
+# This is the standard recommended workaround in mainline kernel bug
+# threads going back years. Trade-off: ~25 mW higher idle power per
+# drive. Negligible at fleet scale.
 
 :boot-image
 echo Booting nvme-tools: action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
-imgfree
-kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
-initrd ${cache_url}/${image_path}/latest/initramfs-lts
-boot || goto fail
-
-# ─── DEBUG-variant boot (kernel-cmdline bisect) ─────────────────────
-#
-# Used by `bench-debug` only. We're bisecting which of four cmdline
-# changes (3 removes + 1 add) is responsible for the ~880 → ~3000 MB/s
-# recovery seen in iteration v1.
-#
-# Iteration history of :boot-image-clean
-#
-#   v1 (committed 90f5a12, tested 2026-05-04 09:47Z on kub-dev-01):
-#     - removed: nomodeset
-#     - removed: video=1920x1080
-#     - removed: acpi_enforce_resources=lax
-#     - added:   nvme_core.default_ps_max_latency_us=0
-#     Result: seq 1M = 2988.9 MiB/s (vs prod ~880, Debian ~3000).
-#     Conclusion: kernel cmdline is the dominant variable. Need to
-#     bisect WHICH of the four changes did the work.
-#
-#   v2 (current — testing APST-disable in isolation):
-#     - re-added: nomodeset
-#     - re-added: video=1920x1080
-#     - re-added: acpi_enforce_resources=lax
-#     - kept:     nvme_core.default_ps_max_latency_us=0
-#     Hypothesis: APST-disable alone was the entire fix. PM981 is a
-#     known APST-stall offender in Linux bug threads, and the other
-#     three args looked plausible but unconfirmed. If v2 lands at ~3000
-#     too, ship the single-arg fix to the production :boot-image. If
-#     v2 is back at ~880, drop APST and bisect the three removes.
-#
-# Everything else (modules=, modloop=, apkovl=, ip=dhcp, console=tty0,
-# stress.* / nvme.* tags) is unchanged from :boot-image because they
-# are required for Alpine to even find its rootfs and for our wrapper
-# to dispatch the action.
-
-:boot-image-clean
-echo Booting nvme-tools (BISECT cmdline v2 — APST-disable only): action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
 imgfree
 kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
 initrd ${cache_url}/${image_path}/latest/initramfs-lts
