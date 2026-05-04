@@ -646,22 +646,31 @@ def _compute_verdict(
             "detail": "no throttle" if not throttled else f"throttled {int(t1c + t2c)}×",
         })
 
-    # CPU-side checks (governor pin landed, freq during test reasonable).
+    # CPU-side check — FREQ DURING TEST IS NOT A DIAGNOSTIC.
+    #
+    # Empirical observation from kub-prd-01 fast-tier run (2026-05-03):
+    # avg CPU freq during a fast bench was 2.48 GHz — just under base.
+    # The reason is counter-intuitive but real: when the drive completes
+    # IOs in single-digit µs, the CPU has lots of microscopic idle gaps
+    # between completions, and avg freq across the run is pulled DOWN by
+    # those idle dips. A SLOW bench run keeps the CPU busy waiting on
+    # slow IOs and has HIGHER avg freq.
+    #
+    # So a "freq below 2.5 GHz" health check fires on healthy fast runs
+    # and silences on degraded slow runs — exactly inverted from what we
+    # want. Only show CPU freq as informational, never as a fail.
+    #
+    # If we ever want a real CPU-thermal-limit indicator, the right
+    # signal is `cpu_no_turbo` flipping to 1 (BIOS/firmware disabled
+    # turbo entirely) or sustained freq < 1.5 GHz under load (genuine
+    # thermal throttle).
     for disk, cs in cpu_state_by_disk.items():
-        os_ = cs.get("one_shot", {}) or {}
         post = cs.get("post", {}) or {}
-        # Governor pin landed (post=performance) or HWP active (CPU controls
-        # P-states at the silicon level — governor is advisory but turbo
-        # is enabled so freq still scales). Either is fine; complaining
-        # only when CPU appears genuinely stuck low.
         post_freq = _numeric(post.get("freq_mean_ghz"))
         if post_freq is not None:
-            # i7-7700T base is 2.9 GHz; flag freq below 2.5 as suspect
-            # (CPU thermally limited or governor mis-pinned).
-            ok = post_freq >= 2.5
             health_checks.append({
                 "name": "CPU freq during test",
-                "ok": ok,
+                "ok": True,  # informational only; never fail on this
                 "detail": f"{post_freq:.2f} GHz",
             })
         break  # one CPU section is enough; same CPU per box
