@@ -102,7 +102,7 @@ goto ${target}
 :bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
 :disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
 :bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && set image_path hw-validation             && goto boot-image
-:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image
+:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image-clean
 :trim                 set action trim                 && goto pick_trim
 :format               set action format               && goto pick_format
 :sanitize             set action sanitize             && goto pick_sanitize
@@ -188,6 +188,39 @@ goto ${durtarget}
 echo Booting nvme-tools: action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
 imgfree
 kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
+initrd ${cache_url}/${image_path}/latest/initramfs-lts
+boot || goto fail
+
+# ─── DEBUG-variant boot (stripped kernel cmdline) ───────────────────
+#
+# Used by `bench-debug` only. Reproduces the Debian baseline as
+# closely as a netboot-Alpine can. Removes three args present on the
+# production line and adds one new one, to isolate "kernel cmdline"
+# as the perf variable separately from "image content":
+#
+#   removed: nomodeset                  (let i915 load like Debian does)
+#   removed: video=1920x1080            (no forced framebuffer mode)
+#   removed: acpi_enforce_resources=lax (let kernel reject conflicting
+#                                       ACPI MSR access — Debian-default)
+#   added:   nvme_core.default_ps_max_latency_us=0
+#                                       (disable APST entirely; PM981
+#                                       is a known APST-stall offender
+#                                       in Linux bug threads)
+#
+# Everything else (modules=, modloop=, apkovl=, ip=dhcp, console=tty0,
+# stress.* / nvme.* tags) is unchanged from :boot-image because they
+# are required for Alpine to even find its rootfs and for our wrapper
+# to dispatch the action.
+#
+# If this variant matches the Debian numbers, bisect by re-adding one
+# arg at a time to identify the single culprit. If it doesn't, the
+# delta is somewhere in image content (apkovl scripts, fio version,
+# kernel build) and we move to image-rebuild iterations.
+
+:boot-image-clean
+echo Booting nvme-tools (CLEAN cmdline): action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
+imgfree
+kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nvme_core.default_ps_max_latency_us=0 stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
 initrd ${cache_url}/${image_path}/latest/initramfs-lts
 boot || goto fail
 
