@@ -651,31 +651,6 @@ PXE_SCRIPTS_REMOTE_DIR   = "/mnt/tank/system/apps-config/pxe"
 # for operators who don't have bios-config checked out locally).
 BIOS_APPLY_LOCAL_PATH = Path("../bios-config/build/bios-apply.img")
 
-# bios-config test-profile images — built by the sibling repo's
-# `./tools/build-bios-test-imgs.sh`. Optional, separate from the
-# canonical bios-apply.img: each image applies a small focused subset
-# of BIOS settings for diagnostic testing (e.g. C-state disable to
-# test the NVMe QD1 latency hypothesis), with a paired "restore"
-# image that reverts the same set to firmware defaults.
-#
-# Each entry: (local image filename, remote URL filename). The remote
-# basename matches the iPXE menu's sanboot URL in apps/pxe/menus/
-# bios-test.ipxe.
-#
-# To add a new test profile:
-#   1. Create scripts/test-profiles/<name>/{startup.nsh,settings.txt} in
-#      bios-config.
-#   2. Add the (filename, filename) tuple to BIOS_TEST_IMAGES below.
-#   3. Add menu entries to truenas-infra/apps/pxe/menus/bios-test.ipxe.
-#   4. Operator: ./tools/build-bios-test-imgs.sh + ./manage.sh phase apps.
-BIOS_TEST_LOCAL_DIR = Path("../bios-config/build")
-BIOS_TEST_IMAGES = (
-    "bios-test-cstate-off.img",
-    "bios-test-cstate-restore.img",
-    "bios-test-dmi-pin.img",
-    "bios-test-dmi-restore.img",
-)
-
 # hw-validation PXE live image — built in the sibling `hw-validation`
 # repo by `./tools/build-image.sh`. Produces a 4-file set under
 # build/<alpine-version>-r0/ and a `latest` symlink pointing to it:
@@ -1311,38 +1286,6 @@ def _ensure_pxe_bios_apply_img_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                  path=BIOS_APPLY_REMOTE_PATH,
                  action="uploaded", changed=True,
                  local_size=bios_img.stat().st_size,
-                 local_sha256=local_sha)
-
-    # bios-config test-profile images (optional; separate from canonical
-    # bios-apply.img). Same idempotency caveat as bios-apply.img — these
-    # FAT images are 16 MB fixed-size, so we re-upload each time the
-    # phase runs and log local SHA-256 for change tracking.
-    for img_name in BIOS_TEST_IMAGES:
-        test_img = (BIOS_TEST_LOCAL_DIR / img_name).resolve()
-        remote_path = f"/mnt/tank/system/pxe/http/bios-config/{img_name}"
-        if not test_img.is_file():
-            log.info("bios_test_img_skipped",
-                     reason="sibling test-profile artefact not present",
-                     image=img_name,
-                     expected_local=str(test_img))
-            continue
-        if not ctx.apply:
-            log.info("bios_test_img_ensured",
-                     path=remote_path,
-                     action="would_upload", changed=True,
-                     local_size=test_img.stat().st_size,
-                     note="dry-run — size-based idempotency unreliable for this artefact")
-            continue
-        import hashlib
-        local_sha = hashlib.sha256(test_img.read_bytes()).hexdigest()[:16]
-        _pxe_upload_helper(cli, ctx)(
-            local_path=test_img, remote_path=remote_path,
-            mode=0o644,
-        )
-        log.info("bios_test_img_ensured",
-                 path=remote_path,
-                 action="uploaded", changed=True,
-                 local_size=test_img.stat().st_size,
                  local_sha256=local_sha)
 
 
