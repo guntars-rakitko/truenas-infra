@@ -6,6 +6,47 @@
 
 <h2>{{ doc.hostname }} — {{ doc.profile }}</h2>
 
+{# At-a-glance verdict banner. Renders only when an NVMe-side test is
+   present (nvmetools / nvme / nvme-write); other profiles see the
+   existing detail without a top banner. #}
+{% if verdict %}
+<div class="verdict verdict-{{ verdict.band }}">
+  <div class="verdict-header">
+    <div class="verdict-label">
+      {% if verdict.band == "good" %}✓{% elif verdict.band == "warn" %}⚠{% else %}✗{% endif %}
+      {{ verdict.label }}
+    </div>
+    <div class="verdict-subtext">{{ verdict.subtext }}</div>
+  </div>
+  <div class="verdict-metrics">
+    {% for m in verdict.headline_metrics %}
+    <div class="verdict-metric">
+      <div class="verdict-metric-name">{{ m.name }}</div>
+      <div class="verdict-metric-value {% if m.score %}score-val-{{ m.score.band }}{% endif %}">
+        {{ m.value }} <span class="verdict-metric-unit">{{ m.unit }}</span>
+      </div>
+      {% if m.score %}
+      <div class="verdict-metric-target">
+        target {{ m.score.target }}{{ m.score.unit }} ·
+        floor {{ m.score.floor }}{{ m.score.unit }}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% if verdict.health_checks %}
+  <div class="verdict-health">
+    {% for h in verdict.health_checks %}
+    <span class="health-chip {% if h.ok %}health-pass{% else %}health-fail{% endif %}"
+          title="{{ h.detail }}">
+      {% if h.ok %}✓{% else %}✗{% endif %} {{ h.name }}: {{ h.detail }}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="grid">
   <div class="card">
     <h3>Run</h3>

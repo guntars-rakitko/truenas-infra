@@ -83,6 +83,47 @@ pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
 .score-val-warn { color: var(--warn); font-weight: 600; }
 .score-val-fail { color: var(--fail); font-weight: 600; }
 .score-note { color: var(--muted); font-size: 10px; margin-left: 4px; }
+
+/* At-a-glance verdict banner. Renders at the top of the report page so
+   the operator can tell pass/slow/fail without scrolling or parsing the
+   raw metric line. Three bands: good (FAST TIER), warn (SLOW TIER), fail
+   (DEGRADED). Header shows label + subtext; metrics row breaks down the
+   four headline numbers; health-chip row shows pass/fail for the
+   sanity-check cohort (PCIe link, AER, throttle, CPU freq). */
+.verdict { background: var(--panel); border: 1px solid var(--border);
+           border-radius: 8px; padding: 16px 20px; margin: 12px 0 24px;
+           border-left: 6px solid var(--muted); }
+.verdict-good { border-left-color: var(--pass); }
+.verdict-warn { border-left-color: var(--warn); }
+.verdict-fail { border-left-color: var(--fail); }
+.verdict-header { display: flex; align-items: baseline; gap: 16px;
+                  flex-wrap: wrap; margin-bottom: 14px; }
+.verdict-label { font-size: 22px; font-weight: 700; letter-spacing: 0.3px; }
+.verdict-good .verdict-label { color: var(--pass); }
+.verdict-warn .verdict-label { color: var(--warn); }
+.verdict-fail .verdict-label { color: var(--fail); }
+.verdict-subtext { color: var(--muted); font-size: 13px; }
+.verdict-metrics { display: grid;
+                   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                   gap: 12px; margin-bottom: 12px; }
+.verdict-metric { background: #0d1117; border: 1px solid var(--border);
+                  border-radius: 6px; padding: 10px 12px; }
+.verdict-metric-name { color: var(--muted); font-size: 11px;
+                       text-transform: uppercase; letter-spacing: 0.4px;
+                       margin-bottom: 4px; }
+.verdict-metric-value { font-size: 22px; font-weight: 600; }
+.verdict-metric-unit { font-size: 12px; color: var(--muted);
+                       font-weight: 400; margin-left: 2px; }
+.verdict-metric-target { color: var(--muted); font-size: 11px;
+                         margin-top: 4px; }
+.verdict-health { display: flex; gap: 8px; flex-wrap: wrap;
+                  padding-top: 10px; border-top: 1px solid var(--border); }
+.health-chip { font-size: 11px; padding: 4px 10px; border-radius: 12px;
+               border: 1px solid; line-height: 1.4; white-space: nowrap; }
+.health-pass { color: var(--pass); border-color: var(--pass);
+               background: rgba(63, 185, 80, 0.08); }
+.health-fail { color: var(--fail); border-color: var(--fail);
+               background: rgba(248, 81, 73, 0.08); }
 </style>
 </head>
 <body>

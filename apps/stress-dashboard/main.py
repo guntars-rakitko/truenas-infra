@@ -263,6 +263,10 @@ async def report_detail(request: Request, filename: str) -> HTMLResponse:
                 tt["bogo_ops_per_s_score"] = s
         scored_tests.append(tt)
 
+    fio_by_disk = _fio_stages_by_disk(tests)
+    drive_state_by_disk = _drive_state_by_disk(tests)
+    cpu_state_by_disk = _cpu_state_by_disk(tests)
+
     return TEMPLATES.TemplateResponse(
         "report.html",
         {
@@ -271,9 +275,10 @@ async def report_detail(request: Request, filename: str) -> HTMLResponse:
             "doc": doc,
             "hardware": hardware,
             "tests": scored_tests,
-            "fio_by_disk": _fio_stages_by_disk(tests),
-            "drive_state_by_disk": _drive_state_by_disk(tests),
-            "cpu_state_by_disk": _cpu_state_by_disk(tests),
+            "fio_by_disk": fio_by_disk,
+            "drive_state_by_disk": drive_state_by_disk,
+            "cpu_state_by_disk": cpu_state_by_disk,
+            "verdict": _compute_verdict(fio_by_disk, drive_state_by_disk, cpu_state_by_disk),
             "net_tests": _net_tests(tests),
             "nics_with_model": _nics_with_model(hardware.get("nics") or []),
             "sample_count": len(samples),
@@ -524,6 +529,182 @@ _FIO_STAGES: list[tuple[str, str]] = [
 ]
 
 
+def _compute_verdict(
+    fio_by_disk: dict[str, dict[str, Any]],
+    drive_state_by_disk: dict[str, dict[str, Any]],
+    cpu_state_by_disk: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compute an at-a-glance pass/slow/fail verdict for an NVMe bench run.
+
+    Returns a dict the report template renders as a top-of-page banner:
+      {
+        "band":      "good" | "warn" | "fail",
+        "label":     "FAST TIER" | "SLOW TIER" | "DEGRADED",
+        "subtext":   short human explanation of the worst signal,
+        "headline_metrics": [ {name, value, unit, score, score_label}, ... ],
+        "health_checks":   [ {name, ok, detail}, ... ],
+      }
+
+    Returns None when there's no nvme/nvmetools/nvme-write test data — i.e.
+    nothing to verdict on. Other test profiles (cpu, ram, etc.) just show
+    the existing detail without a top banner.
+
+    Verdict logic:
+      band = worst of (key fio metrics' score bands, health-check failures).
+        any health-check failure → fail
+        else any "fail" band      → fail
+        else any "warn" band      → warn
+        else                       → good
+    """
+    # Find the most relevant disk test in priority order. nvmetools first
+    # because that's what the new bench menu produces; nvme/nvme-write next
+    # so legacy hw-validation reports also get verdicts.
+    test_data = None
+    test_name = None
+    for candidate in ("nvmetools", "nvme", "nvme-write"):
+        if candidate in fio_by_disk and fio_by_disk[candidate].get("read"):
+            test_data = fio_by_disk[candidate]
+            test_name = candidate
+            break
+    if not test_data:
+        return None
+
+    read = test_data.get("read") or {}
+    seq1m = read.get("seq_1m", {})
+    qd1 = read.get("rand_4k_qd1", {})
+
+    # Headline metrics — the four fields a homelab operator wants to see at
+    # a glance to decide "is this run fast tier or slow tier". Pull each
+    # metric's value + score (computed earlier in _fio_stages_by_disk).
+    headline_metrics: list[dict[str, Any]] = []
+
+    def _push(name: str, row: dict, key: str, unit: str) -> None:
+        if key not in row:
+            return
+        score = row.get(f"{key}_score")
+        score_label = None
+        if score:
+            band = score["band"]
+            score_label = (
+                "above target" if band == "good"
+                else "below target" if band == "warn"
+                else "below floor"
+            )
+        headline_metrics.append({
+            "name": name,
+            "value": row[key],
+            "unit": unit,
+            "score": score,
+            "score_label": score_label,
+        })
+
+    _push("Seq 1 MiB read",  seq1m, "bw_mibps",     "MiB/s")
+    _push("Rand QD1 IOPS",   qd1,   "iops",         "IOPS")
+    _push("Rand QD1 latency (mean)", qd1, "lat_us_mean", "µs")
+    _push("Rand QD1 latency (p99)",  qd1, "lat_us_p99",  "µs")
+
+    # Health checks — pull from the drive-state probe + cpu-state.
+    # Each entry: {name, ok: bool, detail: str}. A single failure tilts
+    # the verdict to "fail" regardless of headline metric scores.
+    health_checks: list[dict[str, Any]] = []
+
+    # Drive-side checks (PCIe link OK, AER clean, no thermal throttle).
+    for disk, ds in drive_state_by_disk.items():
+        pre = ds.get("pre", {}) or {}
+        post = ds.get("post", {}) or {}
+        delta = ds.get("delta", {}) or {}
+
+        # PCIe LnkSta speed/width OK flags from drive-state.sh
+        ls_ok = str(pre.get("lnksta_speed_ok", "")) == "1"
+        lw_ok = str(pre.get("lnksta_width_ok", "")) == "1"
+        if pre.get("lnksta_speed"):
+            ok = ls_ok and lw_ok
+            detail = f"{pre.get('lnksta_speed', '?')} × {pre.get('lnksta_width', '?')}"
+            if not ls_ok:
+                detail += " (speed downgraded)"
+            if not lw_ok:
+                detail += " (width downgraded)"
+            health_checks.append({"name": "PCIe link", "ok": ok, "detail": detail})
+
+        # AER correctable errors — compare pre vs post + check for set flags.
+        ce_post = (post.get("aer_cesta") or pre.get("aer_cesta") or "").strip()
+        if ce_post:
+            ce_dirty = ("+," in ce_post) or ce_post.endswith("+")
+            health_checks.append({
+                "name": "AER errors",
+                "ok": not ce_dirty,
+                "detail": "clean" if not ce_dirty else "errors flagged",
+            })
+
+        # Thermal throttle DURING THIS RUN (delta only).
+        t1c = _numeric(delta.get("throttle_t1_count")) or 0
+        t2c = _numeric(delta.get("throttle_t2_count")) or 0
+        throttled = (t1c > 0) or (t2c > 0)
+        health_checks.append({
+            "name": "Thermal throttle",
+            "ok": not throttled,
+            "detail": "no throttle" if not throttled else f"throttled {int(t1c + t2c)}×",
+        })
+
+    # CPU-side checks (governor pin landed, freq during test reasonable).
+    for disk, cs in cpu_state_by_disk.items():
+        os_ = cs.get("one_shot", {}) or {}
+        post = cs.get("post", {}) or {}
+        # Governor pin landed (post=performance) or HWP active (CPU controls
+        # P-states at the silicon level — governor is advisory but turbo
+        # is enabled so freq still scales). Either is fine; complaining
+        # only when CPU appears genuinely stuck low.
+        post_freq = _numeric(post.get("freq_mean_ghz"))
+        if post_freq is not None:
+            # i7-7700T base is 2.9 GHz; flag freq below 2.5 as suspect
+            # (CPU thermally limited or governor mis-pinned).
+            ok = post_freq >= 2.5
+            health_checks.append({
+                "name": "CPU freq during test",
+                "ok": ok,
+                "detail": f"{post_freq:.2f} GHz",
+            })
+        break  # one CPU section is enough; same CPU per box
+
+    # Compute the verdict band — worst of metrics + health.
+    metric_bands = [m["score"]["band"] for m in headline_metrics if m.get("score")]
+    health_failed = [h for h in health_checks if not h["ok"]]
+
+    if health_failed:
+        band = "fail"
+        label = "DEGRADED"
+        subtext = f"health check failed: {health_failed[0]['name']} ({health_failed[0]['detail']})"
+    elif "fail" in metric_bands:
+        band = "fail"
+        label = "DEGRADED"
+        worst = next(m for m in headline_metrics
+                     if m.get("score") and m["score"]["band"] == "fail")
+        subtext = f"{worst['name']} below acceptable floor"
+    elif "warn" in metric_bands:
+        band = "warn"
+        label = "SLOW TIER"
+        worst = next(m for m in headline_metrics
+                     if m.get("score") and m["score"]["band"] == "warn")
+        subtext = f"{worst['name']} below target but above floor"
+    elif metric_bands:
+        band = "good"
+        label = "FAST TIER"
+        subtext = "drive performing as expected"
+    else:
+        # Headline metrics had no scoring (no baselines matched). Skip the
+        # verdict rather than mislabel it.
+        return None
+
+    return {
+        "band": band,
+        "label": label,
+        "subtext": subtext,
+        "test_name": test_name,
+        "headline_metrics": headline_metrics,
+        "health_checks": health_checks,
+    }
+
+
 def _fio_stages_by_disk(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """For each disk test (name in {nvme, ssd, nvme-write, ssd-write,
     disk-burnin}) pluck fio_<dir>_<stage>_{iops,bw_mibps,lat_us_mean,lat_us_p99}
@@ -538,7 +719,11 @@ def _fio_stages_by_disk(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]
         }, ... }
     """
     out: dict[str, dict[str, Any]] = {}
-    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin"}
+    # nvmetools is the test name produced by the nvme-tools profile (the
+    # nvme PXE menu — diagnose / bench / disable-apst-bench / trim / format /
+    # sanitize). Treated as a disk test here so its drive-state probe and
+    # fio matrix get the same rendering as the standard `nvme` stress profile.
+    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin", "nvmetools"}
     for t in tests:
         if not isinstance(t, dict):
             continue
@@ -557,8 +742,12 @@ def _fio_stages_by_disk(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]
                         # Annotate with baseline score. Key shape matches
                         # _BASELINES (fio.<tag>.<dir>.<stage>.<metric>).
                         # tag here is the TEST name (nvme/ssd) — which
-                        # maps 1:1 to the drive type in our fleet.
-                        score = _score(t[k], f"fio.{name}.{direction}.{tag}.{metric}")
+                        # maps 1:1 to the drive type in our fleet. The
+                        # nvmetools test reuses the nvme PM981 baselines
+                        # (same physical drive class, just exercised via
+                        # the maintenance-action profile).
+                        baseline_name = "nvme" if name == "nvmetools" else name
+                        score = _score(t[k], f"fio.{baseline_name}.{direction}.{tag}.{metric}")
                         if score:
                             row[f"{metric}_score"] = score
                 if len(row) > 1:
@@ -598,7 +787,11 @@ def _drive_state_by_disk(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any
     the clean signal even on a drive that has throttled in past boots.
     """
     out: dict[str, dict[str, Any]] = {}
-    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin"}
+    # nvmetools is the test name produced by the nvme-tools profile (the
+    # nvme PXE menu — diagnose / bench / disable-apst-bench / trim / format /
+    # sanitize). Treated as a disk test here so its drive-state probe and
+    # fio matrix get the same rendering as the standard `nvme` stress profile.
+    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin", "nvmetools"}
     # Fields that appear once per test (no _pre/_post suffix).
     _ONESHOT = (
         "firmware_rev", "percent_used", "power_cycles", "available_spare",
@@ -710,7 +903,11 @@ def _cpu_state_by_disk(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
       }
     """
     out: dict[str, dict[str, Any]] = {}
-    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin"}
+    # nvmetools is the test name produced by the nvme-tools profile (the
+    # nvme PXE menu — diagnose / bench / disable-apst-bench / trim / format /
+    # sanitize). Treated as a disk test here so its drive-state probe and
+    # fio matrix get the same rendering as the standard `nvme` stress profile.
+    disk_tests = {"nvme", "ssd", "nvme-write", "ssd-write", "disk-burnin", "nvmetools"}
     for t in tests:
         if not isinstance(t, dict):
             continue
