@@ -26,6 +26,9 @@ menu bios-test -- experimental BIOS profiles
 item --gap -- --- CPU C-state hypothesis ---
 item cstate-off       Disable CPU C-states (master + per-state report + pkg limit)
 item cstate-restore   Restore C-state defaults (revert)
+item --gap -- --- DMI link width / speed hypothesis ---
+item dmi-pin          Pin DMI link to x4 width + Gen3 speed (test)
+item dmi-restore      Restore DMI defaults (revert)
 item --gap -- ---
 item back             Back to main menu
 choose --timeout 30000 --default cstate-off target || goto back
@@ -48,6 +51,24 @@ echo Applying REVERT profile: C-state defaults restored
 echo Source: bios-config/scripts/test-profiles/cstate-restore/
 echo
 sanboot --keep ${cache_url}/bios-config/bios-test-cstate-restore.img || goto fail
+exit
+
+:dmi-pin
+echo
+echo Applying TEST profile: DMI link pinned at x4 + Gen3
+echo Source: bios-config/scripts/test-profiles/dmi-pin/
+echo Disables DMI thermal autonomous width negotiation.
+echo Hypothesis: DMI auto-narrowed to x2 under thermal load and stuck.
+echo
+sanboot --keep ${cache_url}/bios-config/bios-test-dmi-pin.img || goto fail
+exit
+
+:dmi-restore
+echo
+echo Applying REVERT profile: DMI defaults restored
+echo Source: bios-config/scripts/test-profiles/dmi-restore/
+echo
+sanboot --keep ${cache_url}/bios-config/bios-test-dmi-restore.img || goto fail
 exit
 
 # ─── Failure handling ──────────────────────────────────────────────

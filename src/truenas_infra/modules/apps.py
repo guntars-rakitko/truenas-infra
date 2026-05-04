@@ -672,6 +672,8 @@ BIOS_TEST_LOCAL_DIR = Path("../bios-config/build")
 BIOS_TEST_IMAGES = (
     "bios-test-cstate-off.img",
     "bios-test-cstate-restore.img",
+    "bios-test-dmi-pin.img",
+    "bios-test-dmi-restore.img",
 )
 
 # hw-validation PXE live image — built in the sibling `hw-validation`
