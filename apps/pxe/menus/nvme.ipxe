@@ -75,6 +75,7 @@ item --gap -- --- Read-only (always safe) ---
 item diagnose             Capture full per-drive state (no fio, no writes)
 item bench                Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
 item disable-apst-bench   Bench with APST disabled at runtime (test power-state hypothesis)
+item bench-no-cstates     Bench with CPU C-states disabled at kernel (intel_idle.max_cstate=1)
 item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
 item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
 item format     [!!] nvme format -s 1 (user-data erase + feature reset)
@@ -96,9 +97,10 @@ goto ${target}
 # wipes ALL data + resets to factory" reads differently from "trim
 # refreshes the FTL".
 
-:diagnose             set action diagnose             && set destructive    && set confirm    && goto boot-image
-:bench                set action bench                && set destructive    && set confirm    && goto boot-image
-:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && goto boot-image
+:diagnose             set action diagnose             && set destructive    && set confirm    && set kernel_extra              && goto boot-image
+:bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && goto boot-image
+:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && goto boot-image
+:bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && goto boot-image
 :trim                 set action trim                 && goto pick_trim
 :format               set action format               && goto pick_format
 :sanitize             set action sanitize             && goto pick_sanitize
@@ -163,11 +165,20 @@ goto ${durtarget}
 # are all in the apkovl's /etc/apk/world. ${destructive} and
 # ${confirm} are unset for read-only actions; iPXE substitutes empty
 # string, and stresstest.start treats absent == empty == not-armed.
+#
+# ${kernel_extra} is empty for normal actions and carries optional
+# kernel cmdline tweaks for hypothesis-test variants. The bench-no-
+# cstates entry sets it to `intel_idle.max_cstate=1` to force Linux's
+# intel_idle driver to expose only state 0 (C1) -- this is the only
+# reliable way to disable C-states on Skylake+ since intel_idle
+# bypasses BIOS-reported C-state config. iPXE substitutes empty
+# string when unset, so a trailing space on the kernel line is
+# harmless for the other actions.
 
 :boot-image
-echo Booting nvme-tools: action=${action} destructive=${destructive} confirm=${confirm}
+echo Booting nvme-tools: action=${action} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm}
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
