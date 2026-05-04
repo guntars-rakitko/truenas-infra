@@ -82,6 +82,21 @@
 #                                              passive HDMI dummy plugs)
 #   acpi_enforce_resources=lax                 lets it87/nct6775 bind despite
 #                                              ACPI-claimed Super I/O ports
+#   nvme_core.default_ps_max_latency_us=0      disable APST. PM981/SM961
+#                                              firmware advertises pathological
+#                                              APST timers (~4 ms PS3 entry,
+#                                              ~5 ms exit) that kill sustained-
+#                                              read perf on Linux. Bisected on
+#                                              2026-05-04 against bench-debug
+#                                              variants in the sibling
+#                                              nvme-tools menu -- this single
+#                                              arg recovered ~880 → ~3000 MB/s
+#                                              on PM981. Mirrored across all
+#                                              hw-validation entry points so
+#                                              `nvme` / `nvme-write` /
+#                                              `disk-burnin` / `all` /
+#                                              `burnin` all measure honest
+#                                              numbers.
 
 :start
 menu hw-validation -- stress test
@@ -213,7 +228,7 @@ goto ${durtarget}
 :boot-image
 echo Booting hw-validation: profile=${profile} duration=${duration}s destructive=${destructive}
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=${profile} stress.duration=${duration} stress.destructive=${destructive}
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax nvme_core.default_ps_max_latency_us=0 stress.profile=${profile} stress.duration=${duration} stress.destructive=${destructive}
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
@@ -222,7 +237,7 @@ boot || goto fail
 :hold
 echo Booting hw-validation with stress.hold=1 -- drops to shell after init
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 stress.profile=safety stress.hold=1
+kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 nvme_core.default_ps_max_latency_us=0 stress.profile=safety stress.hold=1
 initrd ${cache_url}/hw-validation/latest/initramfs-lts
 boot || goto fail
 
