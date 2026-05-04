@@ -40,6 +40,20 @@ goto ${target}
 #   pti=on                        -- page-table isolation (Meltdown mitig)
 #   consoleblank=0                -- never blank the VT console
 #   nvme_core.io_timeout=<big>    -- don't abort NVMe I/O on slow devices
+#   nvme_core.default_ps_max_latency_us=0
+#                                 -- disable APST. PM981/SM961 firmware
+#                                    advertises pathological idle-state
+#                                    timers that tank sustained-read
+#                                    perf on Linux. Bisected against
+#                                    bench-debug variants on 2026-05-04
+#                                    (see hw-validation.ipxe + nvme.ipxe
+#                                    for narrative). NB: this only affects
+#                                    the brief PXE-install boot. Production
+#                                    Talos boots from disk with cmdline
+#                                    set by machineconfig.installer.
+#                                    extraKernelArgs in kube-infra --
+#                                    that change is the operationally
+#                                    meaningful one and lives separately.
 #   printk.devkmsg=on             -- allow userspace writes to /dev/kmsg
 #   selinux=1  module.sig_enforce=1  -- SELinux + signed modules required
 #
@@ -53,14 +67,14 @@ goto ${target}
 :install
 echo Booting Talos (base args -- maintenance mode if unprovisioned)
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 nvme_core.default_ps_max_latency_us=0 printk.devkmsg=on selinux=1 module.sig_enforce=1
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 
 :install-wipe
 echo Booting Talos with wipe=system -- nuclear re-provision
 imgfree
-kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1 talos.experimental.wipe=system
+kernel ${cache_url}/talos/vmlinuz talos.platform=metal console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 nvme_core.default_ps_max_latency_us=0 printk.devkmsg=on selinux=1 module.sig_enforce=1 talos.experimental.wipe=system
 initrd ${cache_url}/talos/initramfs
 boot || goto fail
 

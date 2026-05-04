@@ -35,7 +35,17 @@ RETENTION="${RETENTION:-5}"
 
 # Factory-recommended kernel command line (mirrors what
 # https://pxe.factory.talos.dev/pxe/<sid>/<ver>/metal-<arch> returns).
-KERNEL_ARGS="talos.platform=${PLATFORM} console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1"
+# Local extras beyond factory baseline:
+#   nvme_core.default_ps_max_latency_us=0  PM981/SM961 APST disable.
+#                                          Bisected 2026-05-04; see
+#                                          apps/pxe/menus/nvme.ipxe
+#                                          and hw-validation.ipxe for
+#                                          the narrative. Affects only
+#                                          PXE-install boots; production
+#                                          fix lives in kube-infra
+#                                          machineconfig extraKernelArgs.
+# Keep in lockstep with apps/pxe/menus/talos.ipxe.
+KERNEL_ARGS="talos.platform=${PLATFORM} console=tty0 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 nvme_core.default_ps_max_latency_us=0 printk.devkmsg=on selinux=1 module.sig_enforce=1"
 
 mkdir -p "$ASSETS_DIR" "$(dirname "$STATE_FILE")"
 
