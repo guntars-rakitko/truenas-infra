@@ -76,6 +76,7 @@ item diagnose             Capture full per-drive state (no fio, no writes)
 item bench                Read-only fio matrix (seq 1M / seq 64k / rand qd32 / qd1)
 item disable-apst-bench   Bench with APST disabled at runtime (test power-state hypothesis)
 item bench-no-cstates     Bench with CPU C-states disabled at kernel (intel_idle.max_cstate=1)
+item bench-debug          Bench using DEBUG hw-validation image (A/B test against production)
 item --gap -- --- Reset state (DESTRUCTIVE -- requires wiped drive) ---
 item trim       [!]  blkdiscard whole drive (FTL refresh, fastest)
 item format     [!!] nvme format -s 1 (user-data erase + feature reset)
@@ -97,10 +98,11 @@ goto ${target}
 # wipes ALL data + resets to factory" reads differently from "trim
 # refreshes the FTL".
 
-:diagnose             set action diagnose             && set destructive    && set confirm    && set kernel_extra              && goto boot-image
-:bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && goto boot-image
-:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && goto boot-image
-:bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && goto boot-image
+:diagnose             set action diagnose             && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
+:bench                set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
+:disable-apst-bench   set action disable-apst-bench   && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation             && goto boot-image
+:bench-no-cstates     set action bench                && set destructive    && set confirm    && set kernel_extra intel_idle.max_cstate=1 && set image_path hw-validation             && goto boot-image
+:bench-debug          set action bench                && set destructive    && set confirm    && set kernel_extra              && set image_path hw-validation-debug       && goto boot-image
 :trim                 set action trim                 && goto pick_trim
 :format               set action format               && goto pick_format
 :sanitize             set action sanitize             && goto pick_sanitize
@@ -174,12 +176,19 @@ goto ${durtarget}
 # bypasses BIOS-reported C-state config. iPXE substitutes empty
 # string when unset, so a trailing space on the kernel line is
 # harmless for the other actions.
+#
+# ${image_path} selects which hw-validation artefact to boot:
+#   "hw-validation"        — production image at /pxe/http/hw-validation/latest/
+#   "hw-validation-debug"  — sibling debug variant at /pxe/http/hw-validation-debug/latest/
+# The debug variant is built via `./tools/build-image.sh --variant debug`
+# in the sibling repo, lets us A/B test apkovl/cmdline changes without
+# disturbing production bench results.
 
 :boot-image
-echo Booting nvme-tools: action=${action} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
+echo Booting nvme-tools: action=${action} image=${image_path} destructive=${destructive} confirm=${confirm} kernel_extra=${kernel_extra}
 imgfree
-kernel ${cache_url}/hw-validation/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/hw-validation/latest/modloop-lts apkovl=${cache_url}/hw-validation/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
-initrd ${cache_url}/hw-validation/latest/initramfs-lts
+kernel ${cache_url}/${image_path}/latest/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage modloop=${cache_url}/${image_path}/latest/modloop-lts apkovl=${cache_url}/${image_path}/latest/apkovl.tar.gz ip=dhcp console=tty0 nomodeset video=1920x1080 acpi_enforce_resources=lax stress.profile=nvme-tools nvme.action=${action} stress.destructive=${destructive} nvme.confirm=${confirm} ${kernel_extra}
+initrd ${cache_url}/${image_path}/latest/initramfs-lts
 boot || goto fail
 
 # ─── Failure handling ───────────────────────────────────────────────

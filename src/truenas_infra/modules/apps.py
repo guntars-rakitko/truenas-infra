@@ -690,6 +690,16 @@ BIOS_TEST_IMAGES = (
 # mirrors the bios-apply.img pattern.
 HW_VALIDATION_LOCAL_DIR = Path("../hw-validation/build/latest")
 HW_VALIDATION_REMOTE_DIR = "/mnt/tank/system/pxe/http/hw-validation/latest"
+
+# hw-validation DEBUG variant — built by `./tools/build-image.sh --variant debug`
+# in the sibling repo, lives at build/debug-latest. Uploaded to a separate path
+# on the NAS so the production hw-validation image is unaffected. The nvme
+# PXE menu's "Bench (debug image)" entry boots from here. Initially identical
+# content to the production build; iterate the apkovl + kernel cmdline (via
+# iPXE menu) to A/B test what's making the production bench underperform vs
+# bare-metal Debian on the same drive.
+HW_VALIDATION_DEBUG_LOCAL_DIR = Path("../hw-validation/build/debug-latest")
+HW_VALIDATION_DEBUG_REMOTE_DIR = "/mnt/tank/system/pxe/http/hw-validation-debug/latest"
 # Files the hw-validation.ipxe menu references. If the build produces
 # more files later (e.g. memtest86+ sister payload), append here.
 HW_VALIDATION_PAYLOAD_FILES = (
@@ -1384,6 +1394,44 @@ def _ensure_pxe_hw_validation_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             mode=0o644, apply=ctx.apply,
         )
         log.info("hw_validation_file_ensured",
+                 path=remote, action=diff.action, changed=diff.changed,
+                 local_size=local.stat().st_size)
+
+    # ─── DEBUG variant (optional) ────────────────────────────────────────
+    # Same upload pattern as production hw-validation, but to a separate
+    # NAS path so the iPXE menu's "Bench (debug image)" entry boots from
+    # an independent artefact. Built via `./tools/build-image.sh --variant debug`
+    # in the sibling repo. No-op if the operator hasn't run that command.
+    debug_local_dir = HW_VALIDATION_DEBUG_LOCAL_DIR.resolve()
+    if not debug_local_dir.is_dir():
+        log.info("hw_validation_debug_skipped",
+                 reason="debug variant not built",
+                 hint="run ./tools/build-image.sh --variant debug in hw-validation",
+                 expected_local=str(debug_local_dir))
+        return
+
+    try:
+        real_debug_dir = debug_local_dir.resolve()
+    except OSError as e:
+        log.warning("hw_validation_debug_skipped",
+                    reason=f"resolve failed: {e}",
+                    expected_local=str(debug_local_dir))
+        return
+
+    for name in HW_VALIDATION_PAYLOAD_FILES:
+        local = real_debug_dir / name
+        if not local.is_file():
+            log.info("hw_validation_debug_file_skipped",
+                     reason="expected payload file missing",
+                     expected_local=str(local))
+            continue
+        remote = f"{HW_VALIDATION_DEBUG_REMOTE_DIR}/{name}"
+        diff = ensure_file_on_nas(
+            cli, upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("hw_validation_debug_file_ensured",
                  path=remote, action=diff.action, changed=diff.changed,
                  local_size=local.stat().st_size)
 
