@@ -69,6 +69,23 @@
 # enforces safety + destructive + confirm in code -- the menu is just
 # the trigger.
 
+# ─── Defensive defaults ─────────────────────────────────────────────
+#
+# Every kernel cmdline var consumed by :boot-image gets a default
+# here, so a label that forgets to set one won't construct a 404 URL.
+# Discovered the hard way: trim/format/sanitize labels jumped to
+# pick_* → :confirm → :boot-image without ever setting image_path,
+# producing http://nas/pxe//latest/vmlinuz-lts (double slash, no
+# image dir). Boot 404'd before Alpine ever ran, so the operator
+# saw "trim doesn't work" without nvmetools.sh having a chance.
+#
+# Read-only labels still set these explicitly for self-documentation
+# (and to override image_path for bench-debug, kernel_extra for
+# bench-no-cstates). Destructive labels can stay short.
+
+set image_path hw-validation
+set kernel_extra
+
 :start
 menu nvme -- maintenance + diagnostic actions
 item --gap -- --- Read-only (always safe) ---
