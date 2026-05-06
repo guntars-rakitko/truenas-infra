@@ -25,7 +25,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ─── Dependency check ────────────────────────────────────────────────────────
-for cmd in python3 sops; do
+for cmd in python3 doppler; do
     if ! command -v "$cmd" &>/dev/null; then
         echo -e "${RED}ERROR: Required command '$cmd' not found.${NC}"
         exit 1
@@ -50,48 +50,47 @@ else
     PKG_MGR="pip"
 fi
 
-# ─── .env decrypt ────────────────────────────────────────────────────────────
-# Parse dotenv lines manually so shell-special chars ($, `, etc.) in values
-# are treated as literal text — TrueNAS API keys frequently contain $.
-load_dotenv_stream() {
-    local line key value
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        # Strip trailing \r (CRLF-safe)
-        line="${line%$'\r'}"
-        # Skip empty lines and comments
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Split on first '=' only
-        key="${line%%=*}"
-        value="${line#*=}"
-        # Strip leading/trailing whitespace from the key
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        # Strip surrounding single or double quotes from the value
-        if [[ "$value" =~ ^\"(.*)\"$ ]]; then
-            value="${BASH_REMATCH[1]}"
-        elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
-            value="${BASH_REMATCH[1]}"
-        fi
-        [[ -z "$key" ]] && continue
-        export "$key=$value"
-    done
-}
+# ─── Secrets — Doppler infrastructure/ops ────────────────────────────────────
+# Per-key fetch (avoids bulk env-format pitfalls with multi-line values like
+# KUBECONFIG_DEV that we don't need here). 5-6 single-line keys total —
+# under 1 second of Doppler API time.
+_DOPPLER_KEYS=(
+    TRUENAS_HOST
+    TRUENAS_API_KEY
+    TRUENAS_VERIFY_SSL
+    TRUENAS_NUT_MONPWD
+    TRUENAS_ROOT_PASSWORD
+    SHARED_CLOUDFLARE_API_TOKEN
+)
 
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    load_dotenv_stream < "$SCRIPT_DIR/.env"
-elif [[ -f "$SCRIPT_DIR/.env.sops" ]]; then
-    echo -e "${CYAN}No .env found, decrypting .env.sops...${NC}"
-    load_dotenv_stream < <(sops decrypt "$SCRIPT_DIR/.env.sops")
-else
-    echo -e "${RED}ERROR: No .env or .env.sops found in $SCRIPT_DIR${NC}"
-    echo -e "${YELLOW}See bootstrap/01-bootstrap-notes.md — you need to create an API key first.${NC}"
-    exit 1
-fi
+for _k in "${_DOPPLER_KEYS[@]}"; do
+    if ! _v=$(doppler secrets get "$_k" --project infrastructure --config ops \
+                --plain --silent 2>&1); then
+        # Some optional keys (TRUENAS_ROOT_PASSWORD) may not be set yet; only
+        # the env-var-required block below complains about the truly required ones.
+        if [[ "$_k" == TRUENAS_HOST || "$_k" == TRUENAS_API_KEY ]]; then
+            echo -e "${RED}ERROR: Failed to fetch '$_k' from Doppler:${NC}" >&2
+            echo "$_v" >&2
+            echo -e "${YELLOW}Check 'doppler whoami' and rerun 'doppler login' if needed.${NC}" >&2
+            exit 1
+        fi
+        continue
+    fi
+    export "$_k=$_v"
+done
+unset _DOPPLER_KEYS _k _v
+
+# Alias Doppler-prefixed key to the bare name Python code expects.
+# CLOUDFLARE_API_TOKEN is the conventional env var name for CloudFlare's
+# SDKs/CLIs; the Doppler key is SHARED_ prefixed for cross-purpose tracking.
+[[ -n "${SHARED_CLOUDFLARE_API_TOKEN:-}" ]] && \
+    export CLOUDFLARE_API_TOKEN="$SHARED_CLOUDFLARE_API_TOKEN"
 
 # ─── Required env vars ───────────────────────────────────────────────────────
 for var in TRUENAS_HOST TRUENAS_API_KEY; do
     if [[ -z "${!var:-}" ]]; then
-        echo -e "${RED}ERROR: Required env var '$var' is not set in .env.${NC}"
+        echo -e "${RED}ERROR: Required env var '$var' is not set.${NC}"
+        echo -e "${YELLOW}Check Doppler infrastructure/ops config; run 'doppler whoami'.${NC}"
         exit 1
     fi
 done

@@ -1,7 +1,8 @@
 """Runtime configuration loaded from environment variables.
 
-`.env` is decrypted by `manage.sh` (via SOPS) and exported before Python is
-invoked, so we only read from `os.environ` here.
+Secrets are fetched from Doppler `infrastructure/ops` by `manage.sh` and
+exported into the environment before Python is invoked, so we only read
+from `os.environ` here.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ def _env(name: str, default: str | None = None, *, required: bool = False) -> st
     if required and not value:
         raise RuntimeError(
             f"Required env var '{name}' is not set. "
-            "Check .env.sops and re-run via ./manage.sh."
+            "Re-run via ./manage.sh (which fetches from Doppler "
+            "infrastructure/ops)."
         )
     return value or ""
 
