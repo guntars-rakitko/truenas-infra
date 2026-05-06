@@ -54,7 +54,7 @@ edit the matching wiki page in the same commit set.
 | `apps/pxe/pxe-download.sh` (new PXE asset) | `docs/runbooks/bios-apply-pxe-setup.md` (if cross-repo flow changes), `docs/runbooks/pxe-operator.md` (adding / removing PXE ISOs) |
 | `docs/bios-apply-pxe-setup.md` | _Auto-synced_ → `docs/runbooks/bios-apply-pxe-setup.md` |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
-| `.env.sops` / `.env.example` (add/remove var) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
+| Doppler `infrastructure/ops` (add/remove key) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
 | "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |
 
 **Deploy the wiki** after the edit:
@@ -191,8 +191,8 @@ config (creation, users, lifecycle, retention) lives there. We drive
 `mc` directly via three idempotent scripts under `scripts/`, all
 using the operator's pre-configured `nas-prd` / `nas-dev` aliases
 (set up once per laptop with `mc alias set` against the
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` from the
-`apps/minio-{prd,dev}/secrets.sops.yaml`).
+`MINIO_ROOT_USER_{DEV,PRD}` / `MINIO_ROOT_PASSWORD_{DEV,PRD}` keys
+in Doppler `infrastructure/ops`).
 
 **Order of operations after a fresh MinIO bootstrap:**
 
@@ -299,8 +299,7 @@ config/
                       # mapped per-app in modules/apps.py)
 src/                  # Python CLI implementation
 scripts/
-  (one-off helpers — render-env.py, decrypt-env.sh; pending Step 7
-   cleanup once SOPS files are deleted)
+  setup-minio-{buckets,users,lifecycle}.sh    # one-shot MinIO bootstrap
 ```
 
 ---

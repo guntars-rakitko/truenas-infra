@@ -51,12 +51,14 @@ Everything from phase 1 onward is idempotent and API-driven, so nothing here nee
 3. **Credentials → Local Users → svc-automation → API Keys → Add**.
 4. Name: `truenas-infra-scripts`
 5. Copy the key **immediately** — it's shown only once.
-6. Edit `.env.sops` and add:
+6. Push to Doppler `infrastructure/ops`:
+   ```sh
+   doppler secrets set TRUENAS_HOST=10.10.5.10 \
+     --project infrastructure --config ops
+   doppler secrets set TRUENAS_API_KEY=<paste> \
+     --project infrastructure --config ops
    ```
-   TRUENAS_HOST=10.10.5.10
-   TRUENAS_API_KEY=<paste key here>
-   ```
-7. Save `.env.sops` (SOPS will re-encrypt on save — confirm the file is encrypted with `head -5 .env.sops`).
+7. Verify: `doppler secrets get TRUENAS_API_KEY --plain` should print the key.
 
 ---
 
@@ -86,7 +88,7 @@ If the installer didn't already prompt. There's a banner at the top of the UI if
 
 TrueNAS's built-in ACME client needs a CloudFlare API token to publish
 `_acme-challenge.w1.lv` TXT records during wildcard cert issuance. Create
-it once, paste into `.env.sops`, done.
+it once, push to Doppler, done.
 
 1. Log in to [dash.cloudflare.com](https://dash.cloudflare.com).
 2. Top-right avatar → **My Profile → API Tokens → Create Token**.
@@ -99,20 +101,26 @@ it once, paste into `.env.sops`, done.
    - **Zone Resources**: `Include` / `Specific zone` / **`w1.lv`**
    - **TTL** (optional but recommended): set expiry ~1 year out for a rotation reminder
 5. **Continue to Summary → Create Token**. CloudFlare shows the token **once** — copy it immediately.
-6. `sops .env.sops` → add (or fill in the empty `CLOUDFLARE_API_TOKEN=` line from `.env.example`):
+6. Push to Doppler `infrastructure/ops` as the SHARED_-prefixed key
+   (the `SHARED_` prefix marks it as a cross-purpose credential —
+   manage.sh aliases it to `CLOUDFLARE_API_TOKEN` after fetch for the
+   CloudFlare SDK env-var convention):
+   ```sh
+   doppler secrets set SHARED_CLOUDFLARE_API_TOKEN=<paste> \
+     --project infrastructure --config ops
    ```
-   CLOUDFLARE_API_TOKEN=<paste>
-   ```
-   Save. SOPS re-encrypts on save.
 7. Verify:
    ```sh
-   source <(sops decrypt .env.sops) && \
-     curl -fs -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-       https://api.cloudflare.com/client/v4/user/tokens/verify | jq .status
+   curl -fs -H "Authorization: Bearer $(doppler secrets get \
+       SHARED_CLOUDFLARE_API_TOKEN --plain --project infrastructure --config ops)" \
+     https://api.cloudflare.com/client/v4/user/tokens/verify | jq .status
    ```
    Should return `"active"`.
 
-The same token will also be used by `kube-infra` cert-manager later (stored there as a separate SOPS copy). Rotate it by creating a new one, updating both SOPS copies, then revoking the old one in CloudFlare.
+The same token will also be used by `kube-infra` cert-manager later
+(when Phase 4 of kube-infra #92 lands). Rotate it by creating a new
+one in CloudFlare, updating Doppler with the new value, and revoking
+the old one in CloudFlare.
 
 ---
 
@@ -121,11 +129,12 @@ The same token will also be used by `kube-infra` cert-manager later (stored ther
 From your laptop:
 
 ```bash
-# Encrypted env file looks encrypted
-head -5 .env.sops | grep -q "ENC\["
+# Doppler is reachable
+doppler whoami
 
 # API key works
-curl -sk -H "Authorization: Bearer $(sops decrypt .env.sops | grep API_KEY | cut -d= -f2)" \
+curl -sk -H "Authorization: Bearer $(doppler secrets get TRUENAS_API_KEY \
+    --plain --project infrastructure --config ops)" \
   https://10.10.5.10/api/v2.0/system/info | jq .version
 ```
 

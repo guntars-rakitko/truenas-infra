@@ -38,8 +38,8 @@ from truenas_infra.util import Diff
 # Doppler stores the per-cluster-suffixed canonical names
 # (`MINIO_ROOT_USER_PRD`).
 #
-# Adding a new app: append a new entry here AND remove the
-# `secrets: apps/<app>/secrets.sops.yaml` line from `config/apps.yaml`.
+# Adding a new app with secrets: append a new entry here. The compose
+# file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
 _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
     "minio-prd": {
         "MINIO_ROOT_USER":     "MINIO_ROOT_USER_PRD",
@@ -749,8 +749,9 @@ WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 # Homepage dashboard configs (services, bookmarks, widgets, settings,
 # docker, kubernetes). Mounted read-only into /app/config of the
 # `homepage` Custom App. All *.yaml files from apps/homepage/ are
-# uploaded EXCEPT docker-compose.yaml (ensure_custom_app owns that) and
-# *.sops.yaml (encrypted secrets stay on the laptop).
+# uploaded EXCEPT docker-compose.yaml (ensure_custom_app owns that).
+# Widget API credentials are fetched from Doppler at compose-render
+# time — not stored as files in this directory.
 HOMEPAGE_CONFIG_LOCAL_DIR = Path("apps/homepage")
 HOMEPAGE_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/homepage"
 
@@ -995,13 +996,11 @@ def _ensure_amtctl_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
     Files NOT uploaded:
       - docker-compose.yaml  (owned by ensure_custom_app)
-      - secrets.sops.yaml    (legacy SOPS-encrypted secrets; no longer
-                               consumed at runtime — Doppler is the source —
-                               but kept on the laptop side until the post-
-                               migration cleanup pass deletes them)
       - Dockerfile            (unused — runtime install approach; keeping
                                the file for documentation + a possible
                                future switch to registry-hosted image)
+
+    Secrets are fetched from Doppler at compose-render time, not as files.
     """
     if not AMTCTL_LOCAL_DIR.is_dir():
         log.warning("amtctl_config_skipped",
@@ -1022,7 +1021,7 @@ def _ensure_amtctl_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
     # App code: walk apps/amtctl/ and mirror structure under code/,
     # skipping the "meta" files that belong to other concerns.
-    SKIP = {"docker-compose.yaml", "secrets.sops.yaml", "Dockerfile"}
+    SKIP = {"docker-compose.yaml", "Dockerfile"}
     for local in sorted(AMTCTL_LOCAL_DIR.rglob("*")):
         if not local.is_file():
             continue
@@ -1098,9 +1097,6 @@ def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
     Skips:
       - docker-compose.yaml  (owned by ensure_custom_app)
-      - *.sops.yaml          (encrypted secrets stay on the laptop; rendered
-                              into compose env vars by _render_compose if
-                              the app is configured with a secrets file)
 
     Globs the directory so adding a new YAML file (e.g. a future
     `proxmox.yaml` widget group) requires no code change here.
@@ -1123,10 +1119,8 @@ def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         )
 
     for local in sorted(HOMEPAGE_CONFIG_LOCAL_DIR.glob("*.yaml")):
-        # Skip compose (apps loop owns it) and sops-encrypted secrets.
+        # Skip compose (apps loop owns it).
         if local.name == "docker-compose.yaml":
-            continue
-        if local.name.endswith(".sops.yaml"):
             continue
         remote = f"{HOMEPAGE_CONFIG_REMOTE_DIR}/{local.name}"
         diff = ensure_file_on_nas(

@@ -1,8 +1,8 @@
-# Credentials (plaintext — never commit)
+# Local-only plaintext env files (occasionally rendered by operator
+# scripts; never commit). Doppler is the source of truth — these are
+# transient.
 .env
 apps/*/.env
-apps/*/secrets.yaml
-# .env.sops and apps/*/secrets.sops.yaml are SOPS-encrypted and safe to commit
 
 # Backups (local only)
 backups/
