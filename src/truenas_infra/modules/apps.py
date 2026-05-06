@@ -28,49 +28,89 @@ from truenas_infra.util import Diff
 # ─── Secrets rendering ───────────────────────────────────────────────────────
 
 
-def _load_sops_dotenv(path: Path) -> dict[str, str]:
-    """Decrypt a SOPS-encrypted YAML/dotenv secrets file into a dict.
+# Per-app Doppler key map: { app_name: { compose_var: doppler_key } }.
+#
+# Single source of truth for secrets is Doppler `infrastructure/ops` —
+# we fetch the listed keys at deploy time and substitute into the
+# docker-compose template. The compose-var → doppler-key indirection
+# lets the compose file keep its conventional env-var names (e.g.
+# `MINIO_ROOT_USER` per the MinIO container's expected env), while
+# Doppler stores the per-cluster-suffixed canonical names
+# (`MINIO_ROOT_USER_PRD`).
+#
+# Adding a new app: append a new entry here AND remove the
+# `secrets: apps/<app>/secrets.sops.yaml` line from `config/apps.yaml`.
+_DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
+    "minio-prd": {
+        "MINIO_ROOT_USER":     "MINIO_ROOT_USER_PRD",
+        "MINIO_ROOT_PASSWORD": "MINIO_ROOT_PASSWORD_PRD",
+    },
+    "minio-dev": {
+        "MINIO_ROOT_USER":     "MINIO_ROOT_USER_DEV",
+        "MINIO_ROOT_PASSWORD": "MINIO_ROOT_PASSWORD_DEV",
+    },
+    "amtctl": {
+        "AMTCTL_AMT_USER":     "AMT_USER",
+        "AMTCTL_AMT_PASSWORD": "AMT_PASSWORD",
+    },
+    "homepage": {
+        "HOMEPAGE_VAR_TRUENAS_API_KEY":      "TRUENAS_API_KEY",
+        "HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY": "MINIO_ROOT_USER_PRD",
+        "HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY": "MINIO_ROOT_PASSWORD_PRD",
+        "HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY": "MINIO_ROOT_USER_DEV",
+        "HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY": "MINIO_ROOT_PASSWORD_DEV",
+    },
+}
 
-    The file shape is either a YAML mapping (`KEY: value`) or dotenv
-    (`KEY=value`). We try YAML first, fall back to dotenv parsing.
+
+def _load_doppler_for_app(app_name: str) -> dict[str, str]:
+    """Fetch the secrets needed for `app_name` from Doppler infrastructure/ops.
+
+    Returns a `{compose_var: value}` dict ready for `_render_compose`
+    substitution. Empty dict if the app isn't in `_DOPPLER_KEYS_PER_APP`
+    (i.e., the app declares no secrets).
+
+    Raises `RuntimeError` if any required Doppler key fetch fails — we
+    fail loud rather than render the compose with an empty value.
     """
-    result = subprocess.run(
-        ["sops", "decrypt", str(path)],
-        check=True, capture_output=True, text=True,
-    )
-    text = result.stdout
-    # Try YAML mapping first.
-    try:
-        parsed = yaml.safe_load(text)
-        if isinstance(parsed, dict):
-            return {str(k): str(v) for k, v in parsed.items()}
-    except yaml.YAMLError:
-        pass
-    # Fall back to dotenv.
+    mapping = _DOPPLER_KEYS_PER_APP.get(app_name)
+    if not mapping:
+        return {}
     out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            k, _, v = line.partition("=")
-            out[k.strip()] = v.strip().strip('"').strip("'")
+    for compose_var, doppler_key in mapping.items():
+        result = subprocess.run(
+            ["doppler", "secrets", "get", doppler_key,
+             "--project", "infrastructure", "--config", "ops",
+             "--plain", "--silent"],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to fetch Doppler key '{doppler_key}' for app "
+                f"'{app_name}': {result.stderr.strip()}"
+            )
+        # `--plain` outputs the value followed by a newline; strip the trailing
+        # newline only (preserve any internal newlines for multi-line values).
+        out[compose_var] = result.stdout.rstrip("\n")
     return out
 
 
 _VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 
-def _render_compose(compose_path: Path, secrets_path: Path | None) -> str:
-    """Read compose YAML, substitute ${VAR} with values from decrypted secrets.
+def _render_compose(compose_path: Path, app_name: str = "") -> str:
+    """Read compose YAML, substitute ${VAR} with values fetched from Doppler.
+
+    `app_name` selects the per-app key map (`_DOPPLER_KEYS_PER_APP`); apps
+    declaring no secrets there pass through unchanged.
 
     Missing secrets leave the placeholder intact — TrueNAS will reject
     unsubstituted variables, making the issue visible.
     """
     compose = compose_path.read_text(encoding="utf-8")
-    if secrets_path is None:
+    values = _load_doppler_for_app(app_name) if app_name else {}
+    if not values:
         return compose
-    values = _load_sops_dotenv(secrets_path)
 
     def _sub(match: re.Match) -> str:
         key = match.group(1)
@@ -86,7 +126,6 @@ def _render_compose(compose_path: Path, secrets_path: Path | None) -> str:
 class AppSpec:
     name: str
     compose_path: Path
-    secrets_path: Path | None = None
     bind_ip: str = ""
     description: str = ""
 
@@ -107,7 +146,6 @@ def load_apps_config(path: Path) -> AppsConfig:
             AppSpec(
                 name=a["name"],
                 compose_path=Path(a["compose"]),
-                secrets_path=Path(a["secrets"]) if a.get("secrets") else None,
                 bind_ip=a.get("bind_ip", ""),
                 description=a.get("description", ""),
             )
@@ -180,7 +218,7 @@ def ensure_custom_app(cli: Any, *, spec: AppSpec, apply: bool) -> Diff:
     final-stage COPY files changed.
     """
     existing = cli.call("app.query", [["name", "=", spec.name]])
-    compose_yaml = _render_compose(spec.compose_path, spec.secrets_path)
+    compose_yaml = _render_compose(spec.compose_path, app_name=spec.name)
 
     # First-time create.
     if not existing:
@@ -957,7 +995,10 @@ def _ensure_amtctl_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
     Files NOT uploaded:
       - docker-compose.yaml  (owned by ensure_custom_app)
-      - secrets.sops.yaml    (rendered into compose env by _render_compose)
+      - secrets.sops.yaml    (legacy SOPS-encrypted secrets; no longer
+                               consumed at runtime — Doppler is the source —
+                               but kept on the laptop side until the post-
+                               migration cleanup pass deletes them)
       - Dockerfile            (unused — runtime install approach; keeping
                                the file for documentation + a possible
                                future switch to registry-hosted image)

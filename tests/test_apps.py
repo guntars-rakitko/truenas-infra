@@ -54,12 +54,10 @@ def test_load_apps_config_parses_enabled_apps(tmp_path: Path) -> None:
               - name: pxe
                 enabled: true
                 compose: apps/pxe/docker-compose.yaml
-                secrets: null
                 bind_ip: 10.10.5.10
               - name: minio-prd
                 enabled: true
                 compose: apps/minio-prd/docker-compose.yaml
-                secrets: apps/minio-prd/secrets.sops.yaml
                 bind_ip: 10.10.10.10
               - name: plex
                 enabled: false
@@ -93,7 +91,7 @@ def test_ensure_custom_app_creates_when_missing(tmp_path: Path) -> None:
         {"id": "pxe", "state": "RUNNING"},        # app.create (job=True → result)
     ])
 
-    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    spec = AppSpec(name="pxe", compose_path=compose_path)
     diff = ensure_custom_app(cli, spec=spec, apply=True)
 
     assert diff.changed is True
@@ -121,7 +119,7 @@ def test_ensure_custom_app_noop_when_compose_matches(tmp_path: Path) -> None:
     stored_compose = {"services": {"foo": {"image": "hello-world"}}}
     cli = _mk_cli([[existing], stored_compose])
 
-    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    spec = AppSpec(name="pxe", compose_path=compose_path)
     diff = ensure_custom_app(cli, spec=spec, apply=True)
 
     assert diff.changed is False
@@ -157,7 +155,7 @@ def test_ensure_custom_app_updates_when_compose_drifts(tmp_path: Path) -> None:
     }
     cli = _mk_cli([[existing], stored_compose, None])  # None = app.update return
 
-    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    spec = AppSpec(name="pxe", compose_path=compose_path)
     diff = ensure_custom_app(cli, spec=spec, apply=True)
 
     assert diff.changed is True
@@ -189,7 +187,7 @@ def test_ensure_custom_app_dryrun_reports_drift_without_calling_update(
     }
     cli = _mk_cli([[existing], stored_compose])
 
-    spec = AppSpec(name="pxe", compose_path=compose_path, secrets_path=None)
+    spec = AppSpec(name="pxe", compose_path=compose_path)
     diff = ensure_custom_app(cli, spec=spec, apply=False)
 
     assert diff.changed is True
@@ -215,8 +213,8 @@ class _Ctx:
         self.log = structlog.get_logger("test")
 
 
-def test_render_compose_substitutes_vars_from_secrets(tmp_path: Path, monkeypatch) -> None:
-    """${VAR} references in compose are replaced by values loaded from SOPS."""
+def test_render_compose_substitutes_vars_from_doppler(tmp_path: Path, monkeypatch) -> None:
+    """${VAR} references in compose are replaced by values fetched from Doppler."""
     from truenas_infra.modules import apps as apps_module
 
     compose = tmp_path / "docker-compose.yaml"
@@ -226,13 +224,13 @@ def test_render_compose_substitutes_vars_from_secrets(tmp_path: Path, monkeypatc
         "      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}\n"
     )
 
-    # Monkey-patch the SOPS loader to avoid actually running sops in tests.
+    # Monkey-patch the Doppler loader to avoid actually calling Doppler in tests.
     monkeypatch.setattr(
-        apps_module, "_load_sops_dotenv",
-        lambda _p: {"MINIO_ROOT_USER": "admin", "MINIO_ROOT_PASSWORD": "s3cret"},
+        apps_module, "_load_doppler_for_app",
+        lambda _name: {"MINIO_ROOT_USER": "admin", "MINIO_ROOT_PASSWORD": "s3cret"},
     )
 
-    rendered = apps_module._render_compose(compose, tmp_path / "secrets.sops.yaml")
+    rendered = apps_module._render_compose(compose, app_name="minio-prd")
 
     assert "MINIO_ROOT_USER=admin" in rendered
     assert "MINIO_ROOT_PASSWORD=s3cret" in rendered
@@ -246,7 +244,8 @@ def test_render_compose_passes_through_when_no_secrets(tmp_path: Path) -> None:
     compose = tmp_path / "docker-compose.yaml"
     compose.write_text("services:\n  foo:\n    image: hello-world\n")
 
-    rendered = apps_module._render_compose(compose, None)
+    # No app_name → no Doppler fetch attempted → compose returned verbatim.
+    rendered = apps_module._render_compose(compose)
     assert rendered == compose.read_text()
 
 

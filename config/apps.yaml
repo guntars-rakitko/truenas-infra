@@ -2,8 +2,10 @@
 # Consumed by modules/apps.py.
 #
 # Each entry points at a compose file under apps/<name>/docker-compose.yaml.
-# Secrets live alongside as apps/<name>/secrets.sops.yaml; rendered to
-# apps/<name>/.env at apply time by scripts/render-env.py.
+# Secrets are fetched at apply time from Doppler `infrastructure/ops`; the
+# per-app key map lives in `_DOPPLER_KEYS_PER_APP` in modules/apps.py.
+# `${VAR}` placeholders in compose files are substituted with Doppler values
+# during `_render_compose`.
 #
 # ⚠️  WIKI MIRROR: Adding/removing a Custom App here ALSO requires updating:
 #       wiki/docs/architecture/hostnames.md           (if it exposes a hostname)
@@ -18,70 +20,60 @@ apps:
   - name: pxe
     enabled: true
     compose: apps/pxe/docker-compose.yaml
-    secrets: null              # no secrets needed
     bind_ip: 10.10.5.10
     description: "Homelab PXE — iPXE + dnsmasq(TFTP) + nginx(HTTP), built from source"
 
   - name: minio-prd
     enabled: true
     compose: apps/minio-prd/docker-compose.yaml
-    secrets: apps/minio-prd/secrets.sops.yaml
     bind_ip: 10.10.10.10
     description: "S3 backend for prd Velero backups"
 
   - name: minio-dev
     enabled: true
     compose: apps/minio-dev/docker-compose.yaml
-    secrets: apps/minio-dev/secrets.sops.yaml
     bind_ip: 10.10.15.10
     description: "S3 backend for dev Velero backups"
 
   - name: meshcentral
     enabled: true
     compose: apps/meshcentral/docker-compose.yaml
-    secrets: null              # first user becomes admin on initial browse
     bind_ip: 10.10.5.10
     description: "Remote management + AMT KVM for the K8s nodes"
 
   - name: traefik
     enabled: true
     compose: apps/traefik/docker-compose.yaml
-    secrets: null              # mounts the wildcard cert from /mnt/tank/system/tls
     bind_ip: 10.10.5.20
     description: "Mgmt-plane reverse proxy (mc/pxe/minio-*/traefik-nas)"
 
   - name: wiki
     enabled: true
     compose: apps/wiki/docker-compose.yaml
-    secrets: null              # static HTML, no credentials
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies wiki.w1.lv here
     description: "Static internal wiki (MkDocs build served by nginx, pushed from wiki repo)"
 
   - name: homepage
     enabled: true
     compose: apps/homepage/docker-compose.yaml
-    secrets: apps/homepage/secrets.sops.yaml  # HOMEPAGE_VAR_* for widget API creds
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
     description: "Service-catalog dashboard (Homepage), declarative YAML-only"
 
   - name: iperf3
     enabled: true
     compose: apps/iperf3/docker-compose.yaml
-    secrets: null              # no auth — mgmt VLAN isolation is the boundary
     bind_ip: 10.10.5.10
     description: "Always-on iperf3 server for hw-validation net-mgmt / net-data tests"
 
   - name: amtctl
     enabled: true
     compose: apps/amtctl/docker-compose.yaml
-    secrets: apps/amtctl/secrets.sops.yaml    # AMT admin user + password
     bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts amtctl.w1.lv
     description: "Intel AMT power control + status dashboard for K8s nodes"
 
   - name: stress-dashboard
     enabled: true
     compose: apps/stress-dashboard/docker-compose.yaml
-    secrets: null                              # no auth — mgmt VLAN isolation
     bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts stress.w1.lv
     description: "hw-validation JSON report viewer (reads /mnt/tank/system/stress-results)"
 
@@ -89,12 +81,10 @@ apps:
   - name: plex
     enabled: false
     compose: apps/plex/docker-compose.yaml
-    secrets: apps/plex/secrets.sops.yaml
     bind_ip: 10.10.20.10
     description: "Plex Media Server"
   - name: qbittorrent
     enabled: false
     compose: apps/qbittorrent/docker-compose.yaml
-    secrets: null
     bind_ip: 10.10.20.10
     description: "qBittorrent Web UI"

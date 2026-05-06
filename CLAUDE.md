@@ -28,7 +28,7 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
 - **PXE / NUT / MinIO services** — live here on the NAS; referenced by `kube-infra` and `bios-config`
-- **Secrets** — same age key across all repos (see SOPS section)
+- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92.
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
 Local clones live at `/Users/gunrak/Documents/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
@@ -248,16 +248,44 @@ controller TTL, and etcd-snapshots is curated by hand for now.
 
 ---
 
-## Secrets — SOPS + age
+## Secrets — Doppler `infrastructure/ops`
 
-Credentials are encrypted with SOPS + age and committed as `.env.sops`. The plaintext `.env` is gitignored.
+Credentials live in Doppler (project `infrastructure`, config `ops`).
+`manage.sh` fetches the keys it needs at startup via per-key
+`doppler secrets get --plain` calls; per-app secrets used by the apps
+deploy flow are fetched at deploy time by `_load_doppler_for_app` in
+`src/truenas_infra/modules/apps.py`.
 
-- **Age private key location:** `~/Library/Application Support/sops/age/keys.txt`
-- **Encrypt:** `sops encrypt -i .env.sops`
-- **Decrypt to stdout:** `sops decrypt .env.sops`
-- **Edit in place:** `sops .env.sops` (opens in `$EDITOR`, re-encrypts on save)
+**Per-script keys** (read by `manage.sh` top-level + Python config):
 
-Same age key used across all infra repos (kube-infra, mikrotik-infra, truenas-infra).
+- `TRUENAS_HOST`, `TRUENAS_API_KEY`, `TRUENAS_VERIFY_SSL`
+- `TRUENAS_NUT_MONPWD`, `TRUENAS_ROOT_PASSWORD`
+- `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
+
+**Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
+
+- `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`
+- `minio-dev` → `MINIO_ROOT_USER_DEV`, `MINIO_ROOT_PASSWORD_DEV`
+- `amtctl` → `AMT_USER`, `AMT_PASSWORD`
+- `homepage` → `TRUENAS_API_KEY` + `MINIO_ROOT_*_{DEV,PRD}` (5 keys total, mapped from `HOMEPAGE_VAR_*` placeholders in compose)
+
+**Inspect / edit:**
+
+```sh
+# Show all NAS-related keys
+doppler secrets --project infrastructure --config ops --only-names | grep -E "TRUENAS_|MINIO_|AMT_|SHARED_CLOUDFLARE"
+
+# Get one value (revealed)
+doppler secrets get TRUENAS_API_KEY --project infrastructure --config ops --plain
+
+# Set a value
+doppler secrets set TRUENAS_API_KEY=newvalue --project infrastructure --config ops
+```
+
+**Recovery if Doppler unreachable:** the operator-side Phase 1 backup
+(age-encrypted tarball in iCloud + MinIO `disaster-recovery` bucket)
+holds the same values. See [`kube-infra/docs/disaster-recovery.md`](https://github.com/guntars-rakitko/kube-infra/blob/main/docs/disaster-recovery.md).
+Migration tracking: kube-infra #92.
 
 ---
 
@@ -265,13 +293,14 @@ Same age key used across all infra repos (kube-infra, mikrotik-infra, truenas-in
 
 ```
 CLAUDE.md
-.sops.yaml            # SOPS encryption rules (age public key)
-.env                  # Plaintext credentials (not in Git, .gitignore'd)
-.env.sops             # SOPS-encrypted credentials (safe to commit)
-.env.example          # Template showing required variables
+manage.sh             # Top-of-file fetches secrets from Doppler ops
+config/
+  apps.yaml           # App registry (no secrets path; Doppler keys
+                      # mapped per-app in modules/apps.py)
+src/                  # Python CLI implementation
 scripts/
-  (TBD — will contain API configuration scripts as requirements are defined)
-configure.sh          # Interactive menu or orchestrator (TBD)
+  (one-off helpers — render-env.py, decrypt-env.sh; pending Step 7
+   cleanup once SOPS files are deleted)
 ```
 
 ---
