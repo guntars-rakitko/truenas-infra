@@ -259,8 +259,18 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 **Per-script keys** (read by `manage.sh` top-level + Python config):
 
 - `TRUENAS_HOST`, `TRUENAS_API_KEY`, `TRUENAS_VERIFY_SSL`
-- `TRUENAS_NUT_MONPWD`, `TRUENAS_ROOT_PASSWORD`
+- `TRUENAS_NUT_MONPWD`
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
+
+**Human-only emergency credential** (never read by automation):
+
+- `TRUENAS_ROOT_PASSWORD` — TrueNAS UI/SSH root login. Stored in Doppler
+  for safekeeping but no script consumes it. Use only if the API path
+  is broken and you need to log into the UI directly. Rotation has no
+  automation ripples; just update Doppler with the new password after
+  setting it in the UI. **Distinct from `AMT_PASSWORD`** (currently
+  same value — see [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)
+  for rotation to a fresh distinct value).
 
 **Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
 
