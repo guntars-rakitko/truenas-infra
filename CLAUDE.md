@@ -262,15 +262,19 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 - `TRUENAS_NUT_MONPWD`
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
-**Human-only emergency credential** (never read by automation):
+**Human-only emergency credentials** (NOT in Doppler — kept in
+1Password / Apple Passwords; Doppler is for credentials that
+automation reads):
 
-- `TRUENAS_ROOT_PASSWORD` — TrueNAS UI/SSH root login. Stored in Doppler
-  for safekeeping but no script consumes it. Use only if the API path
-  is broken and you need to log into the UI directly. Rotation has no
-  automation ripples; just update Doppler with the new password after
-  setting it in the UI. **Distinct from `AMT_PASSWORD`** (currently
-  same value — see [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)
-  for rotation to a fresh distinct value).
+- **TrueNAS root password** — UI/SSH login as `root` when the API
+  path is broken. Username is the constant `root` (no Doppler key).
+  Currently shares value with `AMT_PASSWORD` — see
+  [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)
+  for rotation to a fresh distinct value.
+- **SSH service account name** — `svc-automation` (the user the API
+  key is bound to; also the SSH username for ad-hoc operator shell
+  work). It's a convention, not a credential — documented here, not
+  stored in Doppler. The API key is in Doppler as `TRUENAS_API_KEY`.
 
 **Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
 
