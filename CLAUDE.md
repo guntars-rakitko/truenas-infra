@@ -222,17 +222,22 @@ shared across all backup tracks (Velero / Longhorn / MSSQL /
 etcd-snapshots), `readwrite` policy. Per-track IAM scoping isn't
 worth the operational overhead for this scale.
 
-**Source of truth for the credentials is kube-infra SOPS** — the
-cluster has to read them to USE the user, this script READS them to
-PROVISION the user (single canonical copy, no drift). Cross-repo
-read assumes `kube-infra` is checked out at `../kube-infra` (matches
-the operator-laptop layout described in kube-infra/CLAUDE.md).
+**Source of truth for the credentials is Doppler**
+`infrastructure/{dev,prd}` → `KUBE_MINIO_ACCESS_KEY_ID` +
+`KUBE_MINIO_SECRET_ACCESS_KEY` + `KUBE_MINIO_ENDPOINT`. The cluster
+reads them via DopplerSecret CRDs (rendered as the K8s Secrets
+`velero-minio`, `longhorn-s3`, `mssql-backup-creds`); this script
+reads the same Doppler keys via `doppler secrets get --plain` to
+provision the MinIO user. Single canonical copy, zero drift,
+no cross-repo coupling.
 
-To rotate: generate a new key pair, update kube-infra SOPS files
-(`mssql-backup-creds`, `velero-minio`, `longhorn-s3` per env), run
-this script. It will `mc admin user add` with the new key (idempotent
-update). Old key continues to work until you `mc admin user remove`
-explicitly — useful for rolling rotation.
+To rotate: generate a new key pair, update Doppler
+(`doppler secrets set KUBE_MINIO_ACCESS_KEY_ID=... \
+--project infrastructure --config <env>` and the matching
+`_SECRET_ACCESS_KEY`), run this script. It will `mc admin user add`
+with the new key (idempotent update). Old key continues to work
+until you `mc admin user remove` explicitly — useful for rolling
+rotation.
 
 #### setup-minio-lifecycle.sh
 
