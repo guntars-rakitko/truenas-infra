@@ -14,7 +14,7 @@
 #       apps/traefik/routes.yaml                      (if it's admin-plane, needs a route)
 #       config/dns.yaml                               (if it needs a new DNS record)
 #       src/truenas_infra/modules/verify.py           (+ check_app(...), + tls_https probe)
-#     Then: ./manage.sh phase apps --apply && cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+#     Then: ./manage.sh phase apps --apply && cd ~/github/wiki && ./tools/deploy.sh --verify
 
 apps:
   - name: pxe

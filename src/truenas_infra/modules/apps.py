@@ -681,8 +681,8 @@ PXE_SCRIPTS_REMOTE_DIR   = "/mnt/tank/system/apps-config/pxe"
 # custom.ipxe (the bios-apply menu entry) serves a valid image.
 #
 # Operator flow:
-#   1. cd ~/Documents/github/bios-config && ./tools/build-bios-apply-img.sh
-#   2. cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+#   1. cd ~/github/bios-config && ./tools/build-bios-apply-img.sh
+#   2. cd ~/github/truenas-infra && ./manage.sh phase apps --apply
 # The phase is a no-op if the local image hasn't changed (size-based
 # idempotency in ensure_file_on_nas). If the sibling checkout isn't
 # present, the upload is skipped silently (phase apps keeps working

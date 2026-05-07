@@ -24,8 +24,8 @@ echo     curl -I ${cache_url}/bios-config/bios-apply.img
 echo     ls -la /mnt/tank/system/pxe/http/bios-config/bios-apply.img
 echo
 echo   * Rebuild and re-upload:
-echo     cd ~/Documents/github/bios-config && ./tools/build-bios-apply-img.sh
-echo     cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+echo     cd ~/github/bios-config && ./tools/build-bios-apply-img.sh
+echo     cd ~/github/truenas-infra && ./manage.sh phase apps --apply
 echo
 echo   * Runbook: https://wiki.w1.lv/runbooks/bios-apply-pxe-setup/
 echo

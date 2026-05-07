@@ -5,7 +5,7 @@
 #     wiki/docs/reference/links.md         (if the new host is a browser URL)
 #     mikrotik-infra/configs/dns.yaml      (keep in lockstep)
 #     mikrotik-infra/configs/fleet.yaml    (if shared-VLAN / firewall touches)
-# Then: cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+# Then: cd ~/github/wiki && ./tools/deploy.sh --verify
 #
 # Consumed by:
 #   - mikrotik-infra/manage.sh (option 6, "Sync DNS static records")

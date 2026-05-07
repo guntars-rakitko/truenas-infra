@@ -31,7 +31,7 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 - **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92.
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
-Local clones live at `/Users/gunrak/Documents/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
+Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
 
 ---
 
@@ -60,7 +60,7 @@ edit the matching wiki page in the same commit set.
 **Deploy the wiki** after the edit:
 
 ```sh
-cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+cd ~/github/wiki && ./tools/deploy.sh --verify
 ```
 
 The verify matrix (`./manage.sh phase verify`) catches structural drift

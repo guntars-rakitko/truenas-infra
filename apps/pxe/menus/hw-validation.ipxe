@@ -7,8 +7,8 @@
 # this validates the hardware those settings run on.
 #
 # Built in the sibling hw-validation repo:
-#   cd ~/Documents/github/hw-validation && ./tools/build-image.sh
-#   cd ~/Documents/github/truenas-infra && ./manage.sh phase apps --apply
+#   cd ~/github/hw-validation && ./tools/build-image.sh
+#   cd ~/github/truenas-infra && ./manage.sh phase apps --apply
 #
 # ─── Menu structure ─────────────────────────────────────────────────
 #
@@ -248,7 +248,7 @@ echo
 echo ERROR: hw-validation boot failed. Possible causes:
 echo   * ${cache_url}/hw-validation/latest/vmlinuz-lts 404 --
 echo     sibling hw-validation build artefact not uploaded.
-echo     Fix: cd ~/Documents/github/hw-validation
+echo     Fix: cd ~/github/hw-validation
 echo          ./tools/build-image.sh
 echo          cd ../truenas-infra && ./manage.sh phase apps --apply
 echo

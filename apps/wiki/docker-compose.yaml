@@ -1,7 +1,7 @@
 # Static wiki host — serves the MkDocs-built `site/` from the wiki repo.
 #
 # Content pushed via rsync from the operator laptop:
-#   cd ~/Documents/github/wiki && ./tools/deploy.sh
+#   cd ~/github/wiki && ./tools/deploy.sh
 # which drops files at /mnt/tank/system/apps-config/wiki/site/. nginx
 # serves read-only from that dir; no credentials, no DB, no admin surface.
 #

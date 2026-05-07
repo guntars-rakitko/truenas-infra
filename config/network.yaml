@@ -6,7 +6,7 @@
 #     here ALSO requires updating:
 #       wiki/docs/architecture/ip-plan.md     (NAS static allocations)
 #       wiki/docs/architecture/tls-split-horizon.md  (if mgmt/data split changes)
-#     Then: cd ~/Documents/github/wiki && ./tools/deploy.sh --verify
+#     Then: cd ~/github/wiki && ./tools/deploy.sh --verify
 
 # Physical NIC assignments.
 # TEMP NAS (Q170S1) device names (verified via live interface.query 2026-04-20):

@@ -72,8 +72,8 @@ here (it's a NAS-deployed monitoring service); the fleet tools ship
 with bios-config because they're "set the hardware to a canonical
 state" tools, which is bios-config's whole thesis.
 
-See: `~/Documents/github/bios-config/tools/amt_fleet_{audit,apply}.py`
-and `~/Documents/github/bios-config/amt/canonical.yaml`.
+See: `~/github/bios-config/tools/amt_fleet_{audit,apply}.py`
+and `~/github/bios-config/amt/canonical.yaml`.
 
 The two repos share:
 - `amt.py` — lives in bios-config, symlinked into this directory.

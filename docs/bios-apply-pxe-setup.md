@@ -62,7 +62,7 @@ sanboot --keep http://10.10.5.10:8080/bios-config/bios-apply.img
 In the sibling `bios-config` clone:
 
 ```sh
-cd ~/Documents/github/bios-config
+cd ~/github/bios-config
 ./tools/build-bios-apply-img.sh
 ```
 
@@ -90,7 +90,7 @@ firmware.)
 Back in `truenas-infra`:
 
 ```sh
-cd ~/Documents/github/truenas-infra
+cd ~/github/truenas-infra
 ./manage.sh phase apps --apply
 ```
 
