@@ -263,7 +263,7 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
 **Human-only emergency credentials** (NOT in Doppler — kept in
-1Password / Apple Passwords; Doppler is for credentials that
+Apple Passwords / iCloud Keychain; Doppler is for credentials that
 automation reads):
 
 - **TrueNAS root password** — UI/SSH login as `root` when the API
