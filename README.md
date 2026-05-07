@@ -16,15 +16,12 @@ cat bootstrap/01-bootstrap-notes.md
 doppler login
 doppler setup --project infrastructure --config ops
 
-# 3. Render .env from Doppler (manage.sh fetches per-key values at
-#    runtime; an explicit `env` rendering is also available for tools
-#    that need a file).
-./manage.sh env
-
-# 4. Bootstrap venv + run preflight.
+# 3. Bootstrap venv + run preflight.
+#    manage.sh fetches its credentials from Doppler at startup —
+#    no .env file is involved or required.
 ./manage.sh preflight
 
-# 5. Run a phase (dry-run by default).
+# 4. Run a phase (dry-run by default).
 ./manage.sh phase network
 ./manage.sh phase network --apply
 ```

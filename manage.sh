@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # manage.sh — truenas-infra phase dispatcher.
 #
-# Thin bash wrapper: decrypts .env, ensures the Python venv, and hands control
-# to the Python CLI (`truenas-infra` / `python -m truenas_infra.cli`).
+# Thin bash wrapper: fetches credentials from Doppler infrastructure/ops,
+# ensures the Python venv, and hands control to the Python CLI
+# (`truenas-infra` / `python -m truenas_infra.cli`). No .env file on disk.
 #
 # Usage:
 #     ./manage.sh                         # interactive menu

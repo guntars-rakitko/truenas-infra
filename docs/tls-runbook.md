@@ -126,17 +126,25 @@ registration. Replacement per "Rotate the CloudFlare API token" above.
 The Python client refuses to connect because `TRUENAS_HOST=nas.w1.lv`
 can't be resolved.
 
-Fallback: create a local `.env` in the repo root (gitignored) with:
+Fallback: temporarily flip `TRUENAS_HOST` to the raw IP in Doppler.
+`manage.sh` always fetches credentials live from `infrastructure/ops`,
+so editing those keys is the single source-of-truth path:
+
+```sh
+# Switch to raw IP (and disable strict TLS — IP doesn't match cert SAN)
+doppler secrets set TRUENAS_HOST=10.10.5.10 TRUENAS_VERIFY_SSL=false \
+  --project infrastructure --config ops
+
+# Run the operation as normal — manage.sh picks up the override.
+./manage.sh phase tls --apply
+
+# Restore once DNS is back.
+doppler secrets set TRUENAS_HOST=nas.w1.lv TRUENAS_VERIFY_SSL=true \
+  --project infrastructure --config ops
 ```
-TRUENAS_HOST=10.10.5.10
-TRUENAS_API_KEY=<existing key>
-TRUENAS_VERIFY_SSL=false
-```
-— `manage.sh` reads `.env` rendered from Doppler `infrastructure/ops`
-by `manage.sh env`; a hand-written `.env` overrides those values for
-this break-glass case. Full strict-TLS check won't pass (IP doesn't
-match cert SAN) which is why we flip `VERIFY_SSL=false`. Delete the
-override and re-render via `manage.sh env` when DNS comes back.
+
+Doppler's audit log captures both edits, which is cleaner than a
+gitignored `.env` that no one sees.
 
 ### Staging → Production switch (ever need to re-do it)
 
