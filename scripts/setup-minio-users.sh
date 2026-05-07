@@ -12,11 +12,6 @@
 # credentials are consumed by Velero, Longhorn, and MSSQL backup
 # CronJobs in-cluster (via DopplerSecret CRDs). Single canonical copy.
 #
-# Pre-Doppler this read sibling kube-infra SOPS files via `sops decrypt`.
-# Migrated 2026-05-07 (kube-infra #92 follow-up — zero SOPS in any
-# infra repo). The cross-repo `KUBE_INFRA` checkout dependency is also
-# gone.
-#
 # Prereqs:
 #   - mc installed and aliases set up (see setup-minio-buckets.sh)
 #   - doppler CLI installed + signed in (`doppler login`)

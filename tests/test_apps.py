@@ -366,16 +366,16 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
     homepage_yaml_sizes = {
         p.name: p.stat().st_size
         for p in sorted(_P("apps/homepage").glob("*.yaml"))
-        if p.name != "docker-compose.yaml" and not p.name.endswith(".sops.yaml")
+        if p.name != "docker-compose.yaml"
     }
     meshcentral_config_size = _P("apps/meshcentral/config.json").stat().st_size
     # amtctl app code + config — helper globs apps/amtctl/** and uploads
-    # every file except docker-compose.yaml, secrets.sops.yaml, Dockerfile.
+    # every file except docker-compose.yaml and Dockerfile.
     amtctl_file_sizes = {}
     for p in sorted(_P("apps/amtctl").rglob("*")):
         if not p.is_file():
             continue
-        if p.name in ("docker-compose.yaml", "Dockerfile") or p.name.endswith(".sops.yaml"):
+        if p.name in ("docker-compose.yaml", "Dockerfile"):
             continue
         amtctl_file_sizes[str(p.relative_to(_P("apps/amtctl")))] = p.stat().st_size
 
@@ -393,7 +393,7 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
         # because nginx bind-mounts the file, must exist before container starts).
         {"size": wiki_nginx_size, "mode": 0o100644},            # filesystem.stat wiki nginx.conf
         # Step 2a: homepage YAMLs (one stat per file, sorted alphabetically).
-        # docker-compose.yaml and *.sops.yaml excluded by the helper.
+        # docker-compose.yaml excluded by the helper.
         *[
             {"size": homepage_yaml_sizes[name], "mode": 0o100644}
             for name in sorted(homepage_yaml_sizes)

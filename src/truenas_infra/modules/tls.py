@@ -295,8 +295,8 @@ def run(
     if not token:
         log.error(
             "cloudflare_token_missing",
-            msg="CLOUDFLARE_API_TOKEN is empty. Add it to .env.sops — see "
-                "bootstrap/01-bootstrap-notes.md step 7.",
+            msg="CLOUDFLARE_API_TOKEN is empty. Add it to Doppler "
+                "`infrastructure/ops` → `SHARED_CLOUDFLARE_API_TOKEN`.",
         )
         return 2
 

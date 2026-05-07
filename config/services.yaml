@@ -19,8 +19,8 @@ nut:
   shutdown: BATT                    # BATT = shut down on battery (configurable)
   shutdowntimer: 30                 # seconds before shutdown
   # monuser/monpwd for NUT clients (K8s nodes will connect as these)
-  # Password lives in SOPS; left unset here so existing config keeps whatever
-  # TrueNAS generated. Add `monuser: upsmon` + monpwd via SOPS when wiring clients.
+  # Password lives in Doppler; left unset here so existing config keeps whatever
+  # TrueNAS generated. Add `monuser: upsmon` + monpwd via Doppler when wiring clients.
   monuser: upsmon
 
 tls:

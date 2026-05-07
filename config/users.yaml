@@ -1,6 +1,6 @@
 # Declarative user config.
 # Consumed by modules/users.py.
-# Passwords NOT stored here; live in `.env.sops` / `config/users.sops.yaml`.
+# Passwords NOT stored here; live in Doppler `infrastructure/ops` (TRUENAS_*).
 
 users:
   - username: svc-automation

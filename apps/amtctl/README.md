@@ -17,7 +17,7 @@ nodes. FastAPI sidecar polls each node's ME firmware via WS-MAN every
 | `main.py` | FastAPI app: background poller + endpoints + static UI serve |
 | `web/index.html` | Single-file dashboard (vanilla JS + CSS, no build) |
 | `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries. Shared with `bios-config` AMT tools (cross-repo read). |
-| `secrets.sops.yaml` | AMT admin creds (SOPS-encrypted). Shared with `bios-config` AMT tools. |
+| AMT admin creds | Doppler `infrastructure/ops` → `AMT_USER` + `AMT_PASSWORD`. `manage.sh apps` injects them as `AMTCTL_AMT_USER` / `AMTCTL_AMT_PASSWORD` env vars when rendering the compose. The same Doppler keys are read directly by `bios-config`'s AMT tools. |
 | `docker-compose.yaml` | python:3.13-alpine + runtime venv bootstrap |
 | `Dockerfile` | Reference (not used — compose does runtime install) |
 
@@ -79,8 +79,9 @@ The two repos share:
 - `amt.py` — lives in bios-config, symlinked into this directory.
 - `nodes.yaml` — lives here (dashboard is the primary owner of the
   fleet inventory); bios-config's tools read it cross-repo.
-- `secrets.sops.yaml` — lives here with the SOPS age keys;
-  bios-config's tools shell out to `sops -d` against this path.
+- AMT admin creds — Doppler `infrastructure/ops` → `AMT_USER` +
+  `AMT_PASSWORD`. Both repos read the canonical values from Doppler
+  at runtime; no shared file on disk.
 
 Discovery findings (2026-04-22 session; see bios-config for details):
 
@@ -100,8 +101,11 @@ Discovery findings (2026-04-22 session; see bios-config for details):
 (uploads to `/mnt/tank/system/apps-config/amtctl/config/nodes.yaml`),
 restart the app (`app.stop` + `app.start` — NOT `app.redeploy`).
 
-**Change AMT creds:** `sops apps/amtctl/secrets.sops.yaml` →
-`./manage.sh phase apps --apply` → delete + re-apply to refresh env.
+**Change AMT creds:** edit Doppler `infrastructure/ops` → `AMT_PASSWORD`
+(and `AMT_USER` if rotating that), then `./manage.sh phase apps --apply`
+to re-render the compose with the new env vars and restart the
+container. bios-config tools pick up the new value on their next run
+without further action.
 
 **Debug a probe failure:** hit
 `https://amtctl.w1.lv/api/nodes/<name>` for the full JSON dump
@@ -116,6 +120,8 @@ kub-prd-03 after a CPU swap — BIOS had reverted that setting.
 
 ## Security note
 
-AMT admin password is shared across all 6 nodes, stored SOPS-encrypted
-in `secrets.sops.yaml`. Rotate via MEBx (Ctrl-P during node POST) when
-needed; update this file + re-apply.
+AMT admin password is shared across all 6 nodes; canonical value lives
+in Doppler `infrastructure/ops` → `AMT_PASSWORD`. Rotate via MEBx
+(Ctrl-P during node POST) when needed; update the Doppler key + re-run
+`./manage.sh phase apps --apply` to push the new value into the
+running container.

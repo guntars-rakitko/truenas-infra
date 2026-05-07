@@ -6,7 +6,8 @@
 #   - Homepage customapi widgets via /api/nodes/{name}/power
 #
 # AMT creds are shared across all 6 nodes. Injected via compose env
-# from apps/amtctl/secrets.sops.yaml (rendered by _render_compose).
+# from Doppler `infrastructure/ops` (`AMT_USER`, `AMT_PASSWORD`)
+# substituted by _render_compose at phase apps --apply time.
 #
 # Image strategy: python:3.13-alpine base + runtime dependency install
 # into a persistent /venv bind mount. Avoids needing a registry for

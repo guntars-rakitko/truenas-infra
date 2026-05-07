@@ -37,14 +37,17 @@ CloudFlare tokens expire annually (or on demand). To rotate:
 
 1. Create a new token at dash.cloudflare.com with the same scope
    (Zone:Zone:Read + Zone:DNS:Edit on w1.lv).
-2. `sops .env.sops` → replace `CLOUDFLARE_API_TOKEN=...`.
+2. Edit Doppler `infrastructure/shr` → `SHARED_CLOUDFLARE_API_TOKEN`
+   with the new value (single edit covers cert-manager via DopplerSecret,
+   truenas-infra ACME, and operator scripts).
 3. Run `./manage.sh phase tls --apply` — `ensure_acme_authenticator`
    detects the token drift and calls `acme.dns.authenticator.update`
    in place (no CSR/cert churn).
 4. Revoke the old token in CloudFlare once confirmed.
 
-The same token is referenced from `kube-infra` for cert-manager —
-update both SOPS copies before revoking.
+All consumers (cert-manager DopplerSecret, truenas ACME, operator
+scripts) read the canonical value from Doppler — no per-repo copies
+to keep in lockstep.
 
 ### Force a renewal (no 60-day wait)
 
@@ -129,9 +132,11 @@ TRUENAS_HOST=10.10.5.10
 TRUENAS_API_KEY=<existing key>
 TRUENAS_VERIFY_SSL=false
 ```
-— `manage.sh` prefers `.env` over `.env.sops`. Full strict-TLS check
-won't pass (IP doesn't match cert SAN) which is why we flip
-`VERIFY_SSL=false`. Revert when DNS comes back.
+— `manage.sh` reads `.env` rendered from Doppler `infrastructure/ops`
+by `manage.sh env`; a hand-written `.env` overrides those values for
+this break-glass case. Full strict-TLS check won't pass (IP doesn't
+match cert SAN) which is why we flip `VERIFY_SSL=false`. Delete the
+override and re-render via `manage.sh env` when DNS comes back.
 
 ### Staging → Production switch (ever need to re-do it)
 

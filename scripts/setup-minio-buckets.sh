@@ -10,8 +10,11 @@
 # Prereqs:
 #   - mc installed locally (`brew install minio-mc`)
 #   - `mc alias set nas-prd https://s3-prd.w1.lv:9000 ...` already done
-#     (with the MINIO_ROOT credentials from apps/minio-prd/secrets.sops.yaml)
+#     (with `MINIO_ROOT_USER_PRD` / `MINIO_ROOT_PASSWORD_PRD` from
+#     Doppler `infrastructure/ops`)
 #   - `mc alias set nas-dev https://s3-dev.w1.lv:9000 ...` already done
+#     (with `MINIO_ROOT_USER_DEV` / `MINIO_ROOT_PASSWORD_DEV` from
+#     Doppler `infrastructure/ops`)
 #
 # Verification: `mc ls nas-{dev,prd}` shows all four buckets.
 

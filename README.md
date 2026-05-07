@@ -12,13 +12,19 @@ end-to-end from these scripts.
 # 1. One-time manual steps (API key, static IP, SSH) — see bootstrap/.
 cat bootstrap/01-bootstrap-notes.md
 
-# 2. Put the API key into the encrypted env file.
-sops .env.sops
+# 2. Sign in to Doppler and select the infrastructure/ops config.
+doppler login
+doppler setup --project infrastructure --config ops
 
-# 3. Bootstrap venv + run preflight.
+# 3. Render .env from Doppler (manage.sh fetches per-key values at
+#    runtime; an explicit `env` rendering is also available for tools
+#    that need a file).
+./manage.sh env
+
+# 4. Bootstrap venv + run preflight.
 ./manage.sh preflight
 
-# 4. Run a phase (dry-run by default).
+# 5. Run a phase (dry-run by default).
 ./manage.sh phase network
 ./manage.sh phase network --apply
 ```
