@@ -29,6 +29,7 @@ BUCKETS=(
     longhorn        # Longhorn — volume + system backups
     mssql-backups   # SQL Server — BACKUP DATABASE TO URL targets
     etcd-snapshots  # CronJob — talosctl etcd snapshot
+    loki-chunks     # Loki — log chunks (compressed log streams + index)
 )
 
 # ─── Apply ───────────────────────────────────────────────────────────────────
