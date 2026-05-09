@@ -25,11 +25,12 @@ set -euo pipefail
 # (separation is at the alias level, not the bucket name).
 ALIASES=(nas-dev nas-prd)
 BUCKETS=(
-    velero          # Velero — K8s manifest backups
-    longhorn        # Longhorn — volume + system backups
-    mssql-backups   # SQL Server — BACKUP DATABASE TO URL targets
-    etcd-snapshots  # CronJob — talosctl etcd snapshot
-    loki-chunks     # Loki — log chunks (compressed log streams + index)
+    velero               # Velero — K8s manifest backups
+    longhorn             # Longhorn — volume + system backups
+    mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets
+    etcd-snapshots       # CronJob — talosctl etcd snapshot
+    loki-chunks          # Loki — log chunks (compressed log streams + index)
+    pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
 )
 
 # ─── Apply ───────────────────────────────────────────────────────────────────
