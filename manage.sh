@@ -66,8 +66,10 @@ _DOPPLER_KEYS=(
 for _k in "${_DOPPLER_KEYS[@]}"; do
     if ! _v=$(doppler secrets get "$_k" --project infrastructure --config ops \
                 --plain --silent 2>&1); then
-        # Some optional keys (TRUENAS_ROOT_PASSWORD) may not be set yet; only
-        # the env-var-required block below complains about the truly required ones.
+        # Optional keys (TRUENAS_ADMIN_USER / TRUENAS_ADMIN_PASSWORD,
+        # populated 2026-05-12 for emergency Web UI Shell access) may
+        # not be set yet on older installs; only the env-var-required
+        # block below complains about the truly required keys.
         if [[ "$_k" == TRUENAS_HOST || "$_k" == TRUENAS_API_KEY ]]; then
             echo -e "${RED}ERROR: Failed to fetch '$_k' from Doppler:${NC}" >&2
             echo "$_v" >&2

@@ -273,19 +273,31 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 - `TRUENAS_NUT_MONPWD`
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
-**Human-only emergency credentials** (NOT in Doppler — kept in
-Apple Passwords / iCloud Keychain; Doppler is for credentials that
-automation reads):
+**Emergency / break-glass credentials** (operator-typed-only paths
+where Apple Passwords is the canonical store; Doppler holds the
+machine-readable copy):
 
-- **TrueNAS root password** — UI/SSH login as `root` when the API
-  path is broken. Username is the constant `root` (no Doppler key).
-  Currently shares value with `AMT_PASSWORD` — see
-  [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)
-  for rotation to a fresh distinct value.
+- **TrueNAS admin (Web UI Shell + emergency console)** — username +
+  password rotated 2026-05-12 (closes
+  [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)).
+  No longer shares value with `AMT_PASSWORD` (the anti-pattern that
+  motivated the rotation). Lives in:
+    * Doppler `infrastructure/ops` → `TRUENAS_ADMIN_USER` +
+      `TRUENAS_ADMIN_PASSWORD` (machine-readable copy for future DR
+      scripts + as the canonical source the operator pulls from)
+    * Apple Passwords → `TrueNAS root` entry (operator-typed mirror for
+      browser autofill on the Web UI Shell login). Update both in
+      lockstep on rotation.
+  Note: SSH password auth is disabled at the sshd daemon (key-only),
+  so this credential is for **Web UI Shell** access — for any
+  destructive operation that the API can't do (see
+  `wiki/docs/runbooks/rotate-amt-credentials.md` for an example of
+  using the API+cronjob workaround to call `rm` as root).
 - **SSH service account name** — `svc-automation` (the user the API
   key is bound to; also the SSH username for ad-hoc operator shell
-  work). It's a convention, not a credential — documented here, not
-  stored in Doppler. The API key is in Doppler as `TRUENAS_API_KEY`.
+  work, when configured). It's a convention, not a credential —
+  documented here, not stored in Doppler. The API key is in Doppler
+  as `TRUENAS_API_KEY`.
 
 **Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
 
