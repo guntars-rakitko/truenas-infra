@@ -10,7 +10,12 @@ nut:
   # Driver string format is "<driver>$<model>" (see ups.driver_choices).
   # For generic APC Smart-UPS over USB:
   driver: "usbhid-ups$Smart-UPS (USB)"
-  port: auto                        # NUT auto-detects USB HID device
+  port: /dev/uhid                   # APC Smart-UPS USB. `auto` worked on
+                                    # the old tempnas but on the Beelink +
+                                    # TrueNAS 25.10.3.1 the NUT auto-detect
+                                    # failed silently — explicit /dev/uhid
+                                    # (visible in ups.port_choices) was the
+                                    # path that started cleanly (2026-05-15).
   mode: MASTER                      # this NAS runs the NUT server
   # Service-level bindip isn't a field on ups.config in 25.10 — NUT listens
   # on the port globally and we rely on mikrotik-infra firewall + the fact
@@ -18,9 +23,15 @@ nut:
   remoteport: 3493
   shutdown: BATT                    # BATT = shut down on battery (configurable)
   shutdowntimer: 30                 # seconds before shutdown
-  # monuser/monpwd for NUT clients (K8s nodes will connect as these)
-  # Password lives in Doppler; left unset here so existing config keeps whatever
-  # TrueNAS generated. Add `monuser: upsmon` + monpwd via Doppler when wiring clients.
+  # monuser/monpwd for NUT clients (K8s nodes connect as these).
+  # monuser: declared here.
+  # monpwd: NOT in YAML — read from Doppler `TRUENAS_NUT_MONPWD` by
+  # modules/nut.py at runtime. Wiring this is REQUIRED on fresh installs:
+  # without monpwd, upsd exits silently (no log output) and `service.control
+  # START ups` succeeds but the service stays STOPPED. Discovered on the
+  # Beelink rebuild 2026-05-15. The module sets monpwd only when ups.config
+  # reports it empty (idempotent + can't compare against the hidden live
+  # value), so existing installs are untouched.
   monuser: upsmon
 
 tls:

@@ -19,6 +19,7 @@ VLAN 5, same subnet — no routing needed).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,11 +44,17 @@ class NutSpec:
     shutdown: str = "BATT"       # BATT | LOWBATT
     shutdowntimer: int = 30      # seconds
     monuser: str = "upsmon"
+    monpwd: str = ""             # NOT from YAML — read from TRUENAS_NUT_MONPWD env
 
 
 def load_nut_config(path: Path) -> NutSpec:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     nut = raw.get("nut") or {}
+    # monpwd is a secret — never persisted in YAML, only read from env.
+    # manage.sh exports TRUENAS_NUT_MONPWD from Doppler. Without it, upsd
+    # exits silently after start (no log output) because it can't bind the
+    # upsmon user, leaving the service in STOPPED state despite a successful
+    # `service.control START`. Discovered 2026-05-15 on the Beelink rebuild.
     return NutSpec(
         enable=bool(nut.get("enable", True)),
         identifier=nut.get("identifier", "ups"),
@@ -59,6 +66,7 @@ def load_nut_config(path: Path) -> NutSpec:
         shutdown=str(nut.get("shutdown", "BATT")).upper(),
         shutdowntimer=int(nut.get("shutdowntimer", 30)),
         monuser=nut.get("monuser", "upsmon"),
+        monpwd=os.environ.get("TRUENAS_NUT_MONPWD", ""),
     )
 
 
@@ -91,6 +99,16 @@ def ensure_ups_config(cli: Any, *, spec: NutSpec, apply: bool) -> Diff:
     for k, v in desired.items():
         if live.get(k) != v:
             changes[k] = v
+
+    # monpwd handled separately: ups.config always returns "" (the value
+    # is never echoed back for security). So we can't detect a drift.
+    # Strategy: set monpwd from env ONLY when live shows empty (first-time
+    # bootstrap on a fresh install). After that, the password is treated
+    # as immutable from this phase's perspective. To rotate, manually
+    # clear monpwd via the UI (or `ups.update monpwd=""`) then re-run
+    # phase nut — the empty value triggers re-set from Doppler.
+    if spec.monpwd and not live.get("monpwd"):
+        changes["monpwd"] = spec.monpwd
 
     if not changes:
         return Diff.noop(live)
