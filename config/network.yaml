@@ -9,17 +9,18 @@
 #     Then: cd ~/github/wiki && ./tools/deploy.sh --verify
 
 # Physical NIC assignments.
-# TEMP NAS (Q170S1) device names (verified via live interface.query 2026-04-20):
-#   enp0s31f6 (MAC 38:d5:47:ac:13:74) — Intel I219-LM 1G = mgmt (ether8 on CRS310)
-#   enp4s0    (MAC 02:26:26:02:10:00) — Intel I226-V 2.5G (M.2 add-in) = trunk (ether7 on CRS310)
+# Beelink ME Mini device names (verified 2026-05-15 via lspci/ethtool/dmesg
+# on the post-RMA install). Both NICs are Intel I226-V 2.5GbE controllers
+# (PCI ID 8086:125c, driver igc, firmware 2025:8a6) — same chipset family
+# as the kube cluster's data NICs, mature mainline kernel support, no
+# ASPM/TX-stall quirks. Each NIC is on its own PCIe 3.0 x1 lane (~4 Gb/s).
 #
-# Original Beelink ME Mini device names (kept as reference for RMA migration):
-#   enp2s0 — NIC2 = mgmt
-#   enp1s0 — NIC1 = trunk
+#   enp1s0 (bus 0000:01:00.0, MAC 78:55:36:07:25:93) — Intel I226-V = trunk (ether7 on CRS310)
+#   enp2s0 (bus 0000:02:00.0, MAC 78:55:36:07:25:92) — Intel I226-V = mgmt  (ether8 on CRS310)
 nics:
   # Mgmt NIC (untagged VLAN 5).
   mgmt:
-    device: enp0s31f6
+    device: enp2s0
     role: management
     vlan: null            # untagged
     ipv4: 10.10.5.10/24
@@ -34,7 +35,7 @@ nics:
   # Trunk NIC (tagged VLANs 10/15/20).
   # Physical interface itself has no IP; sub-interfaces below.
   trunk:
-    device: enp4s0
+    device: enp1s0
     role: data
     mtu: 1500
     vlans:
