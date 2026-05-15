@@ -90,8 +90,8 @@ When upgrading, update the pinned version here and re-verify all scripts against
 |---|---|
 | Device | Beelink ME Mini (post-RMA unit; 3.3V rail + ASM2824 link-training defect fixed in units manufactured after 2025-09-08) |
 | CPU | Intel N150 (4 E-cores, no HT) |
-| RAM | 12 GB LPDDR5 (soldered) |
-| Storage | 6× M.2 NVMe slots — 1× 256 GB PM981 (boot) + 5× 1 TB NVMe in RAIDZ1 (3× PM981a + 2× PM9A1). Slot 4 is PCIe 3.0 x2 (boot); slots 1, 2, 3, 5, 6 are PCIe 3.0 x1 |
+| RAM | 16 GB LPDDR5 (soldered; reads as 16.0 GB via `system.info` — earlier "12 GB" spec was wrong) |
+| Storage | 6× M.2 NVMe slots — 1× 256 GB PM981 boot (`nvme3n1`, S/N `S444NX0N496890`) + 5× 1 TB NVMe in RAIDZ1 tank (`nvme0n1`+`nvme1n1`+`nvme2n1` = 3× PM981a, `nvme4n1`+`nvme5n1` = 2× PM9A1). Slot 4 is PCIe 3.0 x2 (boot); slots 1, 2, 3, 5, 6 are PCIe 3.0 x1 |
 | NIC1 | Intel **I226-V** 2.5G (`igc` driver, `enp1s0`, MAC `78:55:36:07:25:93`) — data, tagged trunk carrying VLANs 10 / 15 / 20 (sub-interfaces 10.10.10.10 / 10.10.15.10 / 10.10.20.10) |
 | NIC2 | Intel **I226-V** 2.5G (`igc` driver, `enp2s0`, MAC `78:55:36:07:25:92`) — management, untagged VLAN 5 (10.10.5.10) |
 | OS | TrueNAS Community Edition 25.10.3.1 (codename Goldeye) |

@@ -18,18 +18,21 @@ pool:
     #   slot 5 → PM9A1 1TB → tank
     #   slot 6 → PM9A1 1TB → tank
     type: RAIDZ1
+    # Tank devnames resolved 2026-05-15 via disk.query against the live
+    # post-install NAS. nvme3n1 is the 256GB PM981 boot drive (managed
+    # by TrueNAS installer as boot-pool) — intentionally NOT in tank.
+    #   nvme0n1  PM981a-H7  S/N S4GSNF0N301379   1TB  tank
+    #   nvme1n1  PM981a-H1  S/N S4GRNX0NA00357   1TB  tank
+    #   nvme2n1  PM981a-H1  S/N S4GRNX1RB33857   1TB  tank
+    #   nvme3n1  PM981 256GB S/N S444NX0N496890  256GB  boot-pool (excluded)
+    #   nvme4n1  PM9A1      S/N S6H2NF0WC37392   1TB  tank
+    #   nvme5n1  PM9A1      S/N S6H2NF0WC37390   1TB  tank
     disks:
-      # FIXME: Linux NVMe enumeration order is unknown until first boot.
-      # After installing TrueNAS, SSH/Web UI Shell into the box and run:
-      #   sudo nvme list
-      #   sudo lsblk -d -o NAME,SIZE,MODEL,SERIAL
-      # to map devnames → physical slots → roles, then update this block
-      # with the 5 tank devnames (the 6th NVMe is the boot drive).
       - nvme0n1
       - nvme1n1
       - nvme2n1
-      - nvme3n1
       - nvme4n1
+      - nvme5n1
   ashift: 12
   autotrim: true
 
