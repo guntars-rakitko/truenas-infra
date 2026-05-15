@@ -15,12 +15,15 @@ kernel:
     - nvme_core.default_ps_max_latency_us=0   # disable NVMe APST
     - pcie_aspm=off                             # disable PCIe Active State Power Management
     - pcie_port_pm=off                          # disable PCIe port power management
-    # IPv6 is unused in this homelab — no routable v6 prefix, no v6 gateway,
-    # no IPv6 service consumers (kube clusters, MinIO, NFS, SMB all v4).
-    # Disabling the stack at the kernel level eliminates link-local fe80::
-    # addresses on every NIC, stops the UI from binding v6 wildcards, and
-    # removes a small attack surface for any future v6-aware exploit.
-    - ipv6.disable=1
+    # NOTE: do NOT add `ipv6.disable=1` here. Tried 2026-05-15, broke
+    # networking on next reboot — both NICs failed to bring up link.
+    # Hypothesis: TrueNAS Goldeye's systemd-networkd configs reference
+    # v6 directives that fail to parse when the v6 stack is absent.
+    # Recovery: console option 8 (Linux Shell) →
+    #   `sudo midclt call system.advanced.update '{"kernel_extra_options":""}'`
+    # then reboot. The v6 stack is already inert (no v6 routes, no v6
+    # gateway, only kernel-mandatory link-local fe80:: addresses) so
+    # disabling it at the kernel level isn't worth the fragility.
 
 system:
   # Timezone: UTC for consistent timestamps across infra + log correlation
