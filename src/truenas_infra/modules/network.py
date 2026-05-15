@@ -399,21 +399,35 @@ def ensure_mgmt_interface(
 def ensure_ui_bindip(cli: Any, *, addresses: tuple[str, ...], apply: bool) -> Diff:
     """Ensure the TrueNAS web UI is bound only to the given IPv4 addresses.
 
-    By default TrueNAS binds the UI to all interfaces (`0.0.0.0`). Restricting
-    to `["10.10.5.10"]` means the UI is only reachable from VLAN 5 (mgmt).
+    Also clears the IPv6 wildcard binding (`ui_v6address: ['::']`) — this
+    homelab is IPv4-only (no routable v6 prefix, no v6 gateway, no v6 service
+    consumers). Belt-and-suspenders for the `ipv6.disable=1` kernel arg in
+    config/tunables.yaml: even if a future reboot misses the boot arg, the
+    UI service won't expose v6.
 
-    After updating `ui_address`, we also call `system.general.ui_restart` to
-    actually apply the change to nginx — the update alone doesn't take effect
-    until the UI service restarts.
+    By default TrueNAS binds the UI to all interfaces (`0.0.0.0`) + v6 (`::`).
+    Restricting to `["10.10.5.10"]` (v4) + `[]` (v6) means the UI is only
+    reachable from VLAN 5 (mgmt) over IPv4.
+
+    After updating, we call `system.general.ui_restart` to actually apply the
+    change to nginx — the update alone doesn't take effect until the UI
+    service restarts.
     """
     live = cli.call("system.general.config")
 
     desired = list(addresses)
+    desired_v6: list[str] = []
     current = list(live.get("ui_address") or [])
-    if sorted(current) == sorted(desired):
+    current_v6 = list(live.get("ui_v6address") or [])
+
+    if sorted(current) == sorted(desired) and sorted(current_v6) == sorted(desired_v6):
         return Diff.noop(live)
 
-    changes = {"ui_address": desired}
+    changes: dict[str, Any] = {}
+    if sorted(current) != sorted(desired):
+        changes["ui_address"] = desired
+    if sorted(current_v6) != sorted(desired_v6):
+        changes["ui_v6address"] = desired_v6
     if apply:
         updated = cli.call("system.general.update", changes)
         # Trigger the UI service restart so nginx actually rebinds.
@@ -487,7 +501,30 @@ def run(
         )
         pending = pending or diff.changed
 
-    # 3. Commit all interface changes. Rolling forward — no rollback window.
+    # 4. Global hostname/domain/DNS/gateway — set BEFORE interface.commit.
+    #    Why: commit() reconfigures the kernel network stack and drops the
+    #    operator's WebSocket connection. The Python client retries from WG,
+    #    which requires the NAS to have a default gateway for return packets
+    #    (10.10.5.1 → router → WG → operator). If the gateway is only set
+    #    AFTER commit, reconnection times out before we can configure it,
+    #    leaving the NAS in a partial state (static IP applied but gateway
+    #    missing). Lesson from 2026-05-15 fresh install.
+    #
+    #    Safe to set before commit: network.configuration.update is a
+    #    separate API (not part of interface commit) and applies immediately
+    #    to TrueNAS's config DB. The interface.commit step then reconciles
+    #    interface + gateway + DNS atomically with the kernel.
+    diff = ensure_global_network(
+        cli,
+        hostname=cfg.hostname,
+        domain=cfg.domain,
+        dns=cfg.dns_servers,
+        ipv4_gateway=cfg.mgmt.gateway,
+        apply=ctx.apply,
+    )
+    log.info("global_network_ensured", action=diff.action, changed=diff.changed)
+
+    # 5. Commit all interface changes. Rolling forward — no rollback window.
     #    (Rationale in `commit_network_changes` docstring.)
     if reachable_fn is None and ctx.apply and pending:
         reachable_fn = make_tcp_reachable_probe(ctx.config.truenas_host, port=443)
@@ -502,18 +539,9 @@ def run(
     if pending and ctx.apply:
         log.info("interface_changes_committed")
 
-    # 4. Global hostname/domain/DNS/gateway (separate API; not part of interface commit).
-    diff = ensure_global_network(
-        cli,
-        hostname=cfg.hostname,
-        domain=cfg.domain,
-        dns=cfg.dns_servers,
-        ipv4_gateway=cfg.mgmt.gateway,
-        apply=ctx.apply,
-    )
-    log.info("global_network_ensured", action=diff.action, changed=diff.changed)
-
-    # 5. Restrict UI bindip to the mgmt IP (strip the /N CIDR bits).
+    # 6. Restrict UI bindip to the mgmt IP (strip the /N CIDR bits).
+    #    Runs AFTER commit — by now the mgmt interface has the static IP
+    #    bound, so the UI service can listen on it without ECONNREFUSED.
     mgmt_addr = cfg.mgmt.ipv4.split("/", 1)[0]
     if mgmt_addr:
         diff = ensure_ui_bindip(cli, addresses=(mgmt_addr,), apply=ctx.apply)
