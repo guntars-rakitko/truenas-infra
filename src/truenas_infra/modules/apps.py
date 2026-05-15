@@ -822,6 +822,16 @@ def run(
         _ensure_amtctl_config_via_ctx(cli, ctx, log)
     if only in (None, "stress-dashboard"):
         _ensure_stress_dashboard_config_via_ctx(cli, ctx, log)
+    # PXE build context MUST land before `app.create` for the `pxe` app:
+    # the compose spec uses `build: /mnt/tank/system/apps-config/pxe/build`,
+    # and TrueNAS's app.create immediately runs `docker compose up` which
+    # invokes `docker build`. If the build dir doesn't exist yet, the build
+    # fails with `unable to prepare context: path … not found` and the whole
+    # phase halts before any other app is created. Menus/scripts/bios-apply
+    # files stay in the post-create block — those are read at runtime via
+    # live bind-mounts and don't need to exist at container-create time.
+    if only in (None, "pxe"):
+        _ensure_pxe_build_context_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -840,13 +850,11 @@ def run(
     if only in (None, "talos-updater"):
         _ensure_talos_updater_via_ctx(cli, ctx, log)
 
-    # 4. Homelab PXE — independent TFTP/HTTP stack (apps/pxe/). Uploads
-    # the container build context (Dockerfile + iPXE build inputs),
-    # the TFTP-served menu tree (menu.ipxe, boot.cfg, menus/*.ipxe),
-    # and installs the pxe-cache cronjob (weekly mirror of distro /
-    # utility assets from upstream origins).
+    # 4. Homelab PXE — remaining file uploads. Build context was already
+    # uploaded in step 2a (pre-app-create); these are read at runtime by
+    # the running pxe container via live bind-mounts (TFTP menu tree,
+    # download scripts, optional bios-apply/hw-validation artifacts).
     if only in (None, "pxe"):
-        _ensure_pxe_build_context_via_ctx(cli, ctx, log)
         _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
         _ensure_pxe_scripts_via_ctx(cli, ctx, log)
         _ensure_pxe_bios_apply_img_via_ctx(cli, ctx, log)
