@@ -4,30 +4,34 @@
 pool:
   name: tank
   topology:
-    # TEMP NAS LAYOUT (Beelink RMA in flight ~3-4 weeks, 2026-04-20 onward):
-    # Single-drive STRIPE pool on a spare ASUS Q170S1 K8s-node-class machine.
-    # Boot pool is on a USB stick (also temporary).
-    # No redundancy — acceptable for test period; data is reproducible
-    # (Longhorn volumes, Velero backups, PXE assets).
+    # Beelink ME Mini layout (post-RMA install, 2026-05):
+    # 5-wide RAIDZ1 across the 5x 1TB NVMe drives. Slot 4 holds the
+    # 256GB boot drive (PM981) which is managed by the TrueNAS installer
+    # as `boot-pool` — NOT part of tank, not listed here.
     #
-    # Post-RMA target (6-drive RAIDZ1 on new Beelink ME Mini with fixed
-    # 3.3V rail) is preserved as commented block below for when we migrate.
-    type: STRIPE
+    # Physical slot map (operator's labeling — see operator plan file for
+    # serial-level detail and selection rationale):
+    #   slot 1 → PM981a 1TB → tank
+    #   slot 2 → PM981a 1TB → tank
+    #   slot 3 → PM981a 1TB → tank
+    #   slot 4 → PM981 256GB → boot-pool (TrueNAS installer manages)
+    #   slot 5 → PM9A1 1TB → tank
+    #   slot 6 → PM9A1 1TB → tank
+    type: RAIDZ1
     disks:
-      - nvme0n1   # 1x 1TB PM981 (from drawer) — temp
+      # FIXME: Linux NVMe enumeration order is unknown until first boot.
+      # After installing TrueNAS, SSH/Web UI Shell into the box and run:
+      #   sudo nvme list
+      #   sudo lsblk -d -o NAME,SIZE,MODEL,SERIAL
+      # to map devnames → physical slots → roles, then update this block
+      # with the 5 tank devnames (the 6th NVMe is the boot drive).
+      - nvme0n1
+      - nvme1n1
+      - nvme2n1
+      - nvme3n1
+      - nvme4n1
   ashift: 12
   autotrim: true
-
-  # Post-RMA layout (restore when new Beelink arrives):
-  # topology:
-  #   type: RAIDZ1
-  #   disks:
-  #     - nvme0n1
-  #     - nvme1n1
-  #     - nvme2n1
-  #     - nvme3n1
-  #     - nvme4n1
-  #     - nvme5n1
 
 # Defaults applied to every dataset unless overridden.
 defaults:
