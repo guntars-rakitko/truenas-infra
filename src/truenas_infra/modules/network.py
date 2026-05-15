@@ -399,15 +399,22 @@ def ensure_mgmt_interface(
 def ensure_ui_bindip(cli: Any, *, addresses: tuple[str, ...], apply: bool) -> Diff:
     """Ensure the TrueNAS web UI is bound only to the given IPv4 addresses.
 
-    Also clears the IPv6 wildcard binding (`ui_v6address: ['::']`) — this
-    homelab is IPv4-only (no routable v6 prefix, no v6 gateway, no v6 service
-    consumers). Belt-and-suspenders for the `ipv6.disable=1` kernel arg in
-    config/tunables.yaml: even if a future reboot misses the boot arg, the
-    UI service won't expose v6.
+    IPv6 binding is left at TrueNAS default (`['::']` wildcard). Setting it
+    to anything else (like `['::1']` localhost) hits TrueNAS validation
+    "ipv6 address is not associated with this machine" — the validator
+    checks the value against actual interface-bound v6 addresses, and after
+    the `ipv6.disable=1` kernel arg from config/tunables.yaml takes effect,
+    no v6 address exists on the machine, so any non-wildcard v6 value would
+    be rejected.
 
-    By default TrueNAS binds the UI to all interfaces (`0.0.0.0`) + v6 (`::`).
-    Restricting to `["10.10.5.10"]` (v4) + `[]` (v6) means the UI is only
-    reachable from VLAN 5 (mgmt) over IPv4.
+    Defense-in-depth for v6 is therefore single-layer: kernel-level disable.
+    No external client can reach the v6 wildcard listener because the kernel
+    won't initialize the v6 stack at all (lsof -i6 returns empty after the
+    next reboot).
+
+    By default TrueNAS binds the UI to all interfaces (`0.0.0.0`) on v4.
+    Restricting to `["10.10.5.10"]` means the UI is only reachable from
+    VLAN 5 (mgmt) over IPv4.
 
     After updating, we call `system.general.ui_restart` to actually apply the
     change to nginx — the update alone doesn't take effect until the UI
@@ -416,18 +423,11 @@ def ensure_ui_bindip(cli: Any, *, addresses: tuple[str, ...], apply: bool) -> Di
     live = cli.call("system.general.config")
 
     desired = list(addresses)
-    desired_v6: list[str] = []
     current = list(live.get("ui_address") or [])
-    current_v6 = list(live.get("ui_v6address") or [])
-
-    if sorted(current) == sorted(desired) and sorted(current_v6) == sorted(desired_v6):
+    if sorted(current) == sorted(desired):
         return Diff.noop(live)
 
-    changes: dict[str, Any] = {}
-    if sorted(current) != sorted(desired):
-        changes["ui_address"] = desired
-    if sorted(current_v6) != sorted(desired_v6):
-        changes["ui_v6address"] = desired_v6
+    changes = {"ui_address": desired}
     if apply:
         updated = cli.call("system.general.update", changes)
         # Trigger the UI service restart so nginx actually rebinds.
