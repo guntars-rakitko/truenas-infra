@@ -21,8 +21,25 @@ nut:
   # on the port globally and we rely on mikrotik-infra firewall + the fact
   # that only VLAN 5 routes to the NAS for management traffic.
   remoteport: 3493
-  shutdown: BATT                    # BATT = shut down on battery (configurable)
-  shutdowntimer: 30                 # seconds before shutdown
+  # Remote Monitor — allow remote NUT clients (in-cluster nut-exporter on
+  # 10.10.5.10:3493, future Talos-side upsmon slaves) to connect to upsd.
+  # Without this, upsd refuses non-loopback queries with "Access denied"
+  # and the kube-infra nut-exporter scrape fails. Enabled live via UI on
+  # 2026-05-16; codified here so the next `phase nut --apply` won't drift
+  # it back off. Maps to `ups.config.rmonitor`.
+  rmonitor: true
+  # LOWBATT is the right shutdown trigger for our load profile: the
+  # Beelink NAS draws ~25 W and 6× kube nodes ~320 W on a Smart-UPS SMT750
+  # (~500 VA usable) — the UPS sustains the whole rack ~5–8 min on battery.
+  # The previous BATT + 30s combo killed the NAS on every ≥30s utility
+  # blip, including the routine 90s grid hiccups we see in this neighborhood
+  # (5 events in May 2026 so far). LOWBATT defers shutdown until the UPS
+  # signals "battery low" — gives the cluster the full runtime envelope
+  # and only kills services when power genuinely won't return in time.
+  # shutdowntimer still applies as a grace before init 0 once the trigger
+  # fires; 60s is enough for in-flight requests + filesystem sync.
+  shutdown: LOWBATT
+  shutdowntimer: 60                 # grace seconds after shutdown trigger fires
   # monuser/monpwd for NUT clients (K8s nodes connect as these).
   # monuser: declared here.
   # monpwd: NOT in YAML — read from Doppler `TRUENAS_NUT_MONPWD` by
