@@ -41,6 +41,12 @@ class NutSpec:
     port: str = "auto"
     mode: str = "MASTER"         # MASTER | SLAVE
     remoteport: int = 3493
+    rmonitor: bool = False       # Allow remote NUT clients to connect to upsd. Required
+                                 # for the in-cluster nut-exporter (10.10.5.10:3493) plus
+                                 # any K8s-side `upsmon` slaves. Without it upsd binds only
+                                 # to 127.0.0.1 and remote queries fail with "Access denied".
+                                 # Maps to TrueNAS `ups.config.rmonitor` (Remote Monitor
+                                 # checkbox in the UI). Enabled live 2026-05-16.
     shutdown: str = "BATT"       # BATT | LOWBATT
     shutdowntimer: int = 30      # seconds
     monuser: str = "upsmon"
@@ -63,6 +69,7 @@ def load_nut_config(path: Path) -> NutSpec:
         port=str(nut.get("port", "auto")),
         mode=str(nut.get("mode", "MASTER")).upper(),
         remoteport=int(nut.get("remoteport", 3493)),
+        rmonitor=bool(nut.get("rmonitor", False)),
         shutdown=str(nut.get("shutdown", "BATT")).upper(),
         shutdowntimer=int(nut.get("shutdowntimer", 30)),
         monuser=nut.get("monuser", "upsmon"),
@@ -75,7 +82,7 @@ def load_nut_config(path: Path) -> NutSpec:
 
 _MANAGED_UPS_FIELDS = (
     "identifier", "description", "driver", "port",
-    "mode", "remoteport", "shutdown", "shutdowntimer", "monuser",
+    "mode", "remoteport", "rmonitor", "shutdown", "shutdowntimer", "monuser",
 )
 
 
@@ -90,6 +97,7 @@ def ensure_ups_config(cli: Any, *, spec: NutSpec, apply: bool) -> Diff:
         "port": spec.port,
         "mode": spec.mode,
         "remoteport": spec.remoteport,
+        "rmonitor": spec.rmonitor,
         "shutdown": spec.shutdown,
         "shutdowntimer": spec.shutdowntimer,
         "monuser": spec.monuser,

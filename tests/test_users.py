@@ -360,6 +360,251 @@ def test_ensure_email_alerts_dry_run_no_writes() -> None:
     assert "mail.update" not in call_names
 
 
+# ─── SMTP / SES coverage ──────────────────────────────────────────────────────
+
+
+def test_load_users_config_parses_smtp_block(tmp_path: Path) -> None:
+    from truenas_infra.modules.users import load_users_config
+
+    yaml_file = tmp_path / "users.yaml"
+    yaml_file.write_text(
+        textwrap.dedent(
+            """
+            email_alerts:
+              from_email: nas@w1.lv
+              from_name: TrueNAS NAS
+              smtp:
+                host: email-smtp.eu-north-1.amazonaws.com
+                port: 587
+                security: tls
+                auth: true
+                user_env: SHARED_SES_W1_SMTP_USERNAME
+                password_env: SHARED_SES_W1_SMTP_PASSWORD
+            """
+        ).strip()
+    )
+
+    cfg = load_users_config(yaml_file)
+    e = cfg.email_alerts
+
+    assert e.from_email == "nas@w1.lv"
+    assert e.from_name == "TrueNAS NAS"
+    assert e.smtp_host == "email-smtp.eu-north-1.amazonaws.com"
+    assert e.smtp_port == 587
+    assert e.smtp_security == "TLS"   # uppercased by loader
+    assert e.smtp_auth is True
+    assert e.smtp_user_env == "SHARED_SES_W1_SMTP_USERNAME"
+    assert e.smtp_password_env == "SHARED_SES_W1_SMTP_PASSWORD"
+
+
+def test_ensure_email_alerts_first_time_writes_full_smtp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fresh install: live mail.config is empty → all fields written including pass."""
+    from truenas_infra.modules.users import EmailAlertsSpec, ensure_email_alerts
+
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_USERNAME", "AKIA_TEST_USER")
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_PASSWORD", "TEST_PASS_42")
+
+    live = {
+        "id": 1,
+        "fromemail": "", "fromname": "",
+        "outgoingserver": "", "port": 25,
+        "security": "PLAIN", "smtp": False,
+        "user": "", "pass": "",
+    }
+    updated = {**live, "fromemail": "nas@w1.lv"}
+    cli = _mk_cli([live, updated])
+
+    spec = EmailAlertsSpec(
+        from_email="nas@w1.lv",
+        from_name="TrueNAS NAS",
+        smtp_host="email-smtp.eu-north-1.amazonaws.com",
+        smtp_port=587,
+        smtp_security="TLS",
+        smtp_auth=True,
+        smtp_user_env="SHARED_SES_W1_SMTP_USERNAME",
+        smtp_password_env="SHARED_SES_W1_SMTP_PASSWORD",
+    )
+    diff = ensure_email_alerts(cli, spec, apply=True)
+
+    assert diff.changed is True
+    payload = next(c for c in cli.call.call_args_list if c.args[0] == "mail.update").args[-1]
+    assert payload["fromemail"] == "nas@w1.lv"
+    assert payload["fromname"] == "TrueNAS NAS"
+    assert payload["outgoingserver"] == "email-smtp.eu-north-1.amazonaws.com"
+    assert payload["port"] == 587
+    assert payload["security"] == "TLS"
+    assert payload["smtp"] is True
+    assert payload["user"] == "AKIA_TEST_USER"
+    assert payload["pass"] == "TEST_PASS_42"
+
+
+def test_ensure_email_alerts_steady_state_no_password_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Idempotent re-run: all non-pass fields match → no mail.update at all.
+
+    Post-first-apply, `mail.config.pass` returns a non-empty redacted form;
+    we use that as the "already set" sentinel (same idiom as nut.monpwd)."""
+    from truenas_infra.modules.users import EmailAlertsSpec, ensure_email_alerts
+
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_USERNAME", "AKIA_TEST_USER")
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_PASSWORD", "TEST_PASS_42")
+
+    live = {
+        "id": 1,
+        "fromemail": "nas@w1.lv", "fromname": "TrueNAS NAS",
+        "outgoingserver": "email-smtp.eu-north-1.amazonaws.com",
+        "port": 587, "security": "TLS", "smtp": True,
+        "user": "AKIA_TEST_USER", "pass": "***",  # set previously, returned redacted
+    }
+    cli = _mk_cli([live])
+
+    spec = EmailAlertsSpec(
+        from_email="nas@w1.lv",
+        from_name="TrueNAS NAS",
+        smtp_host="email-smtp.eu-north-1.amazonaws.com",
+        smtp_port=587,
+        smtp_security="TLS",
+        smtp_auth=True,
+        smtp_user_env="SHARED_SES_W1_SMTP_USERNAME",
+        smtp_password_env="SHARED_SES_W1_SMTP_PASSWORD",
+    )
+    diff = ensure_email_alerts(cli, spec, apply=True)
+
+    assert diff.changed is False
+    call_names = [c.args[0] for c in cli.call.call_args_list]
+    assert call_names == ["mail.config"]
+
+
+def test_ensure_email_alerts_user_change_carries_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `user` drifts, password is bundled into the same mail.update
+    (rotation flow: edit Doppler → re-run apply)."""
+    from truenas_infra.modules.users import EmailAlertsSpec, ensure_email_alerts
+
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_USERNAME", "AKIA_NEW_USER")
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_PASSWORD", "NEW_PASS_99")
+
+    live = {
+        "id": 1,
+        "fromemail": "nas@w1.lv", "fromname": "TrueNAS NAS",
+        "outgoingserver": "email-smtp.eu-north-1.amazonaws.com",
+        "port": 587, "security": "TLS", "smtp": True,
+        "user": "AKIA_OLD_USER", "pass": "",
+    }
+    cli = _mk_cli([live, {**live, "user": "AKIA_NEW_USER"}])
+
+    spec = EmailAlertsSpec(
+        from_email="nas@w1.lv",
+        from_name="TrueNAS NAS",
+        smtp_host="email-smtp.eu-north-1.amazonaws.com",
+        smtp_port=587,
+        smtp_security="TLS",
+        smtp_auth=True,
+        smtp_user_env="SHARED_SES_W1_SMTP_USERNAME",
+        smtp_password_env="SHARED_SES_W1_SMTP_PASSWORD",
+    )
+    diff = ensure_email_alerts(cli, spec, apply=True)
+
+    assert diff.changed is True
+    payload = next(c for c in cli.call.call_args_list if c.args[0] == "mail.update").args[-1]
+    assert payload["user"] == "AKIA_NEW_USER"
+    assert payload["pass"] == "NEW_PASS_99"
+    # Non-drifting fields are NOT in the payload (PATCH semantics).
+    assert "outgoingserver" not in payload
+    assert "port" not in payload
+
+
+def test_ensure_admin_recipient_email_writes_when_missing() -> None:
+    from truenas_infra.modules.users import ensure_admin_recipient_email
+
+    admin_user = {"id": 1, "username": "truenas_admin", "email": ""}
+    cli = _mk_cli([[admin_user], {**admin_user, "email": "guntars@rakitko.lv"}])
+
+    diff = ensure_admin_recipient_email(
+        cli, admin_username="truenas_admin",
+        admin_email="guntars@rakitko.lv", apply=True,
+    )
+
+    assert diff.changed is True
+    call_names = [c.args[0] for c in cli.call.call_args_list]
+    assert call_names == ["user.query", "user.update"]
+    update_call = next(c for c in cli.call.call_args_list if c.args[0] == "user.update")
+    assert update_call.args[1] == 1
+    assert update_call.args[2] == {"email": "guntars@rakitko.lv"}
+
+
+def test_ensure_admin_recipient_email_noop_when_match() -> None:
+    from truenas_infra.modules.users import ensure_admin_recipient_email
+
+    admin_user = {"id": 1, "username": "truenas_admin", "email": "guntars@rakitko.lv"}
+    cli = _mk_cli([[admin_user]])
+
+    diff = ensure_admin_recipient_email(
+        cli, admin_username="truenas_admin",
+        admin_email="guntars@rakitko.lv", apply=True,
+    )
+
+    assert diff.changed is False
+    call_names = [c.args[0] for c in cli.call.call_args_list]
+    assert call_names == ["user.query"]
+
+
+def test_ensure_admin_recipient_email_skips_when_empty() -> None:
+    from truenas_infra.modules.users import ensure_admin_recipient_email
+
+    cli = _mk_cli([])
+    diff = ensure_admin_recipient_email(
+        cli, admin_username="truenas_admin", admin_email="", apply=True,
+    )
+    assert diff.changed is False
+    assert cli.call.call_count == 0
+
+
+def test_ensure_admin_recipient_email_skips_when_user_not_found() -> None:
+    """Fresh-install safety — don't hard-fail if admin_username isn't a known user."""
+    from truenas_infra.modules.users import ensure_admin_recipient_email
+
+    cli = _mk_cli([[]])  # user.query returns empty
+    diff = ensure_admin_recipient_email(
+        cli, admin_username="custom_admin",
+        admin_email="x@example.com", apply=True,
+    )
+    assert diff.changed is False
+    call_names = [c.args[0] for c in cli.call.call_args_list]
+    assert call_names == ["user.query"]
+
+
+def test_ensure_email_alerts_dry_run_redacts_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    from truenas_infra.modules.users import EmailAlertsSpec, ensure_email_alerts
+
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_USERNAME", "AKIA_TEST_USER")
+    monkeypatch.setenv("SHARED_SES_W1_SMTP_PASSWORD", "TEST_PASS_42")
+
+    live = {
+        "id": 1,
+        "fromemail": "", "fromname": "",
+        "outgoingserver": "", "port": 25,
+        "security": "PLAIN", "smtp": False, "user": "", "pass": "",
+    }
+    cli = _mk_cli([live])
+
+    spec = EmailAlertsSpec(
+        from_email="nas@w1.lv",
+        smtp_host="email-smtp.eu-north-1.amazonaws.com",
+        smtp_port=587,
+        smtp_security="TLS",
+        smtp_auth=True,
+        smtp_user_env="SHARED_SES_W1_SMTP_USERNAME",
+        smtp_password_env="SHARED_SES_W1_SMTP_PASSWORD",
+    )
+    diff = ensure_email_alerts(cli, spec, apply=False)
+
+    assert diff.changed is True
+    # In dry-run the password is replaced with *** in the projected diff
+    # so it doesn't end up in operator logs.
+    assert diff.after["pass"] == "***"
+    call_names = [c.args[0] for c in cli.call.call_args_list]
+    assert "mail.update" not in call_names
+
+
 # ─── run() orchestration ─────────────────────────────────────────────────────
 
 

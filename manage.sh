@@ -82,6 +82,25 @@ for _k in "${_DOPPLER_KEYS[@]}"; do
 done
 unset _DOPPLER_KEYS _k _v
 
+# Cluster-shared keys live in Doppler `infrastructure/shr` (the same config
+# kube-infra uses for cross-cluster credentials). Currently only the AWS SES
+# w1.lv SMTP pair — referenced by config/users.yaml's `email_alerts.smtp.*_env`
+# so modules/users.py can write `mail.config.user` + `pass`. Both optional:
+# if absent, phase users still runs but skips writing those two auth fields
+# (the rest of the SMTP block is still configured from YAML).
+_DOPPLER_KEYS_SHR=(
+    SHARED_SES_W1_SMTP_USERNAME
+    SHARED_SES_W1_SMTP_PASSWORD
+)
+
+for _k in "${_DOPPLER_KEYS_SHR[@]}"; do
+    if _v=$(doppler secrets get "$_k" --project infrastructure --config shr \
+                --plain --silent 2>&1); then
+        export "$_k=$_v"
+    fi
+done
+unset _DOPPLER_KEYS_SHR _k _v
+
 # Alias Doppler-prefixed key to the bare name Python code expects.
 # CLOUDFLARE_API_TOKEN is the conventional env var name for CloudFlare's
 # SDKs/CLIs; the Doppler key is SHARED_ prefixed for cross-purpose tracking.

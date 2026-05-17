@@ -33,8 +33,9 @@ def test_load_nut_config_parses_all_fields(tmp_path: Path) -> None:
               port: auto
               mode: MASTER
               remoteport: 3493
-              shutdown: BATT
-              shutdowntimer: 30
+              rmonitor: true
+              shutdown: LOWBATT
+              shutdowntimer: 60
               monuser: upsmon
             """
         ).strip()
@@ -49,9 +50,33 @@ def test_load_nut_config_parses_all_fields(tmp_path: Path) -> None:
     assert cfg.port == "auto"
     assert cfg.mode == "MASTER"
     assert cfg.remoteport == 3493
-    assert cfg.shutdown == "BATT"
-    assert cfg.shutdowntimer == 30
+    assert cfg.rmonitor is True
+    assert cfg.shutdown == "LOWBATT"
+    assert cfg.shutdowntimer == 60
     assert cfg.monuser == "upsmon"
+
+
+def test_load_nut_config_rmonitor_defaults_false(tmp_path: Path) -> None:
+    """Older YAML configs without `rmonitor:` parse with rmonitor=False (safe default)."""
+    from truenas_infra.modules.nut import load_nut_config
+
+    yaml_file = tmp_path / "services.yaml"
+    yaml_file.write_text(
+        textwrap.dedent(
+            """
+            nut:
+              enable: true
+              identifier: apc1
+              driver: "usbhid-ups$Smart-UPS (USB)"
+              port: auto
+              mode: MASTER
+              monuser: upsmon
+            """
+        ).strip()
+    )
+
+    cfg = load_nut_config(yaml_file)
+    assert cfg.rmonitor is False
 
 
 # ─── ensure_ups_config ───────────────────────────────────────────────────────
@@ -63,7 +88,8 @@ def test_ensure_ups_config_updates_when_empty() -> None:
     live = {
         "id": 1, "driver": "", "port": "", "identifier": "ups",
         "mode": "MASTER", "description": "",
-        "remoteport": 3493, "shutdown": "BATT", "shutdowntimer": 30,
+        "remoteport": 3493, "rmonitor": False,
+        "shutdown": "BATT", "shutdowntimer": 30,
         "monuser": "upsmon",
     }
     cli = _mk_cli([live, {**live, "driver": "usbhid-ups$Smart-UPS (USB)"}])
@@ -71,8 +97,8 @@ def test_ensure_ups_config_updates_when_empty() -> None:
     spec = NutSpec(
         enable=True, identifier="apc1", description="APC",
         driver="usbhid-ups$Smart-UPS (USB)", port="auto",
-        mode="MASTER", remoteport=3493, shutdown="BATT",
-        shutdowntimer=30, monuser="upsmon",
+        mode="MASTER", remoteport=3493, rmonitor=True,
+        shutdown="LOWBATT", shutdowntimer=60, monuser="upsmon",
     )
     diff = ensure_ups_config(cli, spec=spec, apply=True)
 
@@ -82,6 +108,9 @@ def test_ensure_ups_config_updates_when_empty() -> None:
     assert payload["driver"] == "usbhid-ups$Smart-UPS (USB)"
     assert payload["port"] == "auto"
     assert payload["identifier"] == "apc1"
+    assert payload["rmonitor"] is True
+    assert payload["shutdown"] == "LOWBATT"
+    assert payload["shutdowntimer"] == 60
 
 
 def test_ensure_ups_config_noop_when_match() -> None:
@@ -95,8 +124,9 @@ def test_ensure_ups_config_noop_when_match() -> None:
         "description": "APC",
         "mode": "MASTER",
         "remoteport": 3493,
-        "shutdown": "BATT",
-        "shutdowntimer": 30,
+        "rmonitor": True,
+        "shutdown": "LOWBATT",
+        "shutdowntimer": 60,
         "monuser": "upsmon",
     }
     cli = _mk_cli([live])
@@ -104,8 +134,8 @@ def test_ensure_ups_config_noop_when_match() -> None:
     spec = NutSpec(
         enable=True, identifier="apc1", description="APC",
         driver="usbhid-ups$Smart-UPS (USB)", port="auto",
-        mode="MASTER", remoteport=3493, shutdown="BATT",
-        shutdowntimer=30, monuser="upsmon",
+        mode="MASTER", remoteport=3493, rmonitor=True,
+        shutdown="LOWBATT", shutdowntimer=60, monuser="upsmon",
     )
     diff = ensure_ups_config(cli, spec=spec, apply=True)
     assert diff.changed is False
@@ -162,8 +192,9 @@ def test_run_applies_nut_config_and_starts_service(tmp_path: Path) -> None:
               port: auto
               mode: MASTER
               remoteport: 3493
-              shutdown: BATT
-              shutdowntimer: 30
+              rmonitor: true
+              shutdown: LOWBATT
+              shutdowntimer: 60
               monuser: upsmon
             """
         ).strip()
@@ -172,7 +203,8 @@ def test_run_applies_nut_config_and_starts_service(tmp_path: Path) -> None:
     empty_live = {
         "id": 1, "driver": "", "port": "", "identifier": "ups",
         "description": "", "mode": "MASTER",
-        "remoteport": 3493, "shutdown": "BATT", "shutdowntimer": 30, "monuser": "upsmon",
+        "remoteport": 3493, "rmonitor": False,
+        "shutdown": "BATT", "shutdowntimer": 30, "monuser": "upsmon",
     }
     cli = _mk_cli([
         empty_live,                                                         # ups.config

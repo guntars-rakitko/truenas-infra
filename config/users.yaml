@@ -28,7 +28,28 @@ ssh:
   password_auth: true
 
 email_alerts:
-  # System alert destination.
-  admin_email: ""  # TODO: fill in, e.g. guntars+nas@rakitko.lv
+  # System alert destination — synced onto the `email` field of the local
+  # admin user (`admin_username` below) by ensure_admin_recipient_email.
+  # TrueNAS reads that user's email when routing system alerts and the
+  # "Send Test Mail" button; without it both refuse with "No e-mail
+  # address is set for root user or any other local administrator".
+  admin_email: "guntars@rakitko.lv"
+  # Local-admin user that receives the alerts. Default `truenas_admin`
+  # matches the chart-default 25.10 admin account documented in CLAUDE.md.
+  # Override here if a future TrueNAS release renames the admin account.
+  admin_username: "truenas_admin"
   from_email: "nas@w1.lv"
-  # SMTP config: set later if using SendGrid/AWS SES/self-hosted.
+  from_name: "TrueNAS NAS"
+  # AWS SES (eu-north-1, w1.lv identity). Same SES sender Alertmanager + Flux
+  # use in kube-{dev,prd} (see kube-infra CLAUDE.md "Email (AWS SES)"). Single
+  # rotation point — `SHARED_SES_W1_SMTP_PASSWORD` in Doppler `infrastructure/shr`
+  # also drives the K8s `ses-w1` Secret via DopplerSecret CRDs. Username and
+  # password are NEVER persisted in YAML; fetched from env vars at apply time
+  # by modules/users.py and routed into `mail.update`.
+  smtp:
+    host: email-smtp.eu-north-1.amazonaws.com
+    port: 587
+    security: TLS            # STARTTLS (port 587). PLAIN | SSL | TLS
+    auth: true
+    user_env: SHARED_SES_W1_SMTP_USERNAME
+    password_env: SHARED_SES_W1_SMTP_PASSWORD
