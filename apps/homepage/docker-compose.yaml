@@ -16,7 +16,7 @@
 # determinism, and bridge keeps the container properly isolated.
 services:
   homepage:
-    image: ghcr.io/gethomepage/homepage:v1.12.3
+    image: ghcr.io/gethomepage/homepage:v1.13.1
     container_name: homepage
     restart: unless-stopped
     ports:
