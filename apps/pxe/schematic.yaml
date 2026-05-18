@@ -53,6 +53,19 @@ customization:
     # bios-config/amt/canonical.yaml. Both layers needed to prevent
     # the "igc link drops" reported upstream on Linux + i226.
     - igc.eee_enable=0
+    # Transparent Huge Pages → `madvise` (kube-infra audit #400
+    # finding #4). Default `always` causes latency spikes under memory
+    # pressure as the kernel scans pages for promotion to hugepages.
+    # `madvise` only uses THP when an application explicitly asks via
+    # madvise() — SQL Server's memory allocator doesn't, so this
+    # effectively disables THP-induced jitter while keeping the option
+    # available for future Java/JVM workloads that DO benefit.
+    # Microsoft-recommended for SQL Server on Linux. Added 2026-05-18
+    # with schematic SID bump 441f08ff... → d778c856... in lockstep
+    # with kube-infra PR #424.
+    # MUST be in the SCHEMATIC (not host-side extraKernelArgs) because
+    # Talos v1.13 boots UKI — host-side args are silently ignored.
+    - transparent_hugepage=madvise
   systemExtensions:
     officialExtensions:
       # Intel microcode updates — the ASUS Q170S1 nodes are all Intel
