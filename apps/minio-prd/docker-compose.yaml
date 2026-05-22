@@ -34,6 +34,10 @@ services:
       - MINIO_SERVER_URL=https://s3-prd.w1.lv:9000
       # Browser console lives behind Traefik — portless URL on mgmt.
       - MINIO_BROWSER_REDIRECT_URL=https://minio-prd.w1.lv/
+      # KMS root key for SSE-S3 default encryption (GDPR at-rest,
+      # kube-infra #520 Workstream C). Format <key-name>:<base64-32-bytes>.
+      # Sourced from Doppler infrastructure/ops → MINIO_KMS_SECRET_KEY_PRD.
+      - MINIO_KMS_SECRET_KEY=${MINIO_KMS_SECRET_KEY}
     # tls-export.sh installs both the generic (fullchain.pem/privkey.pem)
     # AND MinIO-conventional (public.crt/private.key) names under
     # /mnt/tank/system/tls. `--certs-dir` is set EXPLICITLY (rather than

@@ -24,6 +24,10 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_SERVER_URL=https://s3-dev.w1.lv:9000
       - MINIO_BROWSER_REDIRECT_URL=https://minio-dev.w1.lv/
+      # KMS root key for SSE-S3 default encryption (GDPR at-rest,
+      # kube-infra #520 Workstream C). Format <key-name>:<base64-32-bytes>.
+      # Sourced from Doppler infrastructure/ops → MINIO_KMS_SECRET_KEY_DEV.
+      - MINIO_KMS_SECRET_KEY=${MINIO_KMS_SECRET_KEY}
     # --certs-dir set explicitly — pins the cert path regardless of any
     # AIStor default-path change vs the old minio/minio.
     command: server /data --console-address ":9001" --certs-dir /root/.minio/certs
