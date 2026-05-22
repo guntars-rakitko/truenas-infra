@@ -190,11 +190,28 @@ directly using the same idiom.
 3. Each phase targets a specific domain (users, network, tls, pool, datasets, …)
 4. Phases are idempotent — safe to re-run; default is dry-run, `--apply` to write
 
-### MinIO bucket internals (buckets, users, lifecycle)
+### Object store: MinIO AIStor Free
+
+The S3 object store is **MinIO AIStor Free** — the official maintained
+successor to the open-source `minio/minio` (that GitHub repo was
+archived 2026-04-25). AIStor Free is free + royalty-free-licensed,
+single-node standalone (= exactly our two single-instance deployments),
+and full-featured for our needs (S3 API, SSE-S3, lifecycle expiration —
+only distributed/replication/tiering are Enterprise-gated, none of
+which we use). Pinned to `quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z`
+in `apps/minio-{prd,dev}/docker-compose.yaml`; that release is
+≥ `2025-12-20` so it runs **license-free** in offline mode.
+
+**Naming stays `minio-*` / `MINIO_*`** — AIStor *is* MinIO: same server
+binary, same `MINIO_*` env vars, same `mc` client. Renaming infra
+resources to "aistor" would half-match reality and confuse; the `minio`
+naming is correct, not stale.
+
+### MinIO bucket internals (buckets, users, lifecycle, encryption)
 
 TrueNAS API doesn't reach inside the MinIO container — bucket-level
-config (creation, users, lifecycle, retention) lives there. We drive
-`mc` directly via three idempotent scripts under `scripts/`, all
+config (creation, users, lifecycle, retention, encryption) lives there.
+We drive `mc` directly via four idempotent scripts under `scripts/`, all
 using the operator's pre-configured `nas-prd` / `nas-dev` aliases
 (set up once per laptop with `mc alias set` against the
 `MINIO_ROOT_USER_{DEV,PRD}` / `MINIO_ROOT_PASSWORD_{DEV,PRD}` keys
@@ -203,12 +220,13 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 4 canonical buckets per cluster
+./scripts/setup-minio-buckets.sh      # 6 canonical buckets per cluster
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
+./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
 ```
 
-All three are idempotent and safe to re-run.
+All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
@@ -256,6 +274,21 @@ Current ILM rules:
 Velero / Longhorn / etcd-snapshot buckets are intentionally not in
 this script — Velero and Longhorn manage their own retention via
 controller TTL, and etcd-snapshots is curated by hand for now.
+
+#### setup-minio-encryption.sh
+
+Enables **SSE-S3 default encryption** on all 6 buckets of both
+instances (GDPR at-rest encryption, kube-infra #520 Workstream C).
+With SSE-S3 on, every object is encrypted server-side before it hits
+the ZFS pool — backups become ciphertext at rest, transparently.
+
+**Prerequisite — KMS must be configured first.** SSE-S3 on AIStor
+needs a KMS root key (`MINIO_KMS_SECRET_KEY` env on the container,
+sourced from Doppler `infrastructure/ops` → `MINIO_KMS_SECRET_KEY_{PRD,DEV}`,
+format `<key-name>:<base64-32-bytes>`). The script verifies KMS is
+live and SKIPs cleanly if not — a premature run is harmless. Full
+setup steps are in the script's header comment. SSE-S3 encrypts NEW
+objects only; pre-existing objects stay plaintext and age out.
 
 ---
 

@@ -1,6 +1,10 @@
 services:
   minio:
-    image: minio/minio:latest
+    # MinIO AIStor Free — official maintained successor to the
+    # open-source minio/minio (archived 2026-04-25). License-free at
+    # RELEASE ≥ 2025-12-20. See minio-prd/docker-compose.yaml for the
+    # full rationale. AIStor IS MinIO — naming stays minio-* / MINIO_*.
+    image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z
     container_name: minio-dev
     restart: unless-stopped
     network_mode: bridge
@@ -20,4 +24,6 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_SERVER_URL=https://s3-dev.w1.lv:9000
       - MINIO_BROWSER_REDIRECT_URL=https://minio-dev.w1.lv/
-    command: server /data --console-address ":9001"
+    # --certs-dir set explicitly — pins the cert path regardless of any
+    # AIStor default-path change vs the old minio/minio.
+    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs
