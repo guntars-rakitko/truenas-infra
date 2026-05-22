@@ -1,9 +1,18 @@
+# AIStor Free license, surfaced inside the container as /minio.license.
+# Content comes from Doppler infrastructure/ops → MINIO_AISTOR_LICENSE,
+# substituted at deploy time by truenas-infra _render_compose. AIStor
+# Free gates S3 data-plane operations on a valid license — without it
+# `mc ls` etc. fail with "License has fully expired".
+configs:
+  minio_license:
+    content: "${MINIO_AISTOR_LICENSE}"
+
 services:
   minio:
     # MinIO AIStor Free — official maintained successor to the
-    # open-source minio/minio (archived 2026-04-25). License-free at
-    # RELEASE ≥ 2025-12-20. See minio-prd/docker-compose.yaml for the
-    # full rationale. AIStor IS MinIO — naming stays minio-* / MINIO_*.
+    # open-source minio/minio (archived 2026-04-25). See
+    # minio-prd/docker-compose.yaml for the full rationale. AIStor IS
+    # MinIO — naming stays minio-* / MINIO_*.
     image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z
     container_name: minio-dev
     restart: unless-stopped
@@ -28,6 +37,11 @@ services:
       # kube-infra #520 Workstream C). Format <key-name>:<base64-32-bytes>.
       # Sourced from Doppler infrastructure/ops → MINIO_KMS_SECRET_KEY_DEV.
       - MINIO_KMS_SECRET_KEY=${MINIO_KMS_SECRET_KEY}
+    configs:
+      - source: minio_license
+        target: /minio.license
     # --certs-dir set explicitly — pins the cert path regardless of any
-    # AIStor default-path change vs the old minio/minio.
-    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs
+    # AIStor default-path change vs the old minio/minio. --license points
+    # AIStor at the Free-tier license (configs: block at the top of this
+    # file) — required for S3 data-plane operations.
+    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs --license /minio.license

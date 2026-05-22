@@ -199,8 +199,22 @@ single-node standalone (= exactly our two single-instance deployments),
 and full-featured for our needs (S3 API, SSE-S3, lifecycle expiration —
 only distributed/replication/tiering are Enterprise-gated, none of
 which we use). Pinned to `quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z`
-in `apps/minio-{prd,dev}/docker-compose.yaml`; that release is
-≥ `2025-12-20` so it runs **license-free** in offline mode.
+in `apps/minio-{prd,dev}/docker-compose.yaml`.
+
+**A license file is required — even for the Free tier.** The "runs
+license-free" claim was wrong: AIStor gates S3 *data-plane* operations
+(`mc ls`, GET/PUT, etc.) on a valid license; without one the server
+starts but every data op fails with `License has fully expired`
+(admin/KMS APIs still work, which masks the problem). The free-tier
+license is obtained at no cost from the [MinIO pricing page](https://www.min.io/pricing)
+(Free tier → Get Started) — one org-scoped token, reusable for both
+single-node instances. It lives in Doppler `infrastructure/ops` →
+`MINIO_AISTOR_LICENSE` and is surfaced into each container as
+`/minio.license` via a Docker Compose `configs:` block (content
+substituted from Doppler by `_render_compose`, same as the root
+credentials); the server command passes `--license /minio.license`.
+The license is a ~440-char JWT; it has an expiry — renew from the
+same page before it lapses.
 
 **Naming stays `minio-*` / `MINIO_*`** — AIStor *is* MinIO: same server
 binary, same `MINIO_*` env vars, same `mc` client. Renaming infra

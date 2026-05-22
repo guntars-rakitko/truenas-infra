@@ -1,13 +1,22 @@
+# AIStor Free license, surfaced inside the container as /minio.license.
+# Content comes from Doppler infrastructure/ops → MINIO_AISTOR_LICENSE,
+# substituted at deploy time by truenas-infra _render_compose. AIStor
+# Free gates S3 data-plane operations on a valid license — without it
+# `mc ls` etc. fail with "License has fully expired".
+configs:
+  minio_license:
+    content: "${MINIO_AISTOR_LICENSE}"
+
 services:
   minio:
     # MinIO AIStor Free — official maintained successor to the
     # open-source minio/minio (that repo was archived 2026-04-25).
     # AIStor Free: free royalty-free license, single-node standalone
     # (= exactly our deployment), full-featured (S3 API, SSE-S3,
-    # lifecycle expiration). RELEASE.2026-05-04 is ≥ 2025-12-20 → runs
-    # LICENSE-FREE in offline mode, no license file needed.
-    # Naming stays minio-* / MINIO_*: AIStor IS MinIO — same binary,
-    # same env vars, same `mc` client.
+    # lifecycle expiration). The Free tier still requires a valid
+    # license file (see configs: block above) — it gates S3 data-plane
+    # operations. Naming stays minio-* / MINIO_*: AIStor IS MinIO —
+    # same binary, same env vars, same `mc` client.
     image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z
     container_name: minio-prd
     restart: unless-stopped
@@ -38,9 +47,13 @@ services:
       # kube-infra #520 Workstream C). Format <key-name>:<base64-32-bytes>.
       # Sourced from Doppler infrastructure/ops → MINIO_KMS_SECRET_KEY_PRD.
       - MINIO_KMS_SECRET_KEY=${MINIO_KMS_SECRET_KEY}
+    configs:
+      - source: minio_license
+        target: /minio.license
     # tls-export.sh installs both the generic (fullchain.pem/privkey.pem)
     # AND MinIO-conventional (public.crt/private.key) names under
     # /mnt/tank/system/tls. `--certs-dir` is set EXPLICITLY (rather than
     # relying on the default) so the cert path is pinned regardless of
-    # any AIStor default-path change vs the old minio/minio.
-    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs
+    # any AIStor default-path change vs the old minio/minio. --license
+    # points AIStor at the Free-tier license (configs: block above).
+    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs --license /minio.license
