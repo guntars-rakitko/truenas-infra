@@ -4,7 +4,7 @@
 # nodes write their reports to). Bind-mounts the directory RW so the
 # dashboard can delete individual reports via a Traefik-fronted UI.
 #
-# Image strategy mirrors amtctl: python:3.13-alpine base, persistent /venv
+# Image strategy mirrors amtctl: python:3.14-alpine base, persistent /venv
 # bind mount for pip deps, app source bind-mounted read-only from the
 # pool. No image to build or push — "deploying" means uploading main.py
 # and templates/ via phase apps.
@@ -30,9 +30,15 @@ services:
       - -c
       - |
         set -e
-        if [ ! -x /venv/bin/uvicorn ]; then
-          echo "bootstrapping venv…"
-          python -m venv /venv
+        # Rebuild the venv if it's missing OR was built against a
+        # different Python. The /venv bind-mount persists across image
+        # bumps, and a venv is tied to one Python minor version — a
+        # python:3.13 venv is unusable under a 3.14 base. Test the real
+        # interpreter (not just whether the uvicorn file exists); on
+        # failure `venv --clear` wipes the stale tree and rebuilds.
+        if ! /venv/bin/python -c 'import uvicorn' 2>/dev/null; then
+          echo "venv missing or stale — rebuilding…"
+          python -m venv --clear /venv
           /venv/bin/pip install --no-cache-dir -q \
             'fastapi==0.118.*' \
             'uvicorn[standard]==0.35.*' \

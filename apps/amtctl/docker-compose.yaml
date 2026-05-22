@@ -9,7 +9,7 @@
 # from Doppler `infrastructure/ops` (`AMT_USER`, `AMT_PASSWORD`)
 # substituted by _render_compose at phase apps --apply time.
 #
-# Image strategy: python:3.13-alpine base + runtime dependency install
+# Image strategy: python:3.14-alpine base + runtime dependency install
 # into a persistent /venv bind mount. Avoids needing a registry for
 # our custom code, and first-run cost (~30s) is paid once per upgrade.
 # The Python source + web/ live on the pool and mount read-only at /app
@@ -42,9 +42,15 @@ services:
       - -c
       - |
         set -e
-        if [ ! -x /venv/bin/uvicorn ]; then
-          echo "bootstrapping venv…"
-          python -m venv /venv
+        # Rebuild the venv if it's missing OR was built against a
+        # different Python. The /venv bind-mount persists across image
+        # bumps, and a venv is tied to one Python minor version — a
+        # python:3.13 venv is unusable under a 3.14 base. Test the real
+        # interpreter (not just whether the uvicorn file exists); on
+        # failure `venv --clear` wipes the stale tree and rebuilds.
+        if ! /venv/bin/python -c 'import uvicorn' 2>/dev/null; then
+          echo "venv missing or stale — rebuilding…"
+          python -m venv --clear /venv
           /venv/bin/pip install --no-cache-dir -q \
             'fastapi==0.118.*' \
             'uvicorn[standard]==0.35.*' \
