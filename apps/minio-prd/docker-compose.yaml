@@ -1,6 +1,14 @@
 services:
   minio:
-    image: minio/minio:latest
+    # MinIO AIStor Free — official maintained successor to the
+    # open-source minio/minio (that repo was archived 2026-04-25).
+    # AIStor Free: free royalty-free license, single-node standalone
+    # (= exactly our deployment), full-featured (S3 API, SSE-S3,
+    # lifecycle expiration). RELEASE.2026-05-04 is ≥ 2025-12-20 → runs
+    # LICENSE-FREE in offline mode, no license file needed.
+    # Naming stays minio-* / MINIO_*: AIStor IS MinIO — same binary,
+    # same env vars, same `mc` client.
+    image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z
     container_name: minio-prd
     restart: unless-stopped
     network_mode: bridge
@@ -26,9 +34,13 @@ services:
       - MINIO_SERVER_URL=https://s3-prd.w1.lv:9000
       # Browser console lives behind Traefik — portless URL on mgmt.
       - MINIO_BROWSER_REDIRECT_URL=https://minio-prd.w1.lv/
+      # KMS root key for SSE-S3 default encryption (GDPR at-rest,
+      # kube-infra #520 Workstream C). Format <key-name>:<base64-32-bytes>.
+      # Sourced from Doppler infrastructure/ops → MINIO_KMS_SECRET_KEY_PRD.
+      - MINIO_KMS_SECRET_KEY=${MINIO_KMS_SECRET_KEY}
     # tls-export.sh installs both the generic (fullchain.pem/privkey.pem)
     # AND MinIO-conventional (public.crt/private.key) names under
-    # /mnt/tank/system/tls. MinIO's --certs-dir default is
-    # /root/.minio/certs which is exactly this bind-mount — it picks up
-    # public.crt + private.key on startup. No entrypoint gymnastics.
-    command: server /data --console-address ":9001"
+    # /mnt/tank/system/tls. `--certs-dir` is set EXPLICITLY (rather than
+    # relying on the default) so the cert path is pinned regardless of
+    # any AIStor default-path change vs the old minio/minio.
+    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs

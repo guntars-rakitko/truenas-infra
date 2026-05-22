@@ -42,12 +42,14 @@ from truenas_infra.util import Diff
 # file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
 _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
     "minio-prd": {
-        "MINIO_ROOT_USER":     "MINIO_ROOT_USER_PRD",
-        "MINIO_ROOT_PASSWORD": "MINIO_ROOT_PASSWORD_PRD",
+        "MINIO_ROOT_USER":      "MINIO_ROOT_USER_PRD",
+        "MINIO_ROOT_PASSWORD":  "MINIO_ROOT_PASSWORD_PRD",
+        "MINIO_KMS_SECRET_KEY": "MINIO_KMS_SECRET_KEY_PRD",
     },
     "minio-dev": {
-        "MINIO_ROOT_USER":     "MINIO_ROOT_USER_DEV",
-        "MINIO_ROOT_PASSWORD": "MINIO_ROOT_PASSWORD_DEV",
+        "MINIO_ROOT_USER":      "MINIO_ROOT_USER_DEV",
+        "MINIO_ROOT_PASSWORD":  "MINIO_ROOT_PASSWORD_DEV",
+        "MINIO_KMS_SECRET_KEY": "MINIO_KMS_SECRET_KEY_DEV",
     },
     "amtctl": {
         "AMTCTL_AMT_USER":     "AMT_USER",
