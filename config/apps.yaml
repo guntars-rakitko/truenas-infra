@@ -77,6 +77,12 @@ apps:
     bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts stress.w1.lv
     description: "hw-validation JSON report viewer (reads /mnt/tank/system/stress-results)"
 
+  - name: cluster-agent
+    enabled: false                             # defer deployment until Task 23 (operator readiness)
+    compose: apps/cluster-agent/docker-compose.yaml
+    bind_ip: 10.10.5.10                        # mgmt VLAN — K8s integration agent
+    description: "Cluster agent for Anthropic Claude integration (K8s, observability, backups, GH)"
+
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex
     enabled: false
