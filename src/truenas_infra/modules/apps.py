@@ -13,6 +13,7 @@ Deferred (separate pass): plex, qbittorrent.
 
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 import time
@@ -46,7 +47,17 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "AMTCTL_AMT_PASSWORD": "AMT_PASSWORD",
     },
     "cluster-agent": {
-        "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS":      "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS",
+        # The Doppler key holds the base64-encoded ~/.claude/.credentials.json
+        # (operator stored it via `base64 < ~/.claude/.credentials.json`).
+        # The compose configs: block needs the raw JSON, not the encoded form —
+        # so we map the _B64DECODED compose-var to the plain Doppler key and
+        # decode the value in _load_doppler_for_app (any compose-var whose name
+        # ends in _B64DECODED gets base64.b64decode applied to the Doppler value
+        # before substitution). This mirrors the AIStor license delivery pattern
+        # used by minio-{prd,dev}: secrets go in via Compose configs: content:,
+        # fetched from Doppler at render time, injected into the container as a
+        # file — the only difference here is the b64 round-trip in transit.
+        "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS",
         "CLUSTER_AGENT_GH_APP_ID":                     "CLUSTER_AGENT_GH_APP_ID",
         "CLUSTER_AGENT_GH_APP_PRIVATE_KEY":            "CLUSTER_AGENT_GH_APP_PRIVATE_KEY",
         "CLUSTER_AGENT_GH_APP_INSTALLATION_ID":        "CLUSTER_AGENT_GH_APP_INSTALLATION_ID",
@@ -122,7 +133,15 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
             )
         # `--plain` outputs the value followed by a newline; strip the trailing
         # newline only (preserve any internal newlines for multi-line values).
-        out[compose_var] = result.stdout.rstrip("\n")
+        raw = result.stdout.rstrip("\n")
+        # Convention: a compose-var whose name ends in _B64DECODED means the
+        # Doppler value is base64-encoded and must be decoded before injection.
+        # Used for CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS_B64DECODED (the
+        # operator stored ~/.claude/.credentials.json as base64 in Doppler;
+        # the Compose configs: content: block needs the raw JSON string).
+        if compose_var.endswith("_B64DECODED"):
+            raw = base64.b64decode(raw).decode("utf-8")
+        out[compose_var] = raw
     return out
 
 
@@ -813,6 +832,16 @@ AMTCTL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/config"
 STRESS_DASHBOARD_LOCAL_DIR = Path("apps/stress-dashboard")
 STRESS_DASHBOARD_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/stress-dashboard/code"
 
+# cluster-agent — LLM-driven SRE assistant. Same deploy pattern as amtctl /
+# stress-dashboard: stock python:3.14-alpine base image, app code on the pool,
+# bind-mounted into /app. We upload src/ + prompts/ only; data/ (SQLite state)
+# and venv/ (self-healing, Python-version-tied) are excluded deliberately.
+# Source dirs created by Tasks 9-19 — helper skips gracefully if not present yet.
+CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
+CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
+CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
+CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
+
 
 def run(
     cli: Any,
@@ -853,6 +882,8 @@ def run(
         _ensure_amtctl_config_via_ctx(cli, ctx, log)
     if only in (None, "stress-dashboard"):
         _ensure_stress_dashboard_config_via_ctx(cli, ctx, log)
+    if only in (None, "cluster-agent"):
+        _ensure_cluster_agent_config_via_ctx(cli, ctx, log)
     # PXE build context MUST land before `app.create` for the `pxe` app:
     # the compose spec uses `build: /mnt/tank/system/apps-config/pxe/build`,
     # and TrueNAS's app.create immediately runs `docker compose up` which
@@ -1128,6 +1159,78 @@ def _ensure_stress_dashboard_config_via_ctx(cli: Any, ctx: Any, log: Any) -> Non
         )
         log.info("stress_dashboard_file_ensured", path=remote,
                  action=diff.action, changed=diff.changed)
+
+
+def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload the cluster-agent app source to the pool.
+
+    Layout on the pool:
+        .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
+            ├── src/                           — Python package (Tasks 9-19)
+            └── prompts/                       — Jinja2 prompt templates (Task 14)
+
+    Files NOT uploaded:
+      - docker-compose.yaml   (owned by ensure_custom_app)
+      - data/                 (SQLite state.db — must persist across redeploys)
+      - venv/                 (self-healing; tied to Python minor version)
+
+    Source dirs (src/ and prompts/) are created by Tasks 9-19. This helper
+    runs in the phase-apps pre-upload block so the operator can validate
+    the registration with `manage.sh phase apps` before those tasks are done.
+    It skips gracefully if the dirs don't exist yet rather than failing —
+    the real code upload happens automatically once they appear.
+
+    Same deploy pattern as amtctl and stress-dashboard: stock python:3.14-alpine
+    base image, code on the pool, bind-mounted into /app in the container.
+    """
+    src_dir = CLUSTER_AGENT_SRC_LOCAL_DIR
+    prompts_dir = CLUSTER_AGENT_PROMPTS_LOCAL_DIR
+
+    any_present = src_dir.is_dir() or prompts_dir.is_dir()
+    if not any_present:
+        log.info(
+            "cluster_agent_config_skipped",
+            reason="source_dirs_missing",
+            src=str(src_dir),
+            prompts=str(prompts_dir),
+            note="build them in Tasks 9-19",
+        )
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
+    for subdir in (src_dir, prompts_dir):
+        if not subdir.is_dir():
+            log.info(
+                "cluster_agent_subdir_skipped",
+                reason="not_present_yet",
+                path=str(subdir),
+            )
+            continue
+        for local in sorted(subdir.rglob("*")):
+            if not local.is_file():
+                continue
+            # Preserve the subdir name (src/ or prompts/) in the remote path.
+            rel = local.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix()
+            remote = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{rel}"
+            diff = ensure_file_on_nas(
+                cli, _upload,
+                local_path=local, remote_path=remote,
+                mode=0o644, apply=ctx.apply,
+            )
+            log.info("cluster_agent_file_ensured", path=remote,
+                     action=diff.action, changed=diff.changed)
 
 
 def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
