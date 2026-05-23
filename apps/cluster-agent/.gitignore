@@ -1,0 +1,26 @@
+# Build / runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local dev venv (laptop-side only; container has its own /venv bind mount)
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local state (SQLite DB lives at /data/state.db in container, but pytest
+# fixtures use tmp_path so this is just belt-and-suspenders)
+data/
+*.db
+*.db-wal
+*.db-shm
