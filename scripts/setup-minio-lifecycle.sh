@@ -26,7 +26,9 @@ set -euo pipefail
 # omitted today — Velero and Longhorn manage their own retention via
 # their controllers, and etcd-snapshots is hand-curated for now.
 RULES=(
+    "nas-dev/cluster-agent 30"
     "nas-dev/mssql-backups 90"
+    "nas-prd/cluster-agent 30"
     "nas-prd/mssql-backups 90"
 )
 
