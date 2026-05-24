@@ -440,8 +440,19 @@ Even if everything else passes:
 - Major version bumps (`X.0.0`)
 - Anything where agent's self-rated confidence < `high`
 - Talos / kernel / node images
-- Prd kubernetes objects (no direct `kubectl apply` to prd — only via Flux tag promote)
+- Prd kubernetes objects (no direct `kubectl apply` to prd — only via the
+  operator's `dev → main` PR promotion path, gated by the in-cluster
+  `promotion-gates.yml` workflow — see
+  https://wiki.w1.lv/runbooks/branching-and-promotion/)
 - Backup/restore code paths
+
+**GitOps model note (2026-05-24 migration):** kube-infra adopted a
+two-branch `dev → main` model with `gh pr create --base main --head dev`
+promotion gated by the `promotion-gates.yml` workflow. Auto-merge by
+the cluster-agent acts on Renovate PRs targeting `dev` (the default
+branch) only — promotion to prd remains operator-only. This gives us a
+free soak window: every cluster-agent-merged Renovate PR reaches prd
+only via the operator's subsequent `dev → main` PR.
 
 ### 5.7 Policy storage
 

@@ -2922,10 +2922,18 @@ This phase lands the K8s ServiceAccounts the agent will authenticate as. Lives i
   ```
   Expected: shows the new `cluster-agent-nas` job.
 
-- [ ] **Step 3: PR + merge**
+- [ ] **Step 3: PR to `dev` branch, merge**
+
+  **Note (2026-05-24 migration):** kube-infra now uses a two-branch
+  `dev → main` model. `dev` is the default branch (where dev cluster
+  reconciles); promotion to prd is a separate `dev → main` PR gated
+  by the `promotion-gates.yml` workflow. See
+  https://wiki.w1.lv/runbooks/branching-and-promotion/
 
   ```sh
   cd /Users/gunrak/github/kube-infra
+  git fetch origin
+  git checkout dev && git pull --ff-only origin dev
   git checkout -b feat/cluster-agent-scrape
   git add flux-cd/infrastructure/helmreleases/kube-prometheus-stack.yaml
   git commit -m "$(cat <<'EOF'
@@ -2933,32 +2941,45 @@ This phase lands the K8s ServiceAccounts the agent will authenticate as. Lives i
 
   Adds an additionalScrapeConfigs entry for the cluster-agent's /metrics
   endpoint at 10.10.5.10:9595. Both dev + prd Prometheus pick this up
-  via the shared HelmRelease values.
+  via the shared HelmRelease values (post-2026-05-24 migration: dev
+  reconciles `dev` branch, prd reconciles `main` — same values file).
 
   Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
   EOF
   )"
   git push -u origin feat/cluster-agent-scrape
-  gh pr create --title "feat(monitoring): scrape cluster-agent on NAS" --body "$(cat <<'EOF'
+  gh pr create --base dev --title "feat(monitoring): scrape cluster-agent on NAS" --body "$(cat <<'EOF'
   ## Summary
   - Adds cluster-agent-nas scrape job to kube-prometheus-stack values
   - Both clusters scrape the same NAS endpoint independently
+  - Targets `dev` branch first; promotion to prd via separate `dev → main` PR
 
   ## Test plan
   - [ ] CI passes
-  - [ ] After merge + Flux reconcile + tag promote: `cluster-agent-nas` job appears in dev Prometheus Targets UI
-  - [ ] Same for prd
+  - [ ] After merge + Flux reconcile: `cluster-agent-nas` job appears in dev Prometheus Targets UI
+  - [ ] Operator promotes via `gh pr create --base main --head dev`; gates pass; same target appears on prd
 
   🤖 Generated with [Claude Code](https://claude.com/claude-code)
   EOF
   )"
   ```
 
-- [ ] **Step 4: Merge after review, then promote to prd**
+- [ ] **Step 4: Merge to dev, then promote `dev → main` for prd**
 
   ```sh
+  # Merge feature → dev
   gh pr merge --squash --delete-branch
-  ./tools/promote-to-prd.sh patch
+
+  # Wait for dev to reconcile + soak (≥30min per promotion-gates Gate 4)
+  # while dev Prometheus picks up the new target.
+
+  # Operator promotes dev → main when ready:
+  gh pr create --base main --head dev \
+    --title "promote: dev → main (cluster-agent scrape config)" \
+    --body "Promotion PR for the cluster-agent-nas scrape config. Gates: all dev Kustomizations Ready, all HRs Ready, no critical alerts, ≥30min soak."
+  # The promotion-gates.yml workflow runs on this PR; reviews pass/fail
+  # in the PR's Checks tab.
+  gh pr merge --rebase --delete-branch
   ```
 
 ### Task 21: Grafana dashboard ConfigMap
@@ -3071,9 +3092,17 @@ This phase lands the K8s ServiceAccounts the agent will authenticate as. Lives i
     | grep cluster-agent
   ```
 
-- [ ] **Step 5: Commit + PR + promote**
+- [ ] **Step 5: Commit + PR to `dev`, merge, then `dev → main` promotion**
+
+  Per the 2026-05-24 kube-infra migration: `dev` is default; `main` is
+  the prd-tracking branch; promotion is `dev → main` PR gated by
+  `promotion-gates.yml`. See
+  https://wiki.w1.lv/runbooks/branching-and-promotion/
 
   ```sh
+  cd /Users/gunrak/github/kube-infra
+  git fetch origin
+  git checkout dev && git pull --ff-only origin dev
   git checkout -b feat/cluster-agent-dashboard
   git add flux-cd/infrastructure/configs/base/dashboards/cluster-agent-configmap.yaml \
           flux-cd/infrastructure/configs/base/dashboards/kustomization.yaml
@@ -3087,10 +3116,17 @@ This phase lands the K8s ServiceAccounts the agent will authenticate as. Lives i
   EOF
   )"
   git push -u origin feat/cluster-agent-dashboard
-  gh pr create --title "feat(monitoring): cluster-agent Grafana dashboard (P0)" --body "Skeleton dashboard; richer panels in P1+."
+  gh pr create --base dev --title "feat(monitoring): cluster-agent Grafana dashboard (P0)" \
+    --body "Skeleton dashboard; richer panels in P1+. Targets dev; operator promotes via separate dev → main PR."
   ```
 
-  After merge: `./tools/promote-to-prd.sh patch`.
+  After merge to dev + dev cluster soak:
+  ```sh
+  gh pr create --base main --head dev \
+    --title "promote: dev → main (cluster-agent Grafana dashboard)" \
+    --body "Promotion PR for the cluster-agent dashboard ConfigMap."
+  gh pr merge --rebase --delete-branch
+  ```
 
 ---
 
