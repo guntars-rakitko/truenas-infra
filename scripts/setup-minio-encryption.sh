@@ -39,12 +39,13 @@ set -euo pipefail
 
 ALIASES=(nas-dev nas-prd)
 BUCKETS=(
-    velero
-    longhorn
-    mssql-backups
+    cluster-agent
     etcd-snapshots
     loki-chunks
+    longhorn
+    mssql-backups
     pocket-id-litestream
+    velero
 )
 
 for alias in "${ALIASES[@]}"; do

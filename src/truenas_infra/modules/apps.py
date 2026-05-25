@@ -13,6 +13,7 @@ Deferred (separate pass): plex, qbittorrent.
 
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 import time
@@ -30,36 +31,57 @@ from truenas_infra.util import Diff
 
 # Per-app Doppler key map: { app_name: { compose_var: doppler_key } }.
 #
-# Single source of truth for secrets is Doppler `infrastructure/ops` —
-# we fetch the listed keys at deploy time and substitute into the
-# docker-compose template. The compose-var → doppler-key indirection
-# lets the compose file keep its conventional env-var names (e.g.
-# `MINIO_ROOT_USER` per the MinIO container's expected env), while
-# Doppler stores the per-cluster-suffixed canonical names
-# (`MINIO_ROOT_USER_PRD`).
+# Default source: Doppler `infrastructure/ops`. Per-app overrides are
+# declared in _DOPPLER_PROJECT_PER_APP below (currently only cluster-agent,
+# which migrated to its own dedicated project in Task 22.5).
+#
+# The compose-var → doppler-key indirection lets the compose file keep its
+# conventional env-var names (e.g. `MINIO_ROOT_USER` per the MinIO
+# container's expected env), while Doppler stores the per-cluster-suffixed
+# canonical names (`MINIO_ROOT_USER_PRD`).
 #
 # Adding a new app with secrets: append a new entry here. The compose
 # file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
 _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
-    # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
-    # suffix) — the AIStor Free license is org-scoped, the same token
-    # works for both single-node instances.
-    "minio-prd": {
-        "MINIO_ROOT_USER":       "MINIO_ROOT_USER_PRD",
-        "MINIO_ROOT_PASSWORD":   "MINIO_ROOT_PASSWORD_PRD",
-        "MINIO_KMS_SECRET_KEY":  "MINIO_KMS_SECRET_KEY_PRD",
-        "MINIO_AISTOR_LICENSE":  "MINIO_AISTOR_LICENSE",
-    },
-    "minio-dev": {
-        "MINIO_ROOT_USER":       "MINIO_ROOT_USER_DEV",
-        "MINIO_ROOT_PASSWORD":   "MINIO_ROOT_PASSWORD_DEV",
-        "MINIO_KMS_SECRET_KEY":  "MINIO_KMS_SECRET_KEY_DEV",
-        "MINIO_AISTOR_LICENSE":  "MINIO_AISTOR_LICENSE",
-    },
     "amtctl": {
         "AMTCTL_AMT_USER":     "AMT_USER",
         "AMTCTL_AMT_PASSWORD": "AMT_PASSWORD",
     },
+    "cluster-agent": {
+        # Secrets source: cluster-agent/prd (see _DOPPLER_PROJECT_PER_APP).
+        # Env var names match Doppler key names exactly — project is the
+        # namespace, no CLUSTER_AGENT_ prefix needed.
+        #
+        # _B64DECODED convention (Task 8): any compose-var ending in
+        # _B64DECODED means the Doppler value is base64-encoded and is
+        # decoded before injection. Used here for CLAUDE_OAUTH_CREDENTIALS
+        # (the base64-encoded ~/.claude/.credentials.json injected as a file
+        # via Compose configs:). Placeholder until ~June 15, 2026.
+        "CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLAUDE_OAUTH_CREDENTIALS",
+        # LLM auth — active path. anthropic SDK reads ANTHROPIC_API_KEY
+        # natively; operator sets the real sk-ant-* value via Doppler.
+        "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
+        "GH_APP_ID":                     "GH_APP_ID",
+        "GH_APP_PRIVATE_KEY":            "GH_APP_PRIVATE_KEY",
+        "GH_APP_INSTALLATION_ID":        "GH_APP_INSTALLATION_ID",
+        "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
+        "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
+        "KUBECONFIG_TEST_RESTORE_DEV":   "KUBECONFIG_TEST_RESTORE_DEV",
+        # Loki/Prom/AM now use apiserver proxy via kubeconfig SA token —
+        # no separate basic-auth keys needed (removed in 2026-05-25 refactor).
+        "GRAFANA_API_TOKEN_DEV":         "GRAFANA_API_TOKEN_DEV",
+        "GRAFANA_API_TOKEN_PRD":         "GRAFANA_API_TOKEN_PRD",
+        "MINIO_NAS_KEY_ID":              "MINIO_NAS_KEY_ID",
+        "MINIO_NAS_SECRET_KEY":          "MINIO_NAS_SECRET_KEY",
+        "B2_KEY_ID":                     "B2_KEY_ID",
+        "B2_APP_KEY":                    "B2_APP_KEY",
+        "ENABLED":                       "ENABLED",
+        "DISABLED_MODES":                "DISABLED_MODES",
+        "AUTOMERGE_DISABLED_REPOS":      "AUTOMERGE_DISABLED_REPOS",
+    },
+    # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
+    # suffix) — the AIStor Free license is org-scoped, the same token
+    # works for both single-node instances.
     "homepage": {
         "HOMEPAGE_VAR_TRUENAS_API_KEY":      "TRUENAS_API_KEY",
         "HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY": "MINIO_ROOT_USER_PRD",
@@ -67,11 +89,34 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY": "MINIO_ROOT_USER_DEV",
         "HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY": "MINIO_ROOT_PASSWORD_DEV",
     },
+    "minio-dev": {
+        "MINIO_ROOT_USER":       "MINIO_ROOT_USER_DEV",
+        "MINIO_ROOT_PASSWORD":   "MINIO_ROOT_PASSWORD_DEV",
+        "MINIO_KMS_SECRET_KEY":  "MINIO_KMS_SECRET_KEY_DEV",
+        "MINIO_AISTOR_LICENSE":  "MINIO_AISTOR_LICENSE",
+    },
+    "minio-prd": {
+        "MINIO_ROOT_USER":       "MINIO_ROOT_USER_PRD",
+        "MINIO_ROOT_PASSWORD":   "MINIO_ROOT_PASSWORD_PRD",
+        "MINIO_KMS_SECRET_KEY":  "MINIO_KMS_SECRET_KEY_PRD",
+        "MINIO_AISTOR_LICENSE":  "MINIO_AISTOR_LICENSE",
+    },
+}
+
+# Per-app Doppler project overrides: { app_name: (project, config) }.
+# Apps NOT listed here default to ("infrastructure", "ops").
+# cluster-agent was migrated to its own dedicated Doppler project in Task 22.5
+# to isolate its secrets from the broader infrastructure service token.
+_DOPPLER_PROJECT_PER_APP: dict[str, tuple[str, str]] = {
+    "cluster-agent": ("cluster-agent", "prd"),
 }
 
 
 def _load_doppler_for_app(app_name: str) -> dict[str, str]:
-    """Fetch the secrets needed for `app_name` from Doppler infrastructure/ops.
+    """Fetch the secrets needed for `app_name` from Doppler.
+
+    The Doppler project/config defaults to infrastructure/ops; apps in
+    _DOPPLER_PROJECT_PER_APP use their own project instead.
 
     Returns a `{compose_var: value}` dict ready for `_render_compose`
     substitution. Empty dict if the app isn't in `_DOPPLER_KEYS_PER_APP`
@@ -83,11 +128,12 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
     mapping = _DOPPLER_KEYS_PER_APP.get(app_name)
     if not mapping:
         return {}
+    project, config = _DOPPLER_PROJECT_PER_APP.get(app_name, ("infrastructure", "ops"))
     out: dict[str, str] = {}
     for compose_var, doppler_key in mapping.items():
         result = subprocess.run(
             ["doppler", "secrets", "get", doppler_key,
-             "--project", "infrastructure", "--config", "ops",
+             "--project", project, "--config", config,
              "--plain", "--silent"],
             check=False, capture_output=True, text=True,
         )
@@ -98,7 +144,15 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
             )
         # `--plain` outputs the value followed by a newline; strip the trailing
         # newline only (preserve any internal newlines for multi-line values).
-        out[compose_var] = result.stdout.rstrip("\n")
+        raw = result.stdout.rstrip("\n")
+        # Convention: a compose-var whose name ends in _B64DECODED means the
+        # Doppler value is base64-encoded and must be decoded before injection.
+        # Used for CLAUDE_OAUTH_CREDENTIALS_B64DECODED (the operator stored
+        # ~/.claude/.credentials.json as base64 in Doppler; the Compose
+        # configs: content: block needs the raw JSON string).
+        if compose_var.endswith("_B64DECODED"):
+            raw = base64.b64decode(raw).decode("utf-8")
+        out[compose_var] = raw
     return out
 
 
@@ -789,6 +843,17 @@ AMTCTL_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/amtctl/config"
 STRESS_DASHBOARD_LOCAL_DIR = Path("apps/stress-dashboard")
 STRESS_DASHBOARD_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/stress-dashboard/code"
 
+# cluster-agent — LLM-driven SRE assistant. Same deploy pattern as amtctl /
+# stress-dashboard: stock python:3.14-alpine base image, app code on the pool,
+# bind-mounted into /app. We upload src/ + prompts/ only; data/ (SQLite state)
+# and venv/ (self-healing, Python-version-tied) are excluded deliberately.
+# Source dirs created by Tasks 9-19 — helper skips gracefully if not present yet.
+CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
+CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
+CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
+CLUSTER_AGENT_MAIN_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "main.py"
+CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
+
 
 def run(
     cli: Any,
@@ -829,6 +894,8 @@ def run(
         _ensure_amtctl_config_via_ctx(cli, ctx, log)
     if only in (None, "stress-dashboard"):
         _ensure_stress_dashboard_config_via_ctx(cli, ctx, log)
+    if only in (None, "cluster-agent"):
+        _ensure_cluster_agent_config_via_ctx(cli, ctx, log)
     # PXE build context MUST land before `app.create` for the `pxe` app:
     # the compose spec uses `build: /mnt/tank/system/apps-config/pxe/build`,
     # and TrueNAS's app.create immediately runs `docker compose up` which
@@ -1104,6 +1171,100 @@ def _ensure_stress_dashboard_config_via_ctx(cli: Any, ctx: Any, log: Any) -> Non
         )
         log.info("stress_dashboard_file_ensured", path=remote,
                  action=diff.action, changed=diff.changed)
+
+
+def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    """Upload the cluster-agent app source to the pool.
+
+    Layout on the pool:
+        .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
+            ├── main.py                        — FastAPI entrypoint (Task 18)
+            ├── src/                           — Python package (Tasks 9-19)
+            └── prompts/                       — Jinja2 prompt templates (Task 14)
+
+    Files NOT uploaded:
+      - docker-compose.yaml   (owned by ensure_custom_app)
+      - data/                 (SQLite state.db — must persist across redeploys)
+      - venv/                 (self-healing; tied to Python minor version)
+
+    Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
+    This helper runs in the phase-apps pre-upload block so the operator can
+    validate the registration with `manage.sh phase apps` before those tasks
+    are done. It skips gracefully if the files/dirs don't exist yet rather
+    than failing — the real code upload happens automatically once they appear.
+
+    Same deploy pattern as amtctl and stress-dashboard: stock python:3.14-alpine
+    base image, code on the pool, bind-mounted into /app in the container.
+    docker-compose.yaml's command block invokes `uvicorn main:app` which
+    resolves to /app/main.py — so main.py must be at the code/ root.
+    """
+    src_dir = CLUSTER_AGENT_SRC_LOCAL_DIR
+    prompts_dir = CLUSTER_AGENT_PROMPTS_LOCAL_DIR
+    main_file = CLUSTER_AGENT_MAIN_LOCAL_FILE
+
+    any_present = src_dir.is_dir() or prompts_dir.is_dir() or main_file.is_file()
+    if not any_present:
+        log.info(
+            "cluster_agent_config_skipped",
+            reason="source_dirs_missing",
+            src=str(src_dir),
+            prompts=str(prompts_dir),
+            main=str(main_file),
+            note="build them in Tasks 9-19",
+        )
+        return
+
+    from truenas_infra.client import upload_file
+
+    host = ctx.config.truenas_host
+    api_key = ctx.config.truenas_api_key
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
+        upload_file(
+            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
+            local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    # Upload main.py at the top level of code/ (uvicorn `main:app` entrypoint).
+    if main_file.is_file():
+        remote_main = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/main.py"
+        diff = ensure_file_on_nas(
+            cli, _upload,
+            local_path=main_file, remote_path=remote_main,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("cluster_agent_file_ensured", path=remote_main,
+                 action=diff.action, changed=diff.changed)
+    else:
+        log.info(
+            "cluster_agent_main_skipped",
+            reason="not_present_yet",
+            path=str(main_file),
+        )
+
+    # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
+    for subdir in (src_dir, prompts_dir):
+        if not subdir.is_dir():
+            log.info(
+                "cluster_agent_subdir_skipped",
+                reason="not_present_yet",
+                path=str(subdir),
+            )
+            continue
+        for local in sorted(subdir.rglob("*")):
+            if not local.is_file():
+                continue
+            # Preserve the subdir name (src/ or prompts/) in the remote path.
+            rel = local.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix()
+            remote = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{rel}"
+            diff = ensure_file_on_nas(
+                cli, _upload,
+                local_path=local, remote_path=remote,
+                mode=0o644, apply=ctx.apply,
+            )
+            log.info("cluster_agent_file_ensured", path=remote,
+                     action=diff.action, changed=diff.changed)
 
 
 def _ensure_homepage_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

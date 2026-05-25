@@ -1,0 +1,166 @@
+# cluster-agent — LLM-driven SRE assistant for the homelab K8s clusters.
+#
+# Spec: truenas-infra/docs/superpowers/specs/2026-05-23-cluster-agent-design.md
+# Repo home: apps/cluster-agent/
+# Runbook: wiki.w1.lv/runbooks/cluster-agent-runbook (lands in Task 22)
+#
+# Secrets source: dedicated Doppler project cluster-agent/prd (migrated from
+# infrastructure/ops in Task 22.5). Env var names match Doppler key names
+# directly — no rename layer needed. The project is the namespace; no prefix.
+#
+# LLM auth (active path): ANTHROPIC_API_KEY env var — anthropic SDK reads
+# this name natively. Operator sets the real sk-ant-* value in Doppler at
+# cluster-agent/prd.ANTHROPIC_API_KEY. OAuth path (CLAUDE_CREDENTIALS_PATH)
+# is retained but placeholder-only until Anthropic ships in-container OAuth
+# support (expected ~June 15, 2026 per Support Article 15036540).
+#
+# Observability auth: Loki/Prometheus/Alertmanager are reached via the K8s
+# API server's services/proxy endpoint using the kubeconfig SA token from
+# Doppler — no basic-auth credentials needed. The OIDC-gated *.w1.lv
+# hostnames are bypassed entirely. See tools/k8s_proxy.py.
+# NOTE: the cluster-agent-readonly ClusterRole (kube-infra) must gain
+# services/proxy GET on monitoring namespace before these tools work live.
+#
+# Image strategy: python:3.14-alpine base + persistent /venv (matches
+# amtctl/stress-dashboard). Self-healing venv rebuilds on Python version
+# drift. App code uploaded by _ensure_cluster_agent_config_via_ctx
+# (added in Task 8) to /mnt/tank/system/apps-config/cluster-agent/code/.
+#
+# Networking: egress to clusters + GH + Anthropic + S3.
+# Ingress: only Prometheus scrape on 9595 (mgmt VLAN bind).
+configs:
+  claude_oauth:
+    # _render_compose substitutes this via the same b64-decode hook as
+    # the AIStor license (wired in Task 8). The Doppler key holds the
+    # base64-encoded contents of ~/.claude/.credentials.json.
+    # Placeholder until Anthropic ships the in-container OAuth mechanism
+    # (~June 15, 2026). ANTHROPIC_API_KEY is the active LLM auth path
+    # until then — the SDK reads it automatically.
+    content: "${CLAUDE_OAUTH_CREDENTIALS_B64DECODED}"
+
+services:
+  cluster-agent:
+    image: python:3.14-alpine
+    container_name: cluster-agent
+    restart: unless-stopped
+    ports:
+      # Mgmt VLAN bind only — Prometheus scrapes this directly from
+      # both clusters (additional scrape_config added in Task 20).
+      - "10.10.5.10:9595:9595"
+    configs:
+      - source: claude_oauth
+        target: /claude/.credentials.json
+        mode: 0400
+    volumes:
+      # App code — uploaded by manage.sh phase apps via
+      # _ensure_cluster_agent_config_via_ctx in modules/apps.py (Task 8).
+      - /mnt/tank/system/apps-config/cluster-agent/code:/app:ro
+      # Writable state (SQLite DB, nightly-backed-up to MinIO)
+      - /mnt/tank/system/apps-config/cluster-agent/data:/data
+      # Persistent venv across image bumps
+      - /mnt/tank/system/apps-config/cluster-agent/venv:/venv
+    environment:
+      # ── Identity / kill switches (source: cluster-agent/prd)
+      - ENABLED=${ENABLED}
+      - DISABLED_MODES=${DISABLED_MODES}
+      - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
+      # ── Claude LLM auth
+      # Active path: ANTHROPIC_API_KEY — anthropic SDK reads this name natively.
+      # Set the real sk-ant-* value in Doppler at cluster-agent/prd.ANTHROPIC_API_KEY.
+      # Future path: CLAUDE_CREDENTIALS_PATH + the configs:-mounted OAuth credentials
+      # file. Both paths coexist; API key takes precedence if both are set (SDK
+      # env var > credentials file). Only API key is populated until June 15.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_CREDENTIALS_PATH=/claude/.credentials.json
+      # ── GitHub App identity
+      - GH_APP_ID=${GH_APP_ID}
+      - GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}
+      - GH_APP_INSTALLATION_ID=${GH_APP_INSTALLATION_ID}
+      # ── K8s — read-only on both, narrow-writer in dev cluster-agent-tests ns.
+      # These kubeconfigs also carry the SA token used by tools/k8s_proxy.py
+      # to reach Loki/Prom/AM via the apiserver services/proxy endpoint.
+      - KUBECONFIG_DEV=${KUBECONFIG_DEV}
+      - KUBECONFIG_PRD=${KUBECONFIG_PRD}
+      - KUBECONFIG_TEST_RESTORE_DEV=${KUBECONFIG_TEST_RESTORE_DEV}
+      # ── Observability — Grafana annotation API (Loki/Prom/AM use apiserver proxy)
+      - GRAFANA_API_TOKEN_DEV=${GRAFANA_API_TOKEN_DEV}
+      - GRAFANA_API_TOKEN_PRD=${GRAFANA_API_TOKEN_PRD}
+      # ── S3 (Mode G backup verification)
+      - MINIO_NAS_KEY_ID=${MINIO_NAS_KEY_ID}
+      - MINIO_NAS_SECRET_KEY=${MINIO_NAS_SECRET_KEY}
+      - B2_KEY_ID=${B2_KEY_ID}
+      - B2_APP_KEY=${B2_APP_KEY}
+      # ── Runtime
+      - PATH=/venv/bin:/usr/local/bin:/usr/bin:/bin
+      - PYTHONPATH=/app/src
+      - STATE_DB_PATH=/data/state.db
+      - LOG_LEVEL=INFO
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        # Rebuild the venv if it's missing OR was built against a
+        # different Python. The /venv bind-mount persists across image
+        # bumps, and a venv is tied to one Python minor version — a
+        # python:3.13 venv is unusable under a 3.14 base. Test the real
+        # interpreter (not just whether the uvicorn file exists); on
+        # failure `venv --clear` wipes the stale tree and rebuilds.
+        if ! /venv/bin/python -c 'import uvicorn' 2>/dev/null; then
+          echo "venv missing or stale — rebuilding…"
+          python -m venv --clear /venv
+          /venv/bin/pip install --no-cache-dir -q \
+            'fastapi==0.118.*' \
+            'uvicorn[standard]==0.35.*' \
+            'apscheduler==3.10.*' \
+            'prometheus_client==0.21.*' \
+            'httpx==0.28.*' \
+            'pydantic==2.10.*' \
+            'pyjwt==2.10.*' \
+            'claude-agent-sdk==0.1.*' \
+            'tenacity==9.0.*' \
+            'structlog==24.4.*' \
+            'pyyaml==6.0.*'
+          echo "venv ready"
+        fi
+        # Install kubectl + mc + curl + jq + sqlite (idempotent — apk skip if present)
+        if ! command -v kubectl >/dev/null 2>&1 || ! command -v mc >/dev/null 2>&1; then
+          apk add --no-cache kubectl mc curl jq sqlite >/dev/null 2>&1 || true
+        fi
+        # gh CLI (alpine community)
+        if ! command -v gh >/dev/null 2>&1; then
+          apk add --no-cache github-cli >/dev/null 2>&1 || true
+        fi
+        cd /app
+        exec /venv/bin/uvicorn main:app --host 0.0.0.0 --port 9595 --log-level info
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9595/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # Resource + capability hardening — first app on the NAS where these
+    # matter materially. Other apps (amtctl, stress-dashboard) are
+    # stateless HTTP dashboards with predictable resource usage and
+    # don't need them. The cluster-agent has:
+    #   - persistent state (SQLite at /data/state.db)
+    #   - external API calls that can spike load (Anthropic LLM bursts)
+    #   - subprocess forks (kubectl, gh, mc) with their own resource
+    #     footprints
+    #   - LLM-driven control flow that can in principle loop
+    # mem_limit + cpus cap a runaway agent before it can starve the NAS
+    # (Beelink ME Mini: 16GB RAM total, 4 weak N150 cores). cap_drop +
+    # no-new-privileges are near-free defense-in-depth on top of the
+    # GitHub App + read-only-SA + per-mode tool allowlist boundaries.
+    mem_limit: 1g
+    cpus: 1.0
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
