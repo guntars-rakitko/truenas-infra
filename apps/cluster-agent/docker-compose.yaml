@@ -156,7 +156,15 @@ services:
         cd /app
         exec /venv/bin/uvicorn main:app --host 0.0.0.0 --port 9595 --log-level info
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9595/health"]
+      # Use python (guaranteed present — it's the base image) rather than
+      # wget. The original `wget -q -O- http://localhost:9595/health`
+      # failed silently inside `python:3.13-alpine` (Docker reported
+      # unhealthy → TrueNAS Apps UI stuck on "Deploying" indefinitely
+      # despite the container actually serving /metrics fine to
+      # Prometheus). curl is apk-added at boot, but only AFTER the venv
+      # build, which races the first healthcheck after a restart — so
+      # we use python -c instead (no apk dependency, no race).
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9595/health', timeout=3).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
