@@ -25,9 +25,20 @@
 # NOTE: the cluster-agent-readonly ClusterRole (kube-infra) must gain
 # services/proxy GET on monitoring namespace before these tools work live.
 #
-# Image strategy: python:3.14-alpine base + persistent /venv (matches
-# amtctl/stress-dashboard). Self-healing venv rebuilds on Python version
-# drift. App code uploaded by _ensure_cluster_agent_config_via_ctx
+# Image strategy: python:3.13-alpine base + persistent /venv. Self-healing
+# venv rebuilds on Python version drift. App code uploaded by
+# _ensure_cluster_agent_config_via_ctx
+#
+# WHY 3.13 (not 3.14 like amtctl): pydantic-core 2.10 doesn't yet publish
+# `cpython-314-musllinux` wheels, so pip falls back to source-build on
+# alpine, which needs Rust, and alpine's musl can't satisfy the cargo
+# binary's glibc deps (libgcc_s.so.1 + _Unwind_* symbols). Bricked the
+# container in a crash loop 2026-05-25 until logs revealed the cause.
+# Python 3.13 has pre-built wheels — clean install, no Rust. Revisit when
+# pydantic-core publishes cp314-musllinux (probably ~3-6 months out).
+#
+# Original comment (kept for context): self-healing venv rebuilds on Python
+# version drift. App code uploaded by _ensure_cluster_agent_config_via_ctx
 # (added in Task 8) to /mnt/tank/system/apps-config/cluster-agent/code/.
 #
 # Networking: egress to clusters + GH + Anthropic + S3.
@@ -44,7 +55,7 @@ configs:
 
 services:
   cluster-agent:
-    image: python:3.14-alpine
+    image: python:3.13-alpine
     container_name: cluster-agent
     restart: unless-stopped
     ports:
