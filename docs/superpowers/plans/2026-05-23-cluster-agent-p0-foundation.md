@@ -71,30 +71,29 @@ Before any task below can be executed, the operator must complete these one-time
   - After creation: download the private key PEM, copy the App ID + Installation ID
   - Push App ID, private key (base64), and Installation ID into Doppler per Pre-1
 
-- [ ] **Pre-3: ⏸ DEFERRED — Claude OAuth credentials**
+- [x] **Pre-3: ✅ Active path — run `claude setup-token` on laptop, paste into Doppler**
 
-  **Status (2026-05-25):** Empirical test during Task 22.5 confirmed that
-  Claude Code v2.1.150 on macOS does NOT create `~/.claude/.credentials.json`.
-  OAuth tokens are stored as an encrypted blob in
-  `~/Library/Application Support/Claude/config.json` under `oauth:tokenCache`,
-  with no documented mechanism to export them into a Linux container in a
-  refreshable form. The `claude-agent-sdk` Python package's
-  `ClaudeAgentOptions` accepts no auth parameter.
+  **RESOLVED 2026-05-25:** Earlier "deferred to June 15" conclusion was wrong
+  (see § 3.6.1 in the spec for full historical context). The `claude setup-token`
+  command generates a 1-year `sk-ant-oat01-*` token purpose-built for
+  headless/CI/container use. The Agent SDK reads it from `CLAUDE_CODE_OAUTH_TOKEN`
+  env var natively — no credentials file, no SDK parameter plumbing needed.
+  June 15 only changes billing (separate $100/mo bucket); the auth mechanism
+  works today.
 
-  Per Anthropic Support Article 15036540, Agent SDK Max-subscription
-  support becomes "explicitly supported" on **June 15, 2026** — Anthropic
-  should publish the in-container OAuth mechanism then.
+  **Action (operator):** run `claude setup-token` on your Mac → copy the
+  printed `sk-ant-oat01-*` value → `doppler secrets set CLAUDE_CODE_OAUTH_TOKEN=<value> --project cluster-agent --config prd`.
 
-  **Action:** Doppler key `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS`
-  is set to placeholder `__PLACEHOLDER_OPERATOR_FILL__`. Operator updates
-  it on/after June 15 using the mechanism Anthropic publishes.
+  **Doppler state:** `cluster-agent/prd.CLAUDE_CODE_OAUTH_TOKEN` is set to
+  placeholder `__PLACEHOLDER_OPERATOR_FILL__` until operator pastes the real
+  value. P0 has zero LLM calls so placeholder never reaches the SDK.
 
-  **Fallback if June 15 doesn't ship a usable OAuth path:** switch the
-  agent to `ANTHROPIC_API_KEY` env var (pay-per-token API, ~$10-15/mo).
-  One-line env var swap in `docker-compose.yaml`.
+  **Footgun note:** if `ANTHROPIC_API_KEY` is also in the env, the SDK silently
+  shadows OAuth. `docker-compose.yaml` passes only one; `main.py` fail-fasts
+  if both leak in simultaneously.
 
-  **P0 impact:** None. P0 has zero LLM calls; placeholder is never read
-  by the SDK in P0. P1 (Mode A enable) is post-June-15 anyway.
+  **Fallback:** `ANTHROPIC_API_KEY` stays in Doppler. Operator-side compose
+  toggle: swap the one env line in `docker-compose.yaml` if OAuth ever breaks.
 
 ---
 

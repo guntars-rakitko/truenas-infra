@@ -58,8 +58,13 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         # (the base64-encoded ~/.claude/.credentials.json injected as a file
         # via Compose configs:). Placeholder until ~June 15, 2026.
         "CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLAUDE_OAUTH_CREDENTIALS",
-        # LLM auth — active path. anthropic SDK reads ANTHROPIC_API_KEY
-        # natively; operator sets the real sk-ant-* value via Doppler.
+        # LLM auth — active path. Agent SDK reads CLAUDE_CODE_OAUTH_TOKEN
+        # (sk-ant-oat01-* from `claude setup-token`) natively.
+        # ANTHROPIC_API_KEY stays registered as documented fallback; it is NOT
+        # passed into the container env (see docker-compose.yaml header).
+        # Operator swaps compose line if API key needed (silent-shadow footgun
+        # means both must never be set simultaneously — main.py fail-fast).
+        "CLAUDE_CODE_OAUTH_TOKEN":       "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
         "GH_APP_ID":                     "GH_APP_ID",
         "GH_APP_PRIVATE_KEY":            "GH_APP_PRIVATE_KEY",

@@ -8,11 +8,15 @@
 # infrastructure/ops in Task 22.5). Env var names match Doppler key names
 # directly — no rename layer needed. The project is the namespace; no prefix.
 #
-# LLM auth (active path): ANTHROPIC_API_KEY env var — anthropic SDK reads
-# this name natively. Operator sets the real sk-ant-* value in Doppler at
-# cluster-agent/prd.ANTHROPIC_API_KEY. OAuth path (CLAUDE_CREDENTIALS_PATH)
-# is retained but placeholder-only until Anthropic ships in-container OAuth
-# support (expected ~June 15, 2026 per Support Article 15036540).
+# LLM auth (active path): CLAUDE_CODE_OAUTH_TOKEN — 1-year OAuth token from
+# `claude setup-token`. Bills against the operator's Max subscription. Until
+# June 15, 2026 calls share the rate-limit pool with interactive Claude Code;
+# after June 15 they move to a separate $100/mo bucket. ANTHROPIC_API_KEY
+# remains in Doppler as a documented fallback (operator-side compose toggle).
+#
+# Critical SDK behavior: if ANTHROPIC_API_KEY is set in the env, it silently
+# shadows CLAUDE_CODE_OAUTH_TOKEN — we pass only one at a time. main.py also
+# fails fast on container start if both happen to be set.
 #
 # Observability auth: Loki/Prometheus/Alertmanager are reached via the K8s
 # API server's services/proxy endpoint using the kubeconfig SA token from
@@ -65,13 +69,18 @@ services:
       - DISABLED_MODES=${DISABLED_MODES}
       - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
       # ── Claude LLM auth
-      # Active path: ANTHROPIC_API_KEY — anthropic SDK reads this name natively.
-      # Set the real sk-ant-* value in Doppler at cluster-agent/prd.ANTHROPIC_API_KEY.
-      # Future path: CLAUDE_CREDENTIALS_PATH + the configs:-mounted OAuth credentials
-      # file. Both paths coexist; API key takes precedence if both are set (SDK
-      # env var > credentials file). Only API key is populated until June 15.
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - CLAUDE_CREDENTIALS_PATH=/claude/.credentials.json
+      # CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-...) — operator obtains via
+      # `claude setup-token` on laptop, pastes into Doppler. Agent SDK reads
+      # this env var natively. Bills against Max subscription (shared pool
+      # with interactive Claude Code until June 15, 2026; separate $100/mo
+      # bucket after).
+      #
+      # ANTHROPIC_API_KEY is INTENTIONALLY NOT passed here even though it
+      # exists in Doppler. The SDK shadows OAuth with API key silently if
+      # both are set — operator-side toggle: if you ever need to fall back
+      # to API key, swap this line for ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # and remove the CLAUDE_CODE_OAUTH_TOKEN line.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       # ── GitHub App identity
       - GH_APP_ID=${GH_APP_ID}
       - GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}
@@ -154,7 +163,23 @@ services:
     # GitHub App + read-only-SA + per-mode tool allowlist boundaries.
     mem_limit: 1g
     cpus: 1.0
+    # Drop everything by default, then add back only the capabilities
+    # python -m venv + pip install + apk add actually need:
+    #   CHOWN, SETUID, SETGID: package install file-permission ops
+    #   DAC_OVERRIDE, FOWNER: write to /venv from a fresh process; set file modes
+    #   SETFCAP: required by some apk packages (alpine package install)
+    # Container is still drop-by-default on the privileged caps (NET_ADMIN,
+    # SYS_ADMIN, SYS_MODULE, NET_RAW, etc.) and keeps no-new-privileges.
+    # Hypothesis-driven fix for 2026-05-25 crash-loop; iterate if logs prove
+    # a different root cause.
     cap_drop: [ALL]
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETFCAP
     security_opt:
       - no-new-privileges:true
     networks:
