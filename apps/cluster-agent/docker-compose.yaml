@@ -43,16 +43,6 @@
 #
 # Networking: egress to clusters + GH + Anthropic + S3.
 # Ingress: only Prometheus scrape on 9595 (mgmt VLAN bind).
-configs:
-  claude_oauth:
-    # _render_compose substitutes this via the same b64-decode hook as
-    # the AIStor license (wired in Task 8). The Doppler key holds the
-    # base64-encoded contents of ~/.claude/.credentials.json.
-    # Placeholder until Anthropic ships the in-container OAuth mechanism
-    # (~June 15, 2026). ANTHROPIC_API_KEY is the active LLM auth path
-    # until then — the SDK reads it automatically.
-    content: "${CLAUDE_OAUTH_CREDENTIALS_B64DECODED}"
-
 services:
   cluster-agent:
     image: python:3.13-alpine
@@ -62,10 +52,6 @@ services:
       # Mgmt VLAN bind only — Prometheus scrapes this directly from
       # both clusters (additional scrape_config added in Task 20).
       - "10.10.5.10:9595:9595"
-    configs:
-      - source: claude_oauth
-        target: /claude/.credentials.json
-        mode: 0400
     volumes:
       # App code — uploaded by manage.sh phase apps via
       # _ensure_cluster_agent_config_via_ctx in modules/apps.py (Task 8).

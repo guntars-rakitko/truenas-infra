@@ -52,18 +52,19 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         # Env var names match Doppler key names exactly — project is the
         # namespace, no CLUSTER_AGENT_ prefix needed.
         #
-        # _B64DECODED convention (Task 8): any compose-var ending in
-        # _B64DECODED means the Doppler value is base64-encoded and is
-        # decoded before injection. Used here for CLAUDE_OAUTH_CREDENTIALS
-        # (the base64-encoded ~/.claude/.credentials.json injected as a file
-        # via Compose configs:). Placeholder until ~June 15, 2026.
-        "CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLAUDE_OAUTH_CREDENTIALS",
         # LLM auth — active path. Agent SDK reads CLAUDE_CODE_OAUTH_TOKEN
-        # (sk-ant-oat01-* from `claude setup-token`) natively.
-        # ANTHROPIC_API_KEY stays registered as documented fallback; it is NOT
+        # (sk-ant-oat01-* from `claude setup-token`) natively. Bills against
+        # Max subscription; pool-shares with interactive Claude Code until
+        # 2026-06-15 when it moves to a separate $100/mo bucket.
+        # ANTHROPIC_API_KEY stays registered as documented fallback — NOT
         # passed into the container env (see docker-compose.yaml header).
         # Operator swaps compose line if API key needed (silent-shadow footgun
         # means both must never be set simultaneously — main.py fail-fast).
+        #
+        # (Previously had a file-based path via Compose configs: + a
+        # CLAUDE_OAUTH_CREDENTIALS_B64DECODED entry — dropped 2026-05-25
+        # after empirical research showed CLAUDE_CODE_OAUTH_TOKEN env var
+        # is the canonical headless mechanism.)
         "CLAUDE_CODE_OAUTH_TOKEN":       "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
         "GH_APP_ID":                     "GH_APP_ID",
@@ -152,18 +153,16 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
         raw = result.stdout.rstrip("\n")
         # Convention: a compose-var whose name ends in _B64DECODED means the
         # Doppler value is base64-encoded and must be decoded before injection.
-        # Used for CLAUDE_OAUTH_CREDENTIALS_B64DECODED (the operator stored
-        # ~/.claude/.credentials.json as base64 in Doppler; the Compose
-        # configs: content: block needs the raw JSON string).
+        # No current consumer (was used by CLAUDE_OAUTH_CREDENTIALS_B64DECODED
+        # before that file-based path was dropped 2026-05-25 in favor of
+        # CLAUDE_CODE_OAUTH_TOKEN). Kept as a general-purpose hook for future
+        # apps that need binary credentials surfaced via Compose configs:.
         if compose_var.endswith("_B64DECODED"):
             try:
                 raw = base64.b64decode(raw).decode("utf-8")
             except Exception:
-                # Placeholder value (not yet a real base64 blob — e.g.
-                # CLAUDE_OAUTH_CREDENTIALS deferred to post-June-15).
-                # Inject as-is; the container will start fine and the
-                # compose configs: file just won't hold valid JSON until
-                # the operator populates the real Doppler value.
+                # Placeholder value (not yet a real base64 blob) — inject
+                # as-is; downstream consumer must handle the placeholder.
                 pass
         out[compose_var] = raw
     return out
