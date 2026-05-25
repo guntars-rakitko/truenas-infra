@@ -23,6 +23,13 @@ from pathlib import Path
 import jinja2
 
 
+class _PreservingUndefined(jinja2.Undefined):
+    """Preserve undefined variable syntax so per-call templates can be filled in later."""
+
+    def __str__(self) -> str:
+        return "{{ " + self._undefined_name + " }}"
+
+
 _ROOT = Path(__file__).resolve().parents[3] / "prompts"
 
 
@@ -31,6 +38,7 @@ def _env() -> jinja2.Environment:
         loader=jinja2.FileSystemLoader(str(_ROOT)),
         autoescape=False,
         keep_trailing_newline=True,
+        undefined=_PreservingUndefined,
     )
 
 
