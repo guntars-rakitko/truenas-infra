@@ -95,9 +95,13 @@ services:
       # and remove the CLAUDE_CODE_OAUTH_TOKEN line.
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       # ── GitHub App identity
-      - GH_APP_ID=${GH_APP_ID}
-      - GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}
-      - GH_APP_INSTALLATION_ID=${GH_APP_INSTALLATION_ID}
+      # Mode A onwards: the github tool (src/cluster_agent/tools/github.py)
+      # reads CLUSTER_AGENT_GH_APP_* (matches the test fixtures); the
+      # Doppler keys keep the GH_APP_* name to stay compact. Translate
+      # at the compose layer.
+      - CLUSTER_AGENT_GH_APP_ID=${GH_APP_ID}
+      - CLUSTER_AGENT_GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}
+      - CLUSTER_AGENT_GH_APP_INSTALLATION_ID=${GH_APP_INSTALLATION_ID}
       # ── K8s — read-only on both, narrow-writer in dev cluster-agent-tests ns.
       # These kubeconfigs also carry the SA token used by tools/k8s_proxy.py
       # to reach Loki/Prom/AM via the apiserver services/proxy endpoint.
