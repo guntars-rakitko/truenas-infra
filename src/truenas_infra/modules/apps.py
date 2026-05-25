@@ -151,7 +151,15 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
         # ~/.claude/.credentials.json as base64 in Doppler; the Compose
         # configs: content: block needs the raw JSON string).
         if compose_var.endswith("_B64DECODED"):
-            raw = base64.b64decode(raw).decode("utf-8")
+            try:
+                raw = base64.b64decode(raw).decode("utf-8")
+            except Exception:
+                # Placeholder value (not yet a real base64 blob — e.g.
+                # CLAUDE_OAUTH_CREDENTIALS deferred to post-June-15).
+                # Inject as-is; the container will start fine and the
+                # compose configs: file just won't hold valid JSON until
+                # the operator populates the real Doppler value.
+                pass
         out[compose_var] = raw
     return out
 
