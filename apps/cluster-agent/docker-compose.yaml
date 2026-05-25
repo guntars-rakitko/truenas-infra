@@ -121,6 +121,10 @@ services:
       - PYTHONPATH=/app/src
       - STATE_DB_PATH=/data/state.db
       - LOG_LEVEL=INFO
+      # ── Mode A (P1+)
+      - SANDBOX_REPO=${SANDBOX_REPO}
+      - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
+      - LLM_MODEL=${LLM_MODEL}
     working_dir: /app
     command:
       - sh
