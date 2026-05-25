@@ -50,3 +50,20 @@ def test_anthropic_api_key_env_is_visible(monkeypatch):
     import os
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-placeholder")
     assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-test-placeholder"
+
+
+def test_fail_fast_on_both_auth_envs_set(monkeypatch):
+    """Both ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN set → import raises."""
+    import importlib
+    import sys
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fake")
+    # Remove cached module so the top-level check runs fresh on re-import.
+    sys.modules.pop("main", None)
+    try:
+        with pytest.raises(RuntimeError, match="shadow"):
+            importlib.import_module("main")
+    finally:
+        # Restore the cached module so subsequent tests can use it normally.
+        sys.modules.pop("main", None)

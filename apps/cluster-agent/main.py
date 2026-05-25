@@ -25,6 +25,17 @@ from cluster_agent.emit.metrics import render
 from cluster_agent.scheduler import Scheduler
 
 
+# Fail-fast on auth-shadowing footgun: the Agent SDK silently uses
+# ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN if both are set,
+# meaning we'd quietly burn API-key credit instead of Max subscription.
+# Our docker-compose passes only one at a time — this catches future
+# regressions / operator-side mistakes.
+if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    raise RuntimeError(
+        "Both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set — the SDK "
+        "would silently shadow OAuth with API key. Pass only one in container env."
+    )
+
 _BOOT_TIME = time.time()
 _scheduler = Scheduler()
 
