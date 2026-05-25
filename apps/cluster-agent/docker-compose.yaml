@@ -132,12 +132,14 @@ services:
       - |
         set -e
         # Rebuild the venv if it's missing OR was built against a
-        # different Python. The /venv bind-mount persists across image
-        # bumps, and a venv is tied to one Python minor version — a
-        # python:3.13 venv is unusable under a 3.14 base. Test the real
-        # interpreter (not just whether the uvicorn file exists); on
-        # failure `venv --clear` wipes the stale tree and rebuilds.
-        if ! /venv/bin/python -c 'import uvicorn' 2>/dev/null; then
+        # different Python OR is missing any of the dependency markers
+        # we add over time. The /venv bind-mount persists across image
+        # bumps and ADDS-only-via-self-heal — i.e. when we add a new
+        # `pip install` entry below, the check must include that
+        # package's `import` line, else old venvs never pick it up.
+        # Markers checked: uvicorn (P0), jinja2 (P1 prompt loader),
+        # claude_agent_sdk (P1 LLM wrapper).
+        if ! /venv/bin/python -c 'import uvicorn, jinja2, claude_agent_sdk' 2>/dev/null; then
           echo "venv missing or stale — rebuilding…"
           python -m venv --clear /venv
           /venv/bin/pip install --no-cache-dir -q \
@@ -149,6 +151,7 @@ services:
             'jinja2==3.1.*' \
             'pydantic==2.10.*' \
             'pyjwt==2.10.*' \
+            'claude-agent-sdk==0.1.*' \
             'tenacity==9.0.*' \
             'structlog==24.4.*' \
             'pyyaml==6.0.*'
