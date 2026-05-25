@@ -44,9 +44,11 @@ async def test_mode_a_create_path(tmp_path, monkeypatch):
         return canned_response
     monkeypatch.setattr(llm, "_sdk_query", fake_sdk_query)
 
-    # Stub: Grafana + GH (these are re-exported in alert_triage module)
-    monkeypatch.setattr(alert_triage, "post_annotation", lambda **kw: "1001")
-    monkeypatch.setattr(alert_triage, "gh_issue_create",
+    # Stub: Grafana + GH (alert_triage delegates to dispatch.dispatch,
+    # so patch the names where dispatch resolves them)
+    from cluster_agent import dispatch as d_mod
+    monkeypatch.setattr(d_mod, "post_annotation", lambda **kw: "1001")
+    monkeypatch.setattr(d_mod, "gh_issue_create",
                         lambda repo, title, body, labels=None: {"number": 7})
     monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
     monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
@@ -86,11 +88,12 @@ async def test_mode_a_dedup_skips_recent_open_issue(tmp_path, monkeypatch):
         return (FIXTURES / "llm_response_pod_oom.json").read_text()
     monkeypatch.setattr(llm, "_sdk_query", fake_sdk_query)
 
+    from cluster_agent import dispatch as d_mod
     gh_create = MagicMock()
     gh_comment = MagicMock(return_value={"id": 999})
-    monkeypatch.setattr(alert_triage, "gh_issue_create", gh_create)
-    monkeypatch.setattr(alert_triage, "gh_issue_comment", gh_comment)
-    monkeypatch.setattr(alert_triage, "post_annotation", lambda **kw: "1002")
+    monkeypatch.setattr(d_mod, "gh_issue_create", gh_create)
+    monkeypatch.setattr(d_mod, "gh_issue_comment", gh_comment)
+    monkeypatch.setattr(d_mod, "post_annotation", lambda **kw: "1002")
     monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
     monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
     monkeypatch.setenv("MODE_A_BUDGET_USD", "0.50")

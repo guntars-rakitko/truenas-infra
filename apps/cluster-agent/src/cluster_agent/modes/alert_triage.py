@@ -13,12 +13,6 @@ loop per run is fine — Mode A only fires every 5 min.
 
 Per-mode kill switch is in scheduler.py (not here); if Mode A is
 disabled, the scheduler closure never calls into this module.
-
-Surface helpers (`post_annotation`, `gh_issue_create`, `gh_issue_comment`)
-are imported at module level so tests can monkeypatch them on this
-module without reaching into the underlying tools modules. The
-multi-surface emit is done inline in this module (rather than via
-`dispatch.dispatch`) so the monkeypatching is honored.
 """
 from __future__ import annotations
 import asyncio
@@ -28,13 +22,10 @@ import logging
 import os
 
 from ..llm import triage_alert, LLMBudgetExceeded
-from ..schema import Finding
 from ..state.db import StateDB
-from ..state.dedup import lookup, DedupAction, _DedupActionKind, record
+from ..state.dedup import lookup, DedupAction
 from ..tools.alertmanager import alertmanager_alerts
-from ..tools.grafana import post_annotation                  # re-exported for stub-friendliness in tests
-from ..tools.github import gh_issue_create, gh_issue_comment  # re-exported for stub-friendliness in tests
-from ..dispatch import _issue_body  # rendering helper only — no I/O
+from ..dispatch import dispatch
 from .context import gather_context_for_alert
 
 
@@ -107,90 +98,13 @@ async def run_async(*, cluster: str) -> ModeResult:
 
         # Re-lookup with the LLM's dedup_key and dispatch
         action = lookup(sdb, finding.dedup_key)
-        _emit(finding, action, sdb)
+        dispatch(finding, action, db=sdb)
         emitted += 1
 
     return ModeResult(
         alerts_seen=len(alerts),
         findings_emitted=emitted,
         findings_skipped_dedup=skipped,
-    )
-
-
-def _emit(finding: Finding, action: DedupAction, sdb: StateDB) -> None:
-    """Multi-surface emit (Grafana + GH + SQLite). Inlined here so the
-    module-level imports (`post_annotation`, `gh_issue_create`,
-    `gh_issue_comment`) are the live surface — tests can monkeypatch
-    them on this module without touching the underlying tools."""
-    time_ms = int(finding.created_at.timestamp() * 1000)
-    tags = [
-        "cluster-agent",
-        f"mode:{finding.mode}",
-        f"cluster:{finding.cluster}",
-        f"severity:{finding.severity}",
-    ]
-
-    # 1) Grafana — always
-    try:
-        post_annotation(cluster=finding.cluster, text=finding.title,
-                        tags=tags, time_ms=time_ms)
-    except Exception as e:
-        log.warning("grafana annotation failed: %r", e)
-
-    # 2) GH — create or comment, conditionally
-    repo = os.environ.get("SANDBOX_REPO")
-    gh_ref: str | None = None
-    if action.kind == _DedupActionKind.CREATE:
-        if not repo:
-            log.warning("SANDBOX_REPO not set; skipping GH create")
-        else:
-            try:
-                resp = gh_issue_create(
-                    repo,
-                    title=finding.title,
-                    body=_issue_body(finding),
-                    labels=[
-                        f"mode-{finding.mode}",
-                        f"severity-{finding.severity}",
-                        f"cluster-{finding.cluster}",
-                    ],
-                )
-                gh_ref = f"{repo}#{resp['number']}"
-            except Exception as e:
-                log.warning("gh_issue_create failed: %r", e)
-    elif action.kind == _DedupActionKind.COMMENT:
-        gh_ref = action.gh_issue_ref
-        if action.gh_issue_ref and repo:
-            try:
-                number = int(action.gh_issue_ref.split("#")[-1])
-                gh_issue_comment(
-                    repo, number,
-                    body=f"Re-fired at {finding.created_at.isoformat()}.\n\n" + _issue_body(finding),
-                )
-            except Exception as e:
-                log.warning("gh_issue_comment failed: %r", e)
-    elif action.kind == _DedupActionKind.REOPEN:
-        # For the P1 dev soak we treat reopen identically to comment.
-        gh_ref = action.gh_issue_ref
-        if action.gh_issue_ref and repo:
-            try:
-                number = int(action.gh_issue_ref.split("#")[-1])
-                gh_issue_comment(
-                    repo, number,
-                    body=f"Re-fired after closure at {finding.created_at.isoformat()}.\n\n" + _issue_body(finding),
-                )
-            except Exception as e:
-                log.warning("gh_issue_comment (reopen) failed: %r", e)
-
-    # 3) SQLite — always
-    record(
-        sdb, finding.dedup_key,
-        gh_issue_ref=gh_ref,
-        state="open",
-        mode=finding.mode,
-        cluster=finding.cluster,
-        severity=finding.severity,
-        payload_json=finding.model_dump_json(),
     )
 
 
