@@ -71,16 +71,30 @@ Before any task below can be executed, the operator must complete these one-time
   - After creation: download the private key PEM, copy the App ID + Installation ID
   - Push App ID, private key (base64), and Installation ID into Doppler per Pre-1
 
-- [ ] **Pre-3: Run `claude login` on NAS (or on operator laptop, then copy)**
+- [ ] **Pre-3: ⏸ DEFERRED — Claude OAuth credentials**
 
-  ```sh
-  # On NAS via SSH, OR on operator laptop:
-  claude login    # opens browser, completes OAuth flow
-  # Resulting file: ~/.claude/.credentials.json
-  base64 < ~/.claude/.credentials.json   # paste into CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS
-  ```
+  **Status (2026-05-25):** Empirical test during Task 22.5 confirmed that
+  Claude Code v2.1.150 on macOS does NOT create `~/.claude/.credentials.json`.
+  OAuth tokens are stored as an encrypted blob in
+  `~/Library/Application Support/Claude/config.json` under `oauth:tokenCache`,
+  with no documented mechanism to export them into a Linux container in a
+  refreshable form. The `claude-agent-sdk` Python package's
+  `ClaudeAgentOptions` accepts no auth parameter.
 
-  Note: until June 15, 2026, Agent SDK calls draw against the operator's main Max interactive pool. P0 has no LLM calls so this only matters for P1+.
+  Per Anthropic Support Article 15036540, Agent SDK Max-subscription
+  support becomes "explicitly supported" on **June 15, 2026** — Anthropic
+  should publish the in-container OAuth mechanism then.
+
+  **Action:** Doppler key `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS`
+  is set to placeholder `__PLACEHOLDER_OPERATOR_FILL__`. Operator updates
+  it on/after June 15 using the mechanism Anthropic publishes.
+
+  **Fallback if June 15 doesn't ship a usable OAuth path:** switch the
+  agent to `ANTHROPIC_API_KEY` env var (pay-per-token API, ~$10-15/mo).
+  One-line env var swap in `docker-compose.yaml`.
+
+  **P0 impact:** None. P0 has zero LLM calls; placeholder is never read
+  by the SDK in P0. P1 (Mode A enable) is post-June-15 anyway.
 
 ---
 

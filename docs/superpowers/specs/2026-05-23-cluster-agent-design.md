@@ -179,15 +179,12 @@ API key remains a fallback option (Anthropic recommends it for shared
 production-scale automation; not required for solo homelab use).
 
 Configuration:
-- One-time `claude login` on NAS to perform OAuth flow (or laptop +
-  copy `~/.claude/.credentials.json`)
-- Credentials base64-encoded and stored in Doppler
-  `infrastructure/ops.CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS`
+- Credentials live in dedicated Doppler project: `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS`
 - Surfaced into the container via the same Docker Compose `configs:`
   pattern used for the AIStor license — `_render_compose` substitutes
   the Doppler value at deploy time, container mounts at
   `/claude/.credentials.json`, agent points the SDK there at boot
-- SDK handles token refresh automatically
+- SDK handles token refresh automatically (in theory; see § 3.6.1 below)
 - Anthropic Console "Usage credits" setting:
   - **Default (disabled)** = on exhausting $100/mo Agent SDK credit, requests
     return rate-limit errors until next billing cycle (safe, agent self-throttles)
@@ -197,24 +194,49 @@ Configuration:
 - Aggressive prompt caching (system prompt + policy reused on every run) →
   realistic spend $10-15/mo, far below the $100 credit ceiling
 
-Operational note: OAuth credentials are less robust than a static API key.
-If a token is revoked (laptop wipe, explicit Claude logout, etc.) the
-container cannot self-recover. The agent self-monitors and emits a
-`severity:high` finding + emails operator on SDK auth failure; recovery
-is a one-time `claude login` + Doppler key update.
+#### 3.6.1 Open: how to actually obtain a containerizable OAuth credential
 
-**Pre-June-15 behavior:** Agent SDK on Max IS usable today, but until
-June 15 the calls draw against the main Max interactive pool (same pool
-as the operator's chat/Claude Code sessions). The phrase in Support
+**Empirical finding (2026-05-25 during Task 22.5):** Claude Code v2.1.150
+on macOS does **not** create `~/.claude/.credentials.json`. OAuth tokens
+are stored as a ~1776-char encoded/encrypted blob in
+`~/Library/Application Support/Claude/config.json` under the
+`oauth:tokenCache` key. The `claude-agent-sdk` Python package's
+`ClaudeAgentOptions` exposes **no auth-related parameters** — the SDK
+delegates auth either to the Claude Code CLI's host-side session
+(macOS Keychain / encrypted blob, not portable to Linux) OR to the
+standard `ANTHROPIC_API_KEY` env var (pay-per-token API).
+
+**There is currently no documented path** to export Max-OAuth tokens
+into a Linux container in a refreshable form. Per Anthropic Support
+Article 15036540, this is expected to change on **June 15, 2026** when
+Agent SDK Max-subscription support goes "explicitly supported";
+Anthropic should publish the in-container mechanism around that date.
+
+**Decision (2026-05-25):** defer the Claude OAuth credential population
+until ~June 15 when the supported mechanism ships. In the meantime:
+- The Doppler key `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS` is set
+  to a placeholder (`__PLACEHOLDER_OPERATOR_FILL__`) so it's visible
+  in Doppler.
+- P0 has zero LLM calls (Tasks 1-24 are pure foundation: container,
+  scheduler skeleton with no modes registered, observability, deploy).
+  The placeholder never gets read by the SDK in P0.
+- P1 (Mode A enable) is post-June-15 anyway per the schedule below.
+- Fallback if June 15 doesn't ship a usable in-container OAuth flow:
+  switch to `ANTHROPIC_API_KEY` (~$10-15/mo). One-line env var swap.
+
+Operational note: OAuth credentials (when usable) are less robust than
+a static API key. If a token is revoked the container cannot self-recover.
+The agent self-monitors and emits a `severity:high` finding + emails
+operator on SDK auth failure; recovery is a one-time re-auth + Doppler
+key update.
+
+**Pre-June-15 behavior** (if OAuth-in-container were available today):
+Agent SDK calls would draw against the main Max interactive pool. Per
 Article 15036540 — *"Starting June 15, 2026, Agent SDK usage no longer
 counts toward your Claude plan's usage limits"* — implies the current
 behavior is to count against those limits.
 
-Practical rollout implication: we can authenticate via Max OAuth on
-day one (no API key fallback needed), but high-volume modes (Mode A's
-5-min cron, Mode I's 2h cron) should be deferred until June 15 to avoid
-eating into the operator's interactive pool. The recommended interim
-schedule:
+Practical rollout schedule:
 
 | Period | LLM cadence |
 |---|---|
