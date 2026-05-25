@@ -42,16 +42,32 @@
 # (added in Task 8) to /mnt/tank/system/apps-config/cluster-agent/code/.
 #
 # Networking: egress to clusters + GH + Anthropic + S3.
-# Ingress: only Prometheus scrape on 9595 (mgmt VLAN bind).
+# Ingress: Prometheus scrape on 9595, bound on BOTH data-VLAN IPs.
+#
+# Bind strategy (2026-05-25 fix): the original mgmt-VLAN bind
+# (10.10.5.10:9595) silently broke in-cluster scrapes. Cilium's IPv4
+# masquerade does NOT SNAT pod-to-external traffic on the same L3 as
+# the node's mgmt interface — pod IPs (10.244.x.x) leaked out unrouted,
+# NAS replies dropped, symptom = "context deadline exceeded".
+# Fix: bind on both data-VLAN IPs (same pattern as MinIO's data-plane
+# S3 API: 10.10.10.10:9000 for prd, 10.10.15.10:9000 for dev).
+# Each cluster scrapes via its OWN data-VLAN IP (substituted per cluster
+# in kube-infra via cluster-env.CLUSTER_NAS_DATA_IP). Same VLAN as the
+# scraping node → direct L2 → no masquerade question.
 services:
   cluster-agent:
     image: python:3.13-alpine
     container_name: cluster-agent
     restart: unless-stopped
     ports:
-      # Mgmt VLAN bind only — Prometheus scrapes this directly from
-      # both clusters (additional scrape_config added in Task 20).
-      - "10.10.5.10:9595:9595"
+      # Each cluster scrapes the agent via its OWN data-VLAN IP — same
+      # pattern as MinIO's data-plane API (10.10.10.10:9000 for prd,
+      # 10.10.15.10:9000 for dev). Mgmt-VLAN bind was tried first (2026-05-24)
+      # but Cilium's masquerade silently breaks pod→NAS traffic when both
+      # endpoints share an L3 (mgmt VLAN, where node mgmt ifaces live).
+      # See kube-infra PR for the matching Prometheus scrape target change.
+      - "10.10.10.10:9595:9595"    # prd cluster scrapes here
+      - "10.10.15.10:9595:9595"    # dev cluster scrapes here
     volumes:
       # App code — uploaded by manage.sh phase apps via
       # _ensure_cluster_agent_config_via_ctx in modules/apps.py (Task 8).
