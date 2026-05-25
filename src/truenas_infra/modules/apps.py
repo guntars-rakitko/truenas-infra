@@ -840,6 +840,7 @@ STRESS_DASHBOARD_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/stress-dashboar
 CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
 CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
 CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
+CLUSTER_AGENT_MAIN_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "main.py"
 CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
 
 
@@ -1166,6 +1167,7 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
     Layout on the pool:
         .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
+            ├── main.py                        — FastAPI entrypoint (Task 18)
             ├── src/                           — Python package (Tasks 9-19)
             └── prompts/                       — Jinja2 prompt templates (Task 14)
 
@@ -1174,25 +1176,29 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
       - data/                 (SQLite state.db — must persist across redeploys)
       - venv/                 (self-healing; tied to Python minor version)
 
-    Source dirs (src/ and prompts/) are created by Tasks 9-19. This helper
-    runs in the phase-apps pre-upload block so the operator can validate
-    the registration with `manage.sh phase apps` before those tasks are done.
-    It skips gracefully if the dirs don't exist yet rather than failing —
-    the real code upload happens automatically once they appear.
+    Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
+    This helper runs in the phase-apps pre-upload block so the operator can
+    validate the registration with `manage.sh phase apps` before those tasks
+    are done. It skips gracefully if the files/dirs don't exist yet rather
+    than failing — the real code upload happens automatically once they appear.
 
     Same deploy pattern as amtctl and stress-dashboard: stock python:3.14-alpine
     base image, code on the pool, bind-mounted into /app in the container.
+    docker-compose.yaml's command block invokes `uvicorn main:app` which
+    resolves to /app/main.py — so main.py must be at the code/ root.
     """
     src_dir = CLUSTER_AGENT_SRC_LOCAL_DIR
     prompts_dir = CLUSTER_AGENT_PROMPTS_LOCAL_DIR
+    main_file = CLUSTER_AGENT_MAIN_LOCAL_FILE
 
-    any_present = src_dir.is_dir() or prompts_dir.is_dir()
+    any_present = src_dir.is_dir() or prompts_dir.is_dir() or main_file.is_file()
     if not any_present:
         log.info(
             "cluster_agent_config_skipped",
             reason="source_dirs_missing",
             src=str(src_dir),
             prompts=str(prompts_dir),
+            main=str(main_file),
             note="build them in Tasks 9-19",
         )
         return
@@ -1207,6 +1213,23 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         upload_file(
             cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
             local_path=local_path, remote_path=remote_path, mode=mode,
+        )
+
+    # Upload main.py at the top level of code/ (uvicorn `main:app` entrypoint).
+    if main_file.is_file():
+        remote_main = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/main.py"
+        diff = ensure_file_on_nas(
+            cli, _upload,
+            local_path=main_file, remote_path=remote_main,
+            mode=0o644, apply=ctx.apply,
+        )
+        log.info("cluster_agent_file_ensured", path=remote_main,
+                 action=diff.action, changed=diff.changed)
+    else:
+        log.info(
+            "cluster_agent_main_skipped",
+            reason="not_present_yet",
+            path=str(main_file),
         )
 
     # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
