@@ -88,3 +88,30 @@ class Scheduler:
             id=f"mode-{mode}",
             **trigger_kwargs,
         )
+
+    def add_mode_a_with_alert_gate(
+        self,
+        func: Callable[[], Any],
+        *,
+        cluster: str,
+        check_alerts_func: Callable[[str], int],
+        minutes: int = 5,
+    ) -> None:
+        """Mode A specifically — fire only if Alertmanager has >0 active alerts.
+
+        check_alerts_func(cluster) returns the count of active alerts. If 0,
+        skip the LLM call entirely (saves cost on idle clusters).
+        """
+        def wrapped() -> None:
+            if not is_mode_enabled("A"):
+                return
+            try:
+                count = check_alerts_func(cluster)
+            except Exception:
+                # If we can't reach AM, skip silently — the alertmanager
+                # tool's own audit log captures the failure
+                return
+            if count == 0:
+                return
+            func()
+        self._sched.add_job(wrapped, trigger="interval", id=f"mode-A-{cluster}", minutes=minutes)

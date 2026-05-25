@@ -44,9 +44,26 @@ _scheduler = Scheduler()
 async def lifespan(app: FastAPI):
     # Startup
     _scheduler.start()
-    # P0: no modes registered. P1+ will add via:
-    #   _scheduler.add_mode("A", run_mode_a, trigger="interval", minutes=5)
-    # etc. — see spec § 4.5 for the cadence table.
+
+    # ── Mode A registration (P1) ─────────────────────────────────────
+    # Fires every 5 min, but only on clusters with active alerts. The
+    # cluster-side kill switch (DISABLED_MODES=A) lets the operator
+    # disable Mode A at runtime via Doppler without restarting the
+    # container.
+    from cluster_agent.modes.alert_triage import run as run_mode_a
+    from cluster_agent.tools.alertmanager import alertmanager_alerts
+
+    def count_active(cluster: str) -> int:
+        return len(alertmanager_alerts(cluster, active=True, silenced=False, inhibited=False))
+
+    for cluster_name in ("dev", "prd"):
+        if f"KUBECONFIG_{cluster_name.upper()}" in os.environ:
+            _scheduler.add_mode_a_with_alert_gate(
+                func=lambda c=cluster_name: run_mode_a(cluster=c),
+                cluster=cluster_name,
+                check_alerts_func=count_active,
+                minutes=5,
+            )
     yield
     # Shutdown
     _scheduler.shutdown(wait=False)
@@ -70,6 +87,13 @@ async def health() -> dict:
         for m in os.environ.get("DISABLED_MODES", "").split(",")
         if m.strip()
     })
+    # P1: per-mode last-run / status from scheduler job inspection
+    modes: dict[str, dict] = {}
+    for job in _scheduler._sched.get_jobs():
+        if job.id.startswith("mode-A-"):
+            cluster = job.id.removeprefix("mode-A-")
+            next_run = job.next_run_time.isoformat() if job.next_run_time else None
+            modes.setdefault("A", {})[cluster] = {"next_run": next_run}
     return {
         "status": "ok",
         "version": "0.1.0",
@@ -77,7 +101,7 @@ async def health() -> dict:
         "enabled": enabled,
         "disabled_modes": disabled_modes,
         "scheduler_running": _scheduler.running,
-        "modes": {},   # P1+: per-mode last-run timestamp + status
+        "modes": modes,
     }
 
 
