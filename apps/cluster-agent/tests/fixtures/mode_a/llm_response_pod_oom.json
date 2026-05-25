@@ -1,0 +1,14 @@
+{
+  "severity": "medium",
+  "title": "Pocket-ID pod restarted 4x in 30 min — likely OOM after Litestream sidecar",
+  "summary": "Pod pocket-id-0 has been OOMKilled 4 times in the last 30 minutes per the kubelet describe output. Memory limit on the pocket-id container is 512Mi, but Litestream's WAL replication sidecar added ~150Mi of working set; the combined footprint exceeds the limit during burst writes.",
+  "evidence": [
+    {"type": "alert", "ref": "Alertmanager/KubePodCrashLooping@2026-05-25T17:00:00Z"},
+    {"type": "log", "ref": "loki:{namespace='pocket-id'}|2026-05-25T16:30..17:00", "excerpt": "memory cgroup out of memory"}
+  ],
+  "root_cause_hypothesis": "Chart-default 512Mi memory limit too tight after Litestream sidecar landed.",
+  "confidence": 0.75,
+  "recommended_action": "Bump pocket-id.values.resources.limits.memory from 512Mi to 1Gi in flux-cd/infrastructure/helmreleases/pocket-id.yaml. Reconcile via Flux; pod restarts cleanly with no data loss (Litestream WAL is durable in MinIO).",
+  "runbook_ref": null,
+  "dedup_key": "alert:KubePodCrashLooping:pocket-id-0:dev"
+}

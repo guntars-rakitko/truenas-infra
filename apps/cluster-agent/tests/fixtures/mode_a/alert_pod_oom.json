@@ -1,0 +1,16 @@
+{
+  "fingerprint": "abc123",
+  "status": {"state": "active"},
+  "labels": {
+    "alertname": "KubePodCrashLooping",
+    "namespace": "pocket-id",
+    "pod": "pocket-id-0",
+    "severity": "warning"
+  },
+  "annotations": {
+    "summary": "Pod pocket-id/pocket-id-0 is crash looping",
+    "description": "Pod has restarted 4 times in the last 30 minutes."
+  },
+  "startsAt": "2026-05-25T17:00:00Z",
+  "endsAt": "0001-01-01T00:00:00Z"
+}

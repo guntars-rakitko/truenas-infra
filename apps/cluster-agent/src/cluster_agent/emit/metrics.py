@@ -86,6 +86,23 @@ cluster_agent_doctrine_drift_count = Gauge(
     ["repo"],
 )
 
+# Mode A LLM accounting (P1+)
+LLM_TOKENS_INPUT = Counter(
+    "cluster_agent_llm_input_tokens_total",
+    "Total input tokens sent to the LLM, per mode",
+    ["mode"],
+)
+LLM_TOKENS_OUTPUT = Counter(
+    "cluster_agent_llm_output_tokens_total",
+    "Total output tokens returned from the LLM, per mode",
+    ["mode"],
+)
+LLM_COST_USD = Counter(
+    "cluster_agent_llm_cost_usd_total",
+    "Approximate cumulative LLM cost in USD, per mode",
+    ["mode"],
+)
+
 
 def render() -> str:
     """Render all metrics in Prometheus exposition format.
