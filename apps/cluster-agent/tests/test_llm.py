@@ -1,0 +1,90 @@
+"""LLM wrapper — claude-agent-sdk usage + budget + JSON parse."""
+from __future__ import annotations
+import json
+
+import pytest
+
+from cluster_agent.llm import triage_alert, LLMBudgetExceeded
+from cluster_agent.schema import Finding
+
+
+def _good_finding_json() -> str:
+    return json.dumps({
+        "severity": "medium",
+        "title": "Pocket-ID pod restarted 4x in 30min",
+        "summary": "Repeated OOMKills suggest the chart-default memory limit (512Mi) is too tight after the Litestream sidecar started.",
+        "evidence": [
+            {"type": "alert", "ref": "Alertmanager/KubePodCrashLooping@2026-05-25T17:00:00Z"},
+            {"type": "log", "ref": "loki:{namespace='pocket-id'}|2026-05-25T16:30..17:00", "excerpt": "OOMKilled"},
+        ],
+        "root_cause_hypothesis": "Memory limit too low post-Litestream sidecar addition.",
+        "confidence": 0.7,
+        "recommended_action": "Bump pocket-id.values.resources.limits.memory from 512Mi to 1Gi in flux-cd/infrastructure/helmreleases/pocket-id.yaml.",
+        "runbook_ref": None,
+        "dedup_key": "alert:KubePodCrashLooping:pocket-id-0:dev",
+    })
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_returns_validated_finding(monkeypatch):
+    """Happy path — stubbed SDK returns valid JSON, triage_alert returns a Finding."""
+    from cluster_agent import llm
+
+    async def fake_query(prompt, options):
+        return _good_finding_json()
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+
+    finding = await triage_alert(
+        alert={"labels": {"alertname": "KubePodCrashLooping"}, "startsAt": "2026-05-25T17:00:00Z"},
+        context={"loki_excerpt": "OOMKilled", "kubectl_describe": "...", "prom_values": "...", "flux_state": "..."},
+        cluster="dev",
+        model="claude-sonnet-4-6",
+        budget_usd=0.50,
+    )
+    assert isinstance(finding, Finding)
+    assert finding.severity == "medium"
+    assert finding.dedup_key == "alert:KubePodCrashLooping:pocket-id-0:dev"
+    assert finding.cluster == "dev"
+    assert finding.mode == "A"
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_invalid_json_raises(monkeypatch):
+    """LLM returns non-JSON → ValueError surfaces with a useful message."""
+    from cluster_agent import llm
+
+    async def fake_query(prompt, options):
+        return "I think the issue is the pod ran out of memory."
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+    with pytest.raises(ValueError, match="not valid JSON"):
+        await triage_alert(
+            alert={"labels": {"alertname": "X"}},
+            context={"loki_excerpt": "", "kubectl_describe": "", "prom_values": "", "flux_state": ""},
+            cluster="dev",
+            model="claude-sonnet-4-6",
+            budget_usd=0.50,
+        )
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_budget_exceeded_raises(monkeypatch):
+    """The wrapper computes a token-based cost estimate and raises if a
+    pre-call estimate (input tokens × model rate) exceeds budget."""
+    from cluster_agent import llm
+
+    async def fake_query(prompt, options):
+        return _good_finding_json()
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+
+    # Massive context → high input-token estimate → budget exceeded
+    with pytest.raises(LLMBudgetExceeded):
+        await triage_alert(
+            alert={"labels": {"alertname": "X"}},
+            context={"loki_excerpt": "x" * 1_000_000, "kubectl_describe": "", "prom_values": "", "flux_state": ""},
+            cluster="dev",
+            model="claude-sonnet-4-6",
+            budget_usd=0.01,
+        )
