@@ -4,27 +4,44 @@ Mounted at /app by docker-compose; uvicorn invoked as `main:app` per
 apps/cluster-agent/docker-compose.yaml's command block.
 
 Exposes:
-  - /health  — Docker healthcheck + ops endpoint. Returns ok/degraded
-               based on per-mode last-success timestamps. In P0 there
-               are no modes running, so this is mostly an "is the
-               container alive" check + Doppler-config visibility.
-  - /metrics — Prometheus scrape endpoint (both clusters scrape it).
-  - /        — basic identity endpoint (version + endpoint list).
+  - /health  — Docker healthcheck + ops endpoint.
+  - /metrics — Prometheus scrape endpoint.
+  - /        — basic identity endpoint.
 
-Scheduled jobs land in Task 19 (APScheduler wired into the FastAPI
-lifespan). P0 has no LLM-driven modes; that's P1+.
+APScheduler runs in a BackgroundScheduler thread; lifecycle managed
+by FastAPI's lifespan context-manager. P0 registers no modes (the
+scheduler starts empty). P1+ adds modes via _scheduler.add_mode(...)
+inside the lifespan startup block.
 """
 from __future__ import annotations
 import os
 import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from cluster_agent.emit.metrics import render
+from cluster_agent.scheduler import Scheduler
 
 
-app = FastAPI(title="cluster-agent", version="0.1.0")
 _BOOT_TIME = time.time()
+_scheduler = Scheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    _scheduler.start()
+    # P0: no modes registered. P1+ will add via:
+    #   _scheduler.add_mode("A", run_mode_a, trigger="interval", minutes=5)
+    # etc. — see spec § 4.5 for the cadence table.
+    yield
+    # Shutdown
+    _scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="cluster-agent", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -33,7 +50,8 @@ async def health() -> dict:
 
     Returns ok/degraded based on per-mode last-success timestamps.
     In P0 no modes are registered, so the response just reports
-    config visibility (enabled flag, disabled modes list) + uptime.
+    config visibility (enabled flag, disabled modes list) + uptime
+    + scheduler liveness.
     """
     enabled = os.environ.get("CLUSTER_AGENT_ENABLED", "true").lower() == "true"
     disabled_modes = sorted({
@@ -47,6 +65,7 @@ async def health() -> dict:
         "uptime_seconds": int(time.time() - _BOOT_TIME),
         "enabled": enabled,
         "disabled_modes": disabled_modes,
+        "scheduler_running": _scheduler.running,
         "modes": {},   # P1+: per-mode last-run timestamp + status
     }
 
