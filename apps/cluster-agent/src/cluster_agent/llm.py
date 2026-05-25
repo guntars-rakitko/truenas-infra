@@ -10,13 +10,14 @@ For Mode A (P1 dev soak), the wrapper is intentionally minimal:
 Upgrade to claude-agent-sdk multi-turn + MCP tool-use is a P2-time
 refactor when we know which context patterns the LLM wants.
 
-Cost rates (per 1M tokens, Sonnet 4.6 standard tier; from
-https://docs.anthropic.com/en/docs/about-claude/pricing as of 2026-05-25):
-  - input:  $3.00 / 1M tokens
-  - output: $15.00 / 1M tokens
+Cost rates (per 1M tokens; verified from
+https://platform.claude.com/docs/en/docs/about-claude/pricing on 2026-05-25):
+  - Sonnet 4.5 / 4.6:  $3 input / $15 output
+  - Opus 4.7:          $5 input / $25 output
+  - Haiku 4.5:         $1 input / $5 output
 
 Pre-call estimate uses input only (output is ~1K tokens for Finding
-shape, contributes <$0.02 in the worst case).
+shape, contributes <$0.02 in the worst case at Opus rates).
 """
 from __future__ import annotations
 import base64
@@ -39,7 +40,7 @@ _MODEL_RATES_PER_1M: dict[str, tuple[float, float]] = {
     # input rate, output rate — USD per 1M tokens
     "claude-sonnet-4-6":          (3.00,  15.00),
     "claude-sonnet-4-5-20250929": (3.00,  15.00),
-    "claude-opus-4-7":            (15.00, 75.00),
+    "claude-opus-4-7":            (5.00,  25.00),
     "claude-haiku-4-5-20251001":  (1.00,  5.00),
 }
 
