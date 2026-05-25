@@ -5,8 +5,8 @@ lands here so P1's mode registration is a one-liner add per mode (see
 spec § 4.5 for the cadence table).
 
 Two-layer kill switches both checked at the wrapped-job level:
-  1. CLUSTER_AGENT_ENABLED — global kill (stops every mode)
-  2. CLUSTER_AGENT_DISABLED_MODES — comma-separated per-mode disable list
+  1. ENABLED — global kill (stops every mode)
+  2. DISABLED_MODES — comma-separated per-mode disable list
 
 Both are Doppler-controlled at runtime (no container restart needed —
 the wrapped job reads env on every fire). Operator flips a key in
@@ -30,11 +30,11 @@ def is_mode_enabled(mode: str) -> bool:
     operator can disable a mode at runtime via Doppler without
     restarting the container.
     """
-    if os.environ.get("CLUSTER_AGENT_ENABLED", "true").lower() != "true":
+    if os.environ.get("ENABLED", "true").lower() != "true":
         return False
     disabled = {
         m.strip()
-        for m in os.environ.get("CLUSTER_AGENT_DISABLED_MODES", "").split(",")
+        for m in os.environ.get("DISABLED_MODES", "").split(",")
         if m.strip()
     }
     return mode not in disabled

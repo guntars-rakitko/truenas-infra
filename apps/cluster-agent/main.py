@@ -53,10 +53,10 @@ async def health() -> dict:
     config visibility (enabled flag, disabled modes list) + uptime
     + scheduler liveness.
     """
-    enabled = os.environ.get("CLUSTER_AGENT_ENABLED", "true").lower() == "true"
+    enabled = os.environ.get("ENABLED", "true").lower() == "true"
     disabled_modes = sorted({
         m.strip()
-        for m in os.environ.get("CLUSTER_AGENT_DISABLED_MODES", "").split(",")
+        for m in os.environ.get("DISABLED_MODES", "").split(",")
         if m.strip()
     })
     return {

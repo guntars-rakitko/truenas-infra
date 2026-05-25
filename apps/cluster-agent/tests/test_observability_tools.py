@@ -1,22 +1,46 @@
-"""Loki, Prometheus, Alertmanager tools — HTTP, read-only, basic-auth.
+"""Loki, Prometheus, Alertmanager tools — via K8s apiserver proxy.
 
-All three follow the same pattern: read creds from a Doppler-sourced env
-var, fire an httpx GET against the cluster-specific URL, return parsed
-JSON. Audit-logged via @audit; password param redacted from the log.
+All three tools now use k8s_proxy.proxy_get() rather than direct basic-auth
+HTTP hits. Tests mock the apiserver proxy URLs (not the *.w1.lv hostnames)
+and inject a minimal fake kubeconfig via the KUBECONFIG_DEV env var.
 """
-import respx
+import base64
+
 import httpx
-import pytest
+import respx
+import yaml
 
 from cluster_agent.tools.loki import loki_query
-from cluster_agent.tools.prometheus import prometheus_query
+from cluster_agent.tools.prometheus import prometheus_query, prometheus_query_range
 from cluster_agent.tools.alertmanager import alertmanager_alerts
 
 
+def _fake_kubeconfig() -> str:
+    """Return a base64-encoded minimal kubeconfig for tests.
+
+    No CA data — k8s_proxy._ca_bundle() returns False (skip verify),
+    which is fine in tests.
+    """
+    kc = {
+        "apiVersion": "v1",
+        "kind": "Config",
+        "clusters": [{"name": "dev", "cluster": {
+            "server": "https://test-api:6443",
+        }}],
+        "users": [{"name": "agent", "user": {"token": "fake-token"}}],
+        "contexts": [{"name": "dev", "context": {"cluster": "dev", "user": "agent"}}],
+        "current-context": "dev",
+    }
+    return base64.b64encode(yaml.dump(kc).encode()).decode()
+
+
 @respx.mock
-def test_loki_query_returns_streams(monkeypatch):
-    monkeypatch.setenv("CLUSTER_AGENT_LOKI_BASIC_AUTH_DEV", "user:pass")
-    url = "https://logs-dev.w1.lv/loki/api/v1/query_range"
+def test_loki_query_via_apiserver_proxy(monkeypatch):
+    monkeypatch.setenv("KUBECONFIG_DEV", _fake_kubeconfig())
+    url = (
+        "https://test-api:6443/api/v1/namespaces/monitoring"
+        "/services/loki:3100/proxy/loki/api/v1/query_range"
+    )
     respx.get(url).mock(return_value=httpx.Response(200, json={
         "status": "success",
         "data": {
@@ -30,9 +54,12 @@ def test_loki_query_returns_streams(monkeypatch):
 
 
 @respx.mock
-def test_prometheus_query_returns_vector(monkeypatch):
-    monkeypatch.setenv("CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_DEV", "user:pass")
-    url = "https://metrics-dev.w1.lv/api/v1/query"
+def test_prometheus_query_via_apiserver_proxy(monkeypatch):
+    monkeypatch.setenv("KUBECONFIG_DEV", _fake_kubeconfig())
+    url = (
+        "https://test-api:6443/api/v1/namespaces/monitoring"
+        "/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1/query"
+    )
     respx.get(url).mock(return_value=httpx.Response(200, json={
         "status": "success",
         "data": {"resultType": "vector", "result": []},
@@ -42,9 +69,29 @@ def test_prometheus_query_returns_vector(monkeypatch):
 
 
 @respx.mock
-def test_alertmanager_lists_active(monkeypatch):
-    monkeypatch.setenv("CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_DEV", "user:pass")
-    url = "https://alerts-dev.w1.lv/api/v2/alerts"
+def test_prometheus_query_range_via_apiserver_proxy(monkeypatch):
+    monkeypatch.setenv("KUBECONFIG_DEV", _fake_kubeconfig())
+    url = (
+        "https://test-api:6443/api/v1/namespaces/monitoring"
+        "/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1/query_range"
+    )
+    respx.get(url).mock(return_value=httpx.Response(200, json={
+        "status": "success",
+        "data": {"resultType": "matrix", "result": []},
+    }))
+    result = prometheus_query_range(
+        "dev", "up", start="2026-05-25T00:00:00Z", end="2026-05-25T01:00:00Z"
+    )
+    assert result["status"] == "success"
+
+
+@respx.mock
+def test_alertmanager_lists_via_apiserver_proxy(monkeypatch):
+    monkeypatch.setenv("KUBECONFIG_DEV", _fake_kubeconfig())
+    url = (
+        "https://test-api:6443/api/v1/namespaces/monitoring"
+        "/services/kube-prometheus-stack-alertmanager:9093/proxy/api/v2/alerts"
+    )
     respx.get(url).mock(return_value=httpx.Response(200, json=[
         {"labels": {"alertname": "Watchdog"}, "status": {"state": "active"}},
     ]))

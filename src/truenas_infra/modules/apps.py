@@ -31,13 +31,14 @@ from truenas_infra.util import Diff
 
 # Per-app Doppler key map: { app_name: { compose_var: doppler_key } }.
 #
-# Single source of truth for secrets is Doppler `infrastructure/ops` —
-# we fetch the listed keys at deploy time and substitute into the
-# docker-compose template. The compose-var → doppler-key indirection
-# lets the compose file keep its conventional env-var names (e.g.
-# `MINIO_ROOT_USER` per the MinIO container's expected env), while
-# Doppler stores the per-cluster-suffixed canonical names
-# (`MINIO_ROOT_USER_PRD`).
+# Default source: Doppler `infrastructure/ops`. Per-app overrides are
+# declared in _DOPPLER_PROJECT_PER_APP below (currently only cluster-agent,
+# which migrated to its own dedicated project in Task 22.5).
+#
+# The compose-var → doppler-key indirection lets the compose file keep its
+# conventional env-var names (e.g. `MINIO_ROOT_USER` per the MinIO
+# container's expected env), while Doppler stores the per-cluster-suffixed
+# canonical names (`MINIO_ROOT_USER_PRD`).
 #
 # Adding a new app with secrets: append a new entry here. The compose
 # file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
@@ -47,38 +48,36 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "AMTCTL_AMT_PASSWORD": "AMT_PASSWORD",
     },
     "cluster-agent": {
-        # The Doppler key holds the base64-encoded ~/.claude/.credentials.json
-        # (operator stored it via `base64 < ~/.claude/.credentials.json`).
-        # The compose configs: block needs the raw JSON, not the encoded form —
-        # so we map the _B64DECODED compose-var to the plain Doppler key and
-        # decode the value in _load_doppler_for_app (any compose-var whose name
-        # ends in _B64DECODED gets base64.b64decode applied to the Doppler value
-        # before substitution). This mirrors the AIStor license delivery pattern
-        # used by minio-{prd,dev}: secrets go in via Compose configs: content:,
-        # fetched from Doppler at render time, injected into the container as a
-        # file — the only difference here is the b64 round-trip in transit.
-        "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS",
-        "CLUSTER_AGENT_GH_APP_ID":                     "CLUSTER_AGENT_GH_APP_ID",
-        "CLUSTER_AGENT_GH_APP_PRIVATE_KEY":            "CLUSTER_AGENT_GH_APP_PRIVATE_KEY",
-        "CLUSTER_AGENT_GH_APP_INSTALLATION_ID":        "CLUSTER_AGENT_GH_APP_INSTALLATION_ID",
-        "CLUSTER_AGENT_KUBECONFIG_DEV":                "CLUSTER_AGENT_KUBECONFIG_DEV",
-        "CLUSTER_AGENT_KUBECONFIG_PRD":                "CLUSTER_AGENT_KUBECONFIG_PRD",
-        "CLUSTER_AGENT_KUBECONFIG_TEST_RESTORE_DEV":   "CLUSTER_AGENT_KUBECONFIG_TEST_RESTORE_DEV",
-        "CLUSTER_AGENT_LOKI_BASIC_AUTH_DEV":           "CLUSTER_AGENT_LOKI_BASIC_AUTH_DEV",
-        "CLUSTER_AGENT_LOKI_BASIC_AUTH_PRD":           "CLUSTER_AGENT_LOKI_BASIC_AUTH_PRD",
-        "CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_DEV":     "CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_DEV",
-        "CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_PRD":     "CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_PRD",
-        "CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_DEV":   "CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_DEV",
-        "CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_PRD":   "CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_PRD",
-        "CLUSTER_AGENT_GRAFANA_API_TOKEN_DEV":         "CLUSTER_AGENT_GRAFANA_API_TOKEN_DEV",
-        "CLUSTER_AGENT_GRAFANA_API_TOKEN_PRD":         "CLUSTER_AGENT_GRAFANA_API_TOKEN_PRD",
-        "CLUSTER_AGENT_MINIO_NAS_KEY_ID":              "CLUSTER_AGENT_MINIO_NAS_KEY_ID",
-        "CLUSTER_AGENT_MINIO_NAS_SECRET_KEY":          "CLUSTER_AGENT_MINIO_NAS_SECRET_KEY",
-        "CLUSTER_AGENT_B2_KEY_ID":                     "CLUSTER_AGENT_B2_KEY_ID",
-        "CLUSTER_AGENT_B2_APP_KEY":                    "CLUSTER_AGENT_B2_APP_KEY",
-        "CLUSTER_AGENT_ENABLED":                       "CLUSTER_AGENT_ENABLED",
-        "CLUSTER_AGENT_DISABLED_MODES":                "CLUSTER_AGENT_DISABLED_MODES",
-        "CLUSTER_AGENT_AUTOMERGE_DISABLED_REPOS":      "CLUSTER_AGENT_AUTOMERGE_DISABLED_REPOS",
+        # Secrets source: cluster-agent/prd (see _DOPPLER_PROJECT_PER_APP).
+        # Env var names match Doppler key names exactly — project is the
+        # namespace, no CLUSTER_AGENT_ prefix needed.
+        #
+        # _B64DECODED convention (Task 8): any compose-var ending in
+        # _B64DECODED means the Doppler value is base64-encoded and is
+        # decoded before injection. Used here for CLAUDE_OAUTH_CREDENTIALS
+        # (the base64-encoded ~/.claude/.credentials.json injected as a file
+        # via Compose configs:). Placeholder until ~June 15, 2026.
+        "CLAUDE_OAUTH_CREDENTIALS_B64DECODED": "CLAUDE_OAUTH_CREDENTIALS",
+        # LLM auth — active path. anthropic SDK reads ANTHROPIC_API_KEY
+        # natively; operator sets the real sk-ant-* value via Doppler.
+        "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
+        "GH_APP_ID":                     "GH_APP_ID",
+        "GH_APP_PRIVATE_KEY":            "GH_APP_PRIVATE_KEY",
+        "GH_APP_INSTALLATION_ID":        "GH_APP_INSTALLATION_ID",
+        "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
+        "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
+        "KUBECONFIG_TEST_RESTORE_DEV":   "KUBECONFIG_TEST_RESTORE_DEV",
+        # Loki/Prom/AM now use apiserver proxy via kubeconfig SA token —
+        # no separate basic-auth keys needed (removed in 2026-05-25 refactor).
+        "GRAFANA_API_TOKEN_DEV":         "GRAFANA_API_TOKEN_DEV",
+        "GRAFANA_API_TOKEN_PRD":         "GRAFANA_API_TOKEN_PRD",
+        "MINIO_NAS_KEY_ID":              "MINIO_NAS_KEY_ID",
+        "MINIO_NAS_SECRET_KEY":          "MINIO_NAS_SECRET_KEY",
+        "B2_KEY_ID":                     "B2_KEY_ID",
+        "B2_APP_KEY":                    "B2_APP_KEY",
+        "ENABLED":                       "ENABLED",
+        "DISABLED_MODES":                "DISABLED_MODES",
+        "AUTOMERGE_DISABLED_REPOS":      "AUTOMERGE_DISABLED_REPOS",
     },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token
@@ -104,9 +103,20 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
     },
 }
 
+# Per-app Doppler project overrides: { app_name: (project, config) }.
+# Apps NOT listed here default to ("infrastructure", "ops").
+# cluster-agent was migrated to its own dedicated Doppler project in Task 22.5
+# to isolate its secrets from the broader infrastructure service token.
+_DOPPLER_PROJECT_PER_APP: dict[str, tuple[str, str]] = {
+    "cluster-agent": ("cluster-agent", "prd"),
+}
+
 
 def _load_doppler_for_app(app_name: str) -> dict[str, str]:
-    """Fetch the secrets needed for `app_name` from Doppler infrastructure/ops.
+    """Fetch the secrets needed for `app_name` from Doppler.
+
+    The Doppler project/config defaults to infrastructure/ops; apps in
+    _DOPPLER_PROJECT_PER_APP use their own project instead.
 
     Returns a `{compose_var: value}` dict ready for `_render_compose`
     substitution. Empty dict if the app isn't in `_DOPPLER_KEYS_PER_APP`
@@ -118,11 +128,12 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
     mapping = _DOPPLER_KEYS_PER_APP.get(app_name)
     if not mapping:
         return {}
+    project, config = _DOPPLER_PROJECT_PER_APP.get(app_name, ("infrastructure", "ops"))
     out: dict[str, str] = {}
     for compose_var, doppler_key in mapping.items():
         result = subprocess.run(
             ["doppler", "secrets", "get", doppler_key,
-             "--project", "infrastructure", "--config", "ops",
+             "--project", project, "--config", config,
              "--plain", "--silent"],
             check=False, capture_output=True, text=True,
         )
@@ -136,9 +147,9 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
         raw = result.stdout.rstrip("\n")
         # Convention: a compose-var whose name ends in _B64DECODED means the
         # Doppler value is base64-encoded and must be decoded before injection.
-        # Used for CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS_B64DECODED (the
-        # operator stored ~/.claude/.credentials.json as base64 in Doppler;
-        # the Compose configs: content: block needs the raw JSON string).
+        # Used for CLAUDE_OAUTH_CREDENTIALS_B64DECODED (the operator stored
+        # ~/.claude/.credentials.json as base64 in Doppler; the Compose
+        # configs: content: block needs the raw JSON string).
         if compose_var.endswith("_B64DECODED"):
             raw = base64.b64decode(raw).decode("utf-8")
         out[compose_var] = raw

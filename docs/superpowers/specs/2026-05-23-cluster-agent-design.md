@@ -84,13 +84,13 @@ The agent collapses this into:
 | Target | Why | Access pattern |
 |---|---|---|
 | Both K8s clusters (`dev`, `prd`) | State, events, logs | Kubeconfig in Doppler — restricted `cluster-agent-readonly` ServiceAccount per cluster |
-| Loki (`logs-{env}.w1.lv`) | Pull correlating logs | HTTP, basic auth from Doppler |
-| Alertmanager (`alerts-{env}.w1.lv`) | List firing alerts | HTTP, basic auth from Doppler |
-| Prometheus (`metrics-{env}.w1.lv`) | Query trends (PromQL) | HTTP, read-only |
+| Loki (`monitoring/loki:3100`) | Pull correlating logs | K8s apiserver services/proxy + kubeconfig SA token (see § 3.4 note). No basic-auth credentials needed. |
+| Alertmanager (`monitoring/kube-prometheus-stack-alertmanager:9093`) | List firing alerts | K8s apiserver services/proxy + kubeconfig SA token |
+| Prometheus (`monitoring/kube-prometheus-stack-prometheus:9090`) | Query trends (PromQL) | K8s apiserver services/proxy + kubeconfig SA token |
 | MinIO / AIStor (`s3-{env}.w1.lv`) | Backup verification (Mode G) | `mc` CLI, service-user creds in Doppler |
 | Backblaze B2 EU (`b2-eu`) | Backup verification (Mode G) | `mc` CLI, scoped creds in Doppler |
 | GitHub | Read PRs/commits, create issues, create draft PRs, auto-merge | GitHub App (`cluster-agent[bot]`) |
-| Claude (via Agent SDK) | LLM | Authenticated via Max 5x OAuth credentials in Doppler (see § 3.6). $100/mo Max Agent SDK credit; agent self-alerts at $75. |
+| Claude (via Agent SDK) | LLM | `ANTHROPIC_API_KEY` (active). OAuth path retained for post-June-15. See § 3.6. |
 | SMTP (reused from Alertmanager) | Email notifications | Doppler creds shared with alertmanager |
 | Grafana (both clusters) | Post annotations on dashboards | API token in Doppler |
 
@@ -117,7 +117,31 @@ Per-channel mute via `EMAIL_DIGEST_DISABLED=weekly,backup` (comma-separated in D
 
 Recipient: `guntars@rakitko.lv`.
 
-### 3.4 Grafana integration
+### 3.4 Observability tool auth — apiserver proxy
+
+Loki, Prometheus, and Alertmanager are all OIDC-gated behind traefik-admin
+(Pocket-ID) at `*.w1.lv`. Rather than maintaining 6 basic-auth Doppler keys,
+the agent reaches these services via the Kubernetes API server's built-in
+`services/proxy` endpoint:
+
+```
+{apiserver}/api/v1/namespaces/monitoring/services/{name}:{port}/proxy/{path}
+```
+
+Auth re-uses the existing kubeconfig SA token from Doppler (`KUBECONFIG_DEV`
+/ `KUBECONFIG_PRD`). No extra credentials needed.
+
+Implemented in `tools/k8s_proxy.py`. Service names confirmed against live dev
+cluster 2026-05-25:
+- Loki: `monitoring/loki:3100`
+- Prometheus: `monitoring/kube-prometheus-stack-prometheus:9090`
+- Alertmanager: `monitoring/kube-prometheus-stack-alertmanager:9093`
+
+**Follow-up (kube-infra):** the `cluster-agent-readonly` ClusterRole must gain
+`services/proxy` GET on the `monitoring` namespace before these tools work
+live. This is a kube-infra change (not done in this task — see § 6.2).
+
+### 3.5 Grafana integration (renumbered from § 3.4)
 
 Three integration points, all using existing infrastructure:
 
@@ -164,7 +188,25 @@ encrypted by default per the existing `setup-minio-encryption.sh`
 posture. ILM rule: 30-day expiration (state DB is small + replayable
 from Loki + GH).
 
-### 3.6 Authentication — Max subscription via Agent SDK OAuth
+### 3.6 Authentication — LLM auth paths
+
+Two auth paths exist in the codebase simultaneously:
+
+#### 3.6.1 ANTHROPIC_API_KEY (active as of 2026-05-25)
+
+**Current active path.** The `anthropic` Python SDK reads `ANTHROPIC_API_KEY`
+env var natively. Container env var set from Doppler
+`cluster-agent/prd.ANTHROPIC_API_KEY`. Operator pastes the real `sk-ant-*`
+value from https://console.anthropic.com/ → API Keys → Create Key.
+
+Precedence: if both `ANTHROPIC_API_KEY` and valid OAuth credentials are
+present, the SDK's own resolution applies — env var wins over credentials
+file. For now only `ANTHROPIC_API_KEY` is populated; the credentials file
+is a placeholder.
+
+Estimated spend with prompt caching: ~$10-15/mo (pay-per-token).
+
+#### 3.6.2 Max subscription via Agent SDK OAuth (deferred to ~June 15, 2026)
 
 Anthropic's policy changed (May 2026, effective **June 15, 2026** — Support
 article 15036540). Pro/Max/Team/Enterprise subscriptions can now power the
@@ -172,77 +214,36 @@ Claude Agent SDK with a separate monthly Agent SDK credit ($100/mo on Max 5x)
 that does NOT count against the subscription's interactive usage limits.
 "Third-party apps that authenticate with your Claude subscription through
 the Agent SDK" are explicitly in scope — this design fits that description.
-This supersedes the earlier April 2026 third-party restriction.
 
-**Conclusion:** authenticate via Max 5x subscription using Agent SDK OAuth.
-API key remains a fallback option (Anthropic recommends it for shared
-production-scale automation; not required for solo homelab use).
-
-Configuration:
+**Long-term preferred path.** Configuration:
 - Credentials live in dedicated Doppler project: `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS`
 - Surfaced into the container via the same Docker Compose `configs:`
   pattern used for the AIStor license — `_render_compose` substitutes
   the Doppler value at deploy time, container mounts at
-  `/claude/.credentials.json`, agent points the SDK there at boot
-- SDK handles token refresh automatically (in theory; see § 3.6.1 below)
-- Anthropic Console "Usage credits" setting:
-  - **Default (disabled)** = on exhausting $100/mo Agent SDK credit, requests
-    return rate-limit errors until next billing cycle (safe, agent self-throttles)
-  - **Optional (enabled)** = overflow bills at standard API rates against
-    payment method, with operator-configurable monthly cap. Recommend keeping
-    disabled — our $10-50/mo predicted spend is well within the $100 credit
-- Aggressive prompt caching (system prompt + policy reused on every run) →
-  realistic spend $10-15/mo, far below the $100 credit ceiling
-
-#### 3.6.1 Open: how to actually obtain a containerizable OAuth credential
+  `/claude/.credentials.json`, env var `CLAUDE_CREDENTIALS_PATH` points the
+  SDK there at boot
+- SDK handles token refresh automatically (in theory)
+- Agent SDK credit ($100/mo) isolates from interactive Max usage
 
 **Empirical finding (2026-05-25 during Task 22.5):** Claude Code v2.1.150
 on macOS does **not** create `~/.claude/.credentials.json`. OAuth tokens
-are stored as a ~1776-char encoded/encrypted blob in
-`~/Library/Application Support/Claude/config.json` under the
-`oauth:tokenCache` key. The `claude-agent-sdk` Python package's
-`ClaudeAgentOptions` exposes **no auth-related parameters** — the SDK
-delegates auth either to the Claude Code CLI's host-side session
-(macOS Keychain / encrypted blob, not portable to Linux) OR to the
-standard `ANTHROPIC_API_KEY` env var (pay-per-token API).
+are stored as an encrypted blob in
+`~/Library/Application Support/Claude/config.json` — not portable into a
+Linux container. The `claude-agent-sdk` Python package's `ClaudeAgentOptions`
+exposes **no auth-related parameters**. No documented in-container path
+exists yet; expected ~June 15, 2026.
 
-**There is currently no documented path** to export Max-OAuth tokens
-into a Linux container in a refreshable form. Per Anthropic Support
-Article 15036540, this is expected to change on **June 15, 2026** when
-Agent SDK Max-subscription support goes "explicitly supported";
-Anthropic should publish the in-container mechanism around that date.
-
-**Decision (2026-05-25):** defer the Claude OAuth credential population
-until ~June 15 when the supported mechanism ships. In the meantime:
-- The Doppler key `cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS` is set
-  to a placeholder (`__PLACEHOLDER_OPERATOR_FILL__`) so it's visible
-  in Doppler.
-- P0 has zero LLM calls (Tasks 1-24 are pure foundation: container,
-  scheduler skeleton with no modes registered, observability, deploy).
-  The placeholder never gets read by the SDK in P0.
-- P1 (Mode A enable) is post-June-15 anyway per the schedule below.
-- Fallback if June 15 doesn't ship a usable in-container OAuth flow:
-  switch to `ANTHROPIC_API_KEY` (~$10-15/mo). One-line env var swap.
-
-Operational note: OAuth credentials (when usable) are less robust than
-a static API key. If a token is revoked the container cannot self-recover.
-The agent self-monitors and emits a `severity:high` finding + emails
-operator on SDK auth failure; recovery is a one-time re-auth + Doppler
-key update.
-
-**Pre-June-15 behavior** (if OAuth-in-container were available today):
-Agent SDK calls would draw against the main Max interactive pool. Per
-Article 15036540 — *"Starting June 15, 2026, Agent SDK usage no longer
-counts toward your Claude plan's usage limits"* — implies the current
-behavior is to count against those limits.
+**Decision (2026-05-25):** defer OAuth credential population until June 15.
+`cluster-agent/prd.CLAUDE_OAUTH_CREDENTIALS` is set to a placeholder. P0 has
+zero LLM calls. P1 (Mode A) is post-June-15 anyway.
 
 Practical rollout schedule:
 
 | Period | LLM cadence |
 |---|---|
 | **May 23 – May 31 (P0)** | No LLM calls — pure foundation work |
-| **June 1 – June 14 (P1 low-volume)** | Manual + hourly Mode A on dev, sandbox repo only. Validate prompts, fixtures, dedup. ~10-20 LLM calls/day total. |
-| **June 15 onwards** | Full cadence — Mode A every 5 min, Mode I every 2h, etc. Credit pool isolates from interactive use. |
+| **June 1 – June 14 (P1 low-volume)** | API key auth. Manual + hourly Mode A on dev, sandbox repo only. ~10-20 LLM calls/day total. |
+| **June 15 onwards** | Switch to OAuth if mechanism ships; else continue API key. Full cadence. |
 
 ---
 
@@ -535,35 +536,52 @@ Auto-merge requires `PRs:Write` on target repo (policy gate is in our code, not 
 
 Token rotation every 90d (calendar reminder + script).
 
-### 6.3 Secret handling — Doppler-only
+**Follow-up (not yet done):** the `cluster-agent-readonly` ClusterRole must
+gain `services/proxy` GET on the `monitoring` namespace so that
+`tools/k8s_proxy.py` can reach Loki/Prom/AM through the API server. Until
+this kube-infra change is applied, those tool calls will return `403
+Forbidden`. See `tools/k8s_proxy.py` for the URL pattern.
 
-All in `infrastructure/ops.CLUSTER_AGENT_*`:
+### 6.3 Secret handling — Doppler `cluster-agent/prd`
+
+All secrets in dedicated project `cluster-agent/prd` (migrated from
+`infrastructure/ops` in Task 22.5). Key names are short — the project is
+the namespace; no `CLUSTER_AGENT_` prefix needed.
 
 | Key | Used by |
 |---|---|
-| `CLAUDE_OAUTH_CREDENTIALS` | LLM calls via Max 5x Agent SDK (one-time `claude login` on NAS, credentials copied to Doppler) |
+| `ANTHROPIC_API_KEY` | LLM calls — **active auth path** (operator pastes `sk-ant-*` from Anthropic Console) |
+| `CLAUDE_OAUTH_CREDENTIALS` | LLM calls via Max 5x OAuth — **placeholder until ~June 15, 2026** |
 | `GH_APP_ID` / `GH_APP_PRIVATE_KEY` / `GH_APP_INSTALLATION_ID` | gh ops via App auth |
-| `KUBECONFIG_DEV` / `KUBECONFIG_PRD` | restricted SA tokens (read-only role) |
-| `KUBECONFIG_TEST_RESTORE_DEV` / `_PRD` | narrow-writer SA for Mode G |
-| `LOKI_BASIC_AUTH_*`, `PROMETHEUS_BASIC_AUTH_*`, `ALERTMANAGER_BASIC_AUTH_*` | observability stack |
-| `MINIO_NAS_KEY_*`, `B2_KEY_ID` / `B2_APP_KEY` | backup verification |
+| `KUBECONFIG_DEV` / `KUBECONFIG_PRD` | restricted SA tokens (read-only role) + apiserver proxy auth for Loki/Prom/AM |
+| `KUBECONFIG_TEST_RESTORE_DEV` | narrow-writer SA for Mode G |
+| `GRAFANA_API_TOKEN_DEV` / `GRAFANA_API_TOKEN_PRD` | annotation API |
+| `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` | backup verification (Mode G) |
+| `B2_KEY_ID` / `B2_APP_KEY` | Backblaze off-site backup verification (Mode G) |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | email — **reused** from `kube-prometheus-stack.alertmanager.*` |
-| `GRAFANA_API_TOKEN_DEV` / `_PRD` | annotation API |
+| `ENABLED` | global kill switch |
+| `DISABLED_MODES` | per-mode kill switches |
+| `AUTOMERGE_DISABLED_REPOS` | per-repo auto-merge disable list |
 
-Doppler service token at container start; agent never writes secrets to disk,
-never logs them (audit-log wrapper has a redaction pass — same shape as
-existing `amtctl` redactor).
+**Removed (2026-05-25):** `LOKI_BASIC_AUTH_{DEV,PRD}`,
+`PROMETHEUS_BASIC_AUTH_{DEV,PRD}`, `ALERTMANAGER_BASIC_AUTH_{DEV,PRD}` — the
+6 basic-auth keys are no longer needed; Loki/Prom/AM are reached via
+kubeconfig SA token through the apiserver proxy (§ 3.4).
+
+Doppler fetched at deploy time by `_load_doppler_for_app("cluster-agent")` in
+`modules/apps.py`; agent never writes secrets to disk, never logs them
+(audit-log wrapper has a redaction pass).
 
 ### 6.4 Kill switches (5 layers)
 
 | Lever | Granularity | How |
 |---|---|---|
 | Master kill | All modes | `docker-compose stop cluster-agent` on NAS — instant |
-| Doppler enable flag | All modes | `CLUSTER_AGENT_ENABLED=false` — agent reads on each schedule tick |
-| Per-mode disable | One or more modes | `CLUSTER_AGENT_DISABLED_MODES=J,F` (comma-separated) |
-| Per-repo auto-merge disable | Per repo | `CLUSTER_AGENT_AUTOMERGE_DISABLED_REPOS=kube-infra` |
+| Doppler enable flag | All modes | `ENABLED=false` in `cluster-agent/prd` — agent reads on each schedule tick |
+| Per-mode disable | One or more modes | `DISABLED_MODES=J,F` (comma-separated in Doppler) |
+| Per-repo auto-merge disable | Per repo | `AUTOMERGE_DISABLED_REPOS=kube-infra` (Doppler) |
 | Circuit breaker (auto) | Per mode | 3 consecutive failures → that mode auto-disables, emits finding |
-| Cost circuit breaker | All modes | Cost > $75/mo (= 75% of $100 Max Agent SDK credit) → agent disables itself + emails operator |
+| Cost circuit breaker | All modes | Cost > $75/mo → agent disables itself + emails operator |
 
 ### 6.5 Auto-merge phased rollout (mandatory in spec)
 

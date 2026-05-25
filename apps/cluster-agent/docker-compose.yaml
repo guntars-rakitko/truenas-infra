@@ -4,25 +4,39 @@
 # Repo home: apps/cluster-agent/
 # Runbook: wiki.w1.lv/runbooks/cluster-agent-runbook (lands in Task 22)
 #
-# Auth: Claude Agent SDK using operator's Max 5x subscription via OAuth.
-# OAuth credentials live in Doppler (CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS,
-# base64-encoded ~/.claude/.credentials.json) and are surfaced as a file at
-# /claude/.credentials.json via the Compose configs: pattern — same shape
-# as the AIStor license delivery in apps/minio-{prd,dev}/docker-compose.yaml.
+# Secrets source: dedicated Doppler project cluster-agent/prd (migrated from
+# infrastructure/ops in Task 22.5). Env var names match Doppler key names
+# directly — no rename layer needed. The project is the namespace; no prefix.
+#
+# LLM auth (active path): ANTHROPIC_API_KEY env var — anthropic SDK reads
+# this name natively. Operator sets the real sk-ant-* value in Doppler at
+# cluster-agent/prd.ANTHROPIC_API_KEY. OAuth path (CLAUDE_CREDENTIALS_PATH)
+# is retained but placeholder-only until Anthropic ships in-container OAuth
+# support (expected ~June 15, 2026 per Support Article 15036540).
+#
+# Observability auth: Loki/Prometheus/Alertmanager are reached via the K8s
+# API server's services/proxy endpoint using the kubeconfig SA token from
+# Doppler — no basic-auth credentials needed. The OIDC-gated *.w1.lv
+# hostnames are bypassed entirely. See tools/k8s_proxy.py.
+# NOTE: the cluster-agent-readonly ClusterRole (kube-infra) must gain
+# services/proxy GET on monitoring namespace before these tools work live.
 #
 # Image strategy: python:3.14-alpine base + persistent /venv (matches
 # amtctl/stress-dashboard). Self-healing venv rebuilds on Python version
 # drift. App code uploaded by _ensure_cluster_agent_config_via_ctx
 # (added in Task 8) to /mnt/tank/system/apps-config/cluster-agent/code/.
 #
-# Networking: egress to clusters + observability stack + GH + Anthropic +
-# S3. Ingress: only Prometheus scrape on 9595 (mgmt VLAN bind).
+# Networking: egress to clusters + GH + Anthropic + S3.
+# Ingress: only Prometheus scrape on 9595 (mgmt VLAN bind).
 configs:
   claude_oauth:
     # _render_compose substitutes this via the same b64-decode hook as
     # the AIStor license (wired in Task 8). The Doppler key holds the
     # base64-encoded contents of ~/.claude/.credentials.json.
-    content: "${CLUSTER_AGENT_CLAUDE_OAUTH_CREDENTIALS_B64DECODED}"
+    # Placeholder until Anthropic ships the in-container OAuth mechanism
+    # (~June 15, 2026). ANTHROPIC_API_KEY is the active LLM auth path
+    # until then — the SDK reads it automatically.
+    content: "${CLAUDE_OAUTH_CREDENTIALS_B64DECODED}"
 
 services:
   cluster-agent:
@@ -46,34 +60,36 @@ services:
       # Persistent venv across image bumps
       - /mnt/tank/system/apps-config/cluster-agent/venv:/venv
     environment:
-      # ── Identity / kill switches
-      - CLUSTER_AGENT_ENABLED=${CLUSTER_AGENT_ENABLED}
-      - CLUSTER_AGENT_DISABLED_MODES=${CLUSTER_AGENT_DISABLED_MODES}
-      - CLUSTER_AGENT_AUTOMERGE_DISABLED_REPOS=${CLUSTER_AGENT_AUTOMERGE_DISABLED_REPOS}
-      # ── Claude
+      # ── Identity / kill switches (source: cluster-agent/prd)
+      - ENABLED=${ENABLED}
+      - DISABLED_MODES=${DISABLED_MODES}
+      - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
+      # ── Claude LLM auth
+      # Active path: ANTHROPIC_API_KEY — anthropic SDK reads this name natively.
+      # Set the real sk-ant-* value in Doppler at cluster-agent/prd.ANTHROPIC_API_KEY.
+      # Future path: CLAUDE_CREDENTIALS_PATH + the configs:-mounted OAuth credentials
+      # file. Both paths coexist; API key takes precedence if both are set (SDK
+      # env var > credentials file). Only API key is populated until June 15.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - CLAUDE_CREDENTIALS_PATH=/claude/.credentials.json
       # ── GitHub App identity
-      - CLUSTER_AGENT_GH_APP_ID=${CLUSTER_AGENT_GH_APP_ID}
-      - CLUSTER_AGENT_GH_APP_PRIVATE_KEY=${CLUSTER_AGENT_GH_APP_PRIVATE_KEY}
-      - CLUSTER_AGENT_GH_APP_INSTALLATION_ID=${CLUSTER_AGENT_GH_APP_INSTALLATION_ID}
-      # ── K8s — read-only on both, narrow-writer in dev cluster-agent-tests ns
-      - CLUSTER_AGENT_KUBECONFIG_DEV=${CLUSTER_AGENT_KUBECONFIG_DEV}
-      - CLUSTER_AGENT_KUBECONFIG_PRD=${CLUSTER_AGENT_KUBECONFIG_PRD}
-      - CLUSTER_AGENT_KUBECONFIG_TEST_RESTORE_DEV=${CLUSTER_AGENT_KUBECONFIG_TEST_RESTORE_DEV}
-      # ── Observability stack (HTTP basic-auth)
-      - CLUSTER_AGENT_LOKI_BASIC_AUTH_DEV=${CLUSTER_AGENT_LOKI_BASIC_AUTH_DEV}
-      - CLUSTER_AGENT_LOKI_BASIC_AUTH_PRD=${CLUSTER_AGENT_LOKI_BASIC_AUTH_PRD}
-      - CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_DEV=${CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_DEV}
-      - CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_PRD=${CLUSTER_AGENT_PROMETHEUS_BASIC_AUTH_PRD}
-      - CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_DEV=${CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_DEV}
-      - CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_PRD=${CLUSTER_AGENT_ALERTMANAGER_BASIC_AUTH_PRD}
-      - CLUSTER_AGENT_GRAFANA_API_TOKEN_DEV=${CLUSTER_AGENT_GRAFANA_API_TOKEN_DEV}
-      - CLUSTER_AGENT_GRAFANA_API_TOKEN_PRD=${CLUSTER_AGENT_GRAFANA_API_TOKEN_PRD}
+      - GH_APP_ID=${GH_APP_ID}
+      - GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}
+      - GH_APP_INSTALLATION_ID=${GH_APP_INSTALLATION_ID}
+      # ── K8s — read-only on both, narrow-writer in dev cluster-agent-tests ns.
+      # These kubeconfigs also carry the SA token used by tools/k8s_proxy.py
+      # to reach Loki/Prom/AM via the apiserver services/proxy endpoint.
+      - KUBECONFIG_DEV=${KUBECONFIG_DEV}
+      - KUBECONFIG_PRD=${KUBECONFIG_PRD}
+      - KUBECONFIG_TEST_RESTORE_DEV=${KUBECONFIG_TEST_RESTORE_DEV}
+      # ── Observability — Grafana annotation API (Loki/Prom/AM use apiserver proxy)
+      - GRAFANA_API_TOKEN_DEV=${GRAFANA_API_TOKEN_DEV}
+      - GRAFANA_API_TOKEN_PRD=${GRAFANA_API_TOKEN_PRD}
       # ── S3 (Mode G backup verification)
-      - CLUSTER_AGENT_MINIO_NAS_KEY_ID=${CLUSTER_AGENT_MINIO_NAS_KEY_ID}
-      - CLUSTER_AGENT_MINIO_NAS_SECRET_KEY=${CLUSTER_AGENT_MINIO_NAS_SECRET_KEY}
-      - CLUSTER_AGENT_B2_KEY_ID=${CLUSTER_AGENT_B2_KEY_ID}
-      - CLUSTER_AGENT_B2_APP_KEY=${CLUSTER_AGENT_B2_APP_KEY}
+      - MINIO_NAS_KEY_ID=${MINIO_NAS_KEY_ID}
+      - MINIO_NAS_SECRET_KEY=${MINIO_NAS_SECRET_KEY}
+      - B2_KEY_ID=${B2_KEY_ID}
+      - B2_APP_KEY=${B2_APP_KEY}
       # ── Runtime
       - PATH=/venv/bin:/usr/local/bin:/usr/bin:/bin
       - PYTHONPATH=/app/src
@@ -104,7 +120,8 @@ services:
             'pyjwt==2.10.*' \
             'claude-agent-sdk==0.1.*' \
             'tenacity==9.0.*' \
-            'structlog==24.4.*'
+            'structlog==24.4.*' \
+            'pyyaml==6.0.*'
           echo "venv ready"
         fi
         # Install kubectl + mc + curl + jq + sqlite (idempotent — apk skip if present)
