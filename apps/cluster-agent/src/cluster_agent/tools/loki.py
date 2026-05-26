@@ -32,6 +32,7 @@ def loki_query(
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
     limit: int = 100,
+    timeout: float = 30.0,
 ) -> dict[str, Any]:
     """LogQL range query against the in-cluster Loki via apiserver proxy.
 
@@ -40,6 +41,11 @@ def loki_query(
     Returns Loki's `streams`-shaped response — best for raw log line
     excerpts. For metric-form aggregations (count_over_time, rate,
     etc.), use loki_metric_query_range instead.
+
+    Timeout default: 30s. Heavy queries (regex across all namespaces
+    over 24h window) routinely take 5-15s on a busy cluster. The
+    digest's tripwire scan uses this — 15s proxy default was tripping
+    half of them.
     """
     now = dt.datetime.now(dt.timezone.utc)
     start = start or now - dt.timedelta(hours=1)
@@ -57,6 +63,7 @@ def loki_query(
         port=_LOKI_PORT,
         path="loki/api/v1/query_range",
         params=params,
+        timeout=timeout,
     )
 
 
