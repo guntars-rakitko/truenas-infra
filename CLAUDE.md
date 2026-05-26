@@ -130,6 +130,7 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 | NFS (prd) | Longhorn backups | 10.10.10.10 (NFS, service-level bindip) |
 | NFS (dev) | Longhorn backups | 10.10.15.10 |
 | PXE / TFTP server | custom iPXE 1.21.1+ built from source (apps/pxe/) — USB_HCD_USBIO fix for Intel Q170. Dynamic menu auto-listed from /mnt/tank/system/pxe/http/extras/{utils,distros,live}/*.iso by apps/pxe/pxe-genmenu.sh. Operator runbook: `docs/pxe-operator.md` | 10.10.5.10:69/udp (TFTP), :8080 (HTTP assets) |
+| cluster-agent | LLM-driven SRE assistant. P1 Mode A (alert triage) live on dev as of 2026-05-26. Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
@@ -303,6 +304,62 @@ format `<key-name>:<base64-32-bytes>`). The script verifies KMS is
 live and SKIPs cleanly if not — a premature run is harmless. Full
 setup steps are in the script's header comment. SSE-S3 encrypts NEW
 objects only; pre-existing objects stay plaintext and age out.
+
+### cluster-agent ops (P1 Mode A live since 2026-05-26)
+
+The cluster-agent runs as a NAS-side Docker container
+(`apps/cluster-agent/docker-compose.yaml`). Live operational notes
+that bit us during P1 deploy — full reference in
+`wiki/docs/runbooks/cluster-agent-runbook.md`.
+
+**Code change vs config change.** The compose bind-mounts
+`apps/cluster-agent/` → `/app`, so Python source edits land on disk
+immediately when `manage.sh phase apps --apply` runs. **But uvicorn
+caches the loaded module in memory.** Code-only edits don't take
+effect until the container restarts:
+
+```sh
+# After llm.py / dispatch.py / etc. changes:
+ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
+# (Or via TrueNAS Apps UI: Restart button.)
+
+# manage.sh DOES recreate the container when the compose `command:`
+# block or env vars change — but NOT for bind-mounted code edits.
+```
+
+**Venv self-heal — add markers when you add deps.** The container's
+startup checks `python -c 'import uvicorn, jinja2, cryptography'` and
+ONLY rebuilds the venv if that fails. When you add a new pip-install
+entry, you MUST add the corresponding `import` to the check — else old
+venvs (persisted across container recreates via bind mount) skip the
+rebuild because the original markers still import. We learned this
+twice in P1 (jinja2 + cryptography).
+
+**LLM auth toggle.** Compose passes exactly ONE of
+`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. `main.py` fails fast
+if both are set. Currently on `ANTHROPIC_API_KEY` (separate quota,
+unaffected by operator's interactive Claude Code rate-limit).
+Flip back to `CLAUDE_CODE_OAUTH_TOKEN` post-June-15 when the Max
+bucket becomes a dedicated $100/mo allocation. The compose comments
+document the toggle line-swap.
+
+**Doppler keys** (`cluster-agent/prd`):
+
+- `ANTHROPIC_API_KEY` — currently-active LLM auth (sk-ant-api03-*)
+- `CLAUDE_CODE_OAUTH_TOKEN` — set + ready as fallback (sk-ant-oat01-*, 1y validity)
+- `GH_APP_ID` / `GH_APP_PRIVATE_KEY` / `GH_APP_INSTALLATION_ID` —
+  cluster-agent[bot] App credentials (note: compose renames these
+  with `CLUSTER_AGENT_` prefix on injection, since the github tool
+  reads `CLUSTER_AGENT_GH_APP_*`)
+- `KUBECONFIG_DEV` / `KUBECONFIG_PRD` / `KUBECONFIG_TEST_RESTORE_DEV` —
+  base64-encoded kubeconfigs with SA tokens
+- `GRAFANA_API_TOKEN_DEV` / `GRAFANA_API_TOKEN_PRD` — annotation auth
+- `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for the future Mode G
+  backup-verification mode
+- `B2_KEY_ID` / `B2_APP_KEY` — same, for off-site verification
+- `SANDBOX_REPO` / `MODE_A_BUDGET_USD` / `LLM_MODEL` — P1 Mode A config
+- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` /
+  `AUTOMERGE_DISABLED_REPOS` — runtime kill switches
 
 ---
 
