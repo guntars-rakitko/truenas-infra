@@ -122,3 +122,57 @@ async def test_triage_alert_budget_exceeded_raises(monkeypatch):
             model="claude-sonnet-4-6",
             budget_usd=0.01,
         )
+
+
+# ── Code fence stripping ─────────────────────────────────────────────────
+
+def test_strip_code_fences_json_block():
+    """The LLM sometimes wraps JSON in ```json...``` fences despite the
+    prompt saying not to. Parser strips them leniently."""
+    from cluster_agent.llm import _strip_code_fences
+    raw = '```json\n{"k": 1}\n```'
+    assert _strip_code_fences(raw) == '{"k": 1}'
+
+
+def test_strip_code_fences_bare_backticks():
+    """Bare ``` fences (no language tag) also stripped."""
+    from cluster_agent.llm import _strip_code_fences
+    raw = '```\n{"k": 1}\n```'
+    assert _strip_code_fences(raw) == '{"k": 1}'
+
+
+def test_strip_code_fences_no_fences_passthrough():
+    """Output without fences passes through unchanged."""
+    from cluster_agent.llm import _strip_code_fences
+    raw = '{"k": 1}'
+    assert _strip_code_fences(raw) == '{"k": 1}'
+
+
+def test_strip_code_fences_with_surrounding_whitespace():
+    """Leading/trailing whitespace around fences is tolerated."""
+    from cluster_agent.llm import _strip_code_fences
+    raw = '  \n```json\n{"k": 1}\n```  \n'
+    # The function caller .strip()s first, so test that flow:
+    assert _strip_code_fences(raw.strip()) == '{"k": 1}'
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_handles_fenced_llm_output(monkeypatch):
+    """Real-world: LLM wraps the Finding JSON in ```json...```. Parser
+    survives, Finding is produced normally."""
+    from cluster_agent import llm
+
+    async def fake_query(prompt, options):
+        # Wrap the good JSON in markdown fences like the LLM did on 2026-05-26
+        return "```json\n" + _good_finding_json() + "\n```"
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+    finding = await triage_alert(
+        alert={"labels": {"alertname": "KubePodCrashLooping"}, "startsAt": "2026-05-25T17:00:00Z"},
+        context={"loki_excerpt": "x", "kubectl_describe": "x", "prom_values": "x", "flux_state": "x"},
+        cluster="dev",
+        model="claude-sonnet-4-6",
+        budget_usd=0.50,
+    )
+    assert isinstance(finding, Finding)
+    assert finding.severity == "medium"
