@@ -32,13 +32,23 @@ Auth is two-layer:
      `cluster-agent-services-proxy` Role grants `create` on
      services/proxy for `kube-prometheus-stack-grafana[:80]` (kube-infra
      PR #567 for this fix).
-  2. Grafana SA token (`GRAFANA_API_TOKEN_{DEV,PRD}` env var) — sent
-     in the proxied request body's Authorization header. Grafana
-     enforces this at its own auth layer regardless of how the request
-     reached it.
+  2. Grafana's `[auth.proxy]` mode — the cluster's Grafana is
+     configured to trust the proxy (whitelist="") and auto-create
+     users from the `X-WEBAUTH-USER` header (per kube-infra CLAUDE.md
+     SSO architecture section). Apiserver-proxy strips/ignores
+     `Authorization: Bearer <Grafana-SA-token>` so the original
+     Bearer-token approach returned 401; the X-WEBAUTH-USER header
+     passes through cleanly and Grafana auto-creates a "cluster-agent"
+     user with Admin role (auto_assign_org_role=Admin per the
+     chart's [auth.proxy] block).
+
+History note: tried Grafana SA token via Bearer first (PR #39), got
+401 from Grafana after apiserver-proxy stripped/ignored it. Switched
+to X-WEBAUTH-USER 2026-05-26 — uses the same proxy-trust mechanism
+that interactive operator browser access already uses via
+traefik-admin's OIDC plugin.
 """
 from __future__ import annotations
-import os
 from typing import Iterable
 
 from .audit import audit
@@ -48,6 +58,7 @@ from .k8s_proxy import proxy_post
 _GRAFANA_NAMESPACE = "monitoring"
 _GRAFANA_SERVICE = "kube-prometheus-stack-grafana"
 _GRAFANA_SERVICE_PORT = 80
+_GRAFANA_PROXY_USER = "cluster-agent"
 
 
 @audit(tool="grafana_post_annotation")
@@ -59,16 +70,9 @@ def post_annotation(
     time_ms: int,
     time_end_ms: int | None = None,
 ) -> str:
-    """Post a Grafana annotation via apiserver-proxy. Returns annotation id."""
+    """Post a Grafana annotation via apiserver-proxy + auth.proxy header."""
     if cluster not in ("dev", "prd"):
         raise ValueError(f"unknown cluster {cluster!r}; expected 'dev' or 'prd'")
-    grafana_token = os.environ.get(f"GRAFANA_API_TOKEN_{cluster.upper()}")
-    if not grafana_token:
-        raise RuntimeError(
-            f"GRAFANA_API_TOKEN_{cluster.upper()} not set; cannot authenticate "
-            f"to Grafana at the application layer (apiserver auth would still "
-            f"pass via SA token, but Grafana itself would 401)."
-        )
     payload: dict[str, object] = {
         "time": int(time_ms),
         "tags": list(tags),
@@ -83,8 +87,14 @@ def post_annotation(
         port=_GRAFANA_SERVICE_PORT,
         path="api/annotations",
         json_body=payload,
-        # Grafana-side auth — separate from the K8s SA token used to
-        # authenticate the apiserver-proxy hop.
-        extra_headers={"Authorization": f"Bearer {grafana_token}"},
+        # auth.proxy mode: Grafana trusts the proxy + creates the user
+        # on first request. Same mechanism that traefik-admin uses on
+        # operator browser sessions (where the OIDC plugin sets these
+        # headers from validated Pocket-ID claims).
+        extra_headers={
+            "X-WEBAUTH-USER": _GRAFANA_PROXY_USER,
+            "X-WEBAUTH-EMAIL": "cluster-agent@w1.lv",
+            "X-WEBAUTH-NAME": "cluster-agent (Mode A)",
+        },
     )
     return str(resp["id"])

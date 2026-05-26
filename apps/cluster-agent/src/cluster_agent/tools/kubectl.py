@@ -12,9 +12,12 @@ test-restore Job creation goes through a separate `kubectl_apply_in_ns`
 that's restricted to the cluster-agent-tests namespace).
 """
 from __future__ import annotations
+import base64
 import json
+import os
 import re
 import subprocess
+import tempfile
 from typing import Any
 
 from .audit import audit
@@ -23,6 +26,53 @@ from .audit import audit
 class ToolError(RuntimeError):
     """Raised when the tool refuses to issue a kubectl command —
     e.g. resource not in allowlist, or hard-banned."""
+
+
+# Each kubectl invocation needs a kubeconfig. The cluster-agent has
+# per-cluster kubeconfigs in env vars (KUBECONFIG_DEV / KUBECONFIG_PRD /
+# KUBECONFIG_TEST_RESTORE_DEV), base64-encoded YAML. The tool decodes
+# them lazily to temp files on first use per process and re-uses the
+# paths thereafter — kubectl always invoked with `--kubeconfig=<path>`
+# so it never has to merge files or rely on a default ~/.kube/config
+# that doesn't exist in the container.
+#
+# Bug history (2026-05-26): originally the tool just passed
+# `--context=<cluster>` without `--kubeconfig`, relying on a non-
+# existent default config → kubectl reported "context 'prd' does not
+# exist" on every call. Mode A's _fetch_kubectl_describe silently
+# fell back to empty string (best-effort), so the LLM lost context
+# without anyone noticing until the prd-enable surfaced richer alerts.
+_KUBECONFIG_PATHS: dict[str, str] = {}
+
+
+def _kubeconfig_path(cluster: str) -> str:
+    """Decode KUBECONFIG_{cluster} env to a temp file; return path.
+
+    Cached per cluster per process. Env vars are base64 in production
+    (Doppler stores them encoded); plain YAML accepted as a fallback
+    for tests.
+    """
+    if cluster in _KUBECONFIG_PATHS:
+        return _KUBECONFIG_PATHS[cluster]
+    env_name = f"KUBECONFIG_{cluster.upper()}"
+    raw = os.environ.get(env_name)
+    if not raw:
+        raise ToolError(
+            f"{env_name} not set in container env; cannot run kubectl for "
+            f"cluster '{cluster}'"
+        )
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+    except Exception:
+        # Already plain YAML (tests / mis-encoded vars)
+        decoded = raw
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=f"-{cluster}.kubeconfig", delete=False
+    )
+    tmp.write(decoded)
+    tmp.close()
+    _KUBECONFIG_PATHS[cluster] = tmp.name
+    return tmp.name
 
 
 # Read-only resources allowed. Composed from the cluster-agent-readonly
@@ -73,7 +123,7 @@ def kubectl_get(
     if not ALLOWED_RESOURCES.match(resource):
         raise ToolError(f"resource '{resource}' not in agent allowlist")
 
-    cmd = ["kubectl", "--context", context, "get", resource]
+    cmd = ["kubectl", "--kubeconfig", _kubeconfig_path(context), "--context", context, "get", resource]
     if name:
         cmd.append(name)
     if namespace:
@@ -107,7 +157,7 @@ def kubectl_describe(
         raise ToolError(f"resource '{resource}' is hard-banned")
     if not ALLOWED_RESOURCES.match(resource):
         raise ToolError(f"resource '{resource}' not in agent allowlist")
-    cmd = ["kubectl", "--context", context, "describe", resource, name]
+    cmd = ["kubectl", "--kubeconfig", _kubeconfig_path(context), "--context", context, "describe", resource, name]
     if namespace:
         cmd.extend(["-n", namespace])
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -127,7 +177,7 @@ def kubectl_logs(
     since: str | None = None,
 ) -> str:
     """Read-only kubectl logs."""
-    cmd = ["kubectl", "--context", context, "logs", pod, "-n", namespace, f"--tail={tail}"]
+    cmd = ["kubectl", "--kubeconfig", _kubeconfig_path(context), "--context", context, "logs", pod, "-n", namespace, f"--tail={tail}"]
     if container:
         cmd.extend(["-c", container])
     if since:

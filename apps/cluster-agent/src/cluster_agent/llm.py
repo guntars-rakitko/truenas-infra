@@ -222,7 +222,15 @@ async def triage_alert(
     # Call the API. _sdk_query returns the full response dict in the
     # new (REST) shape OR the legacy stub shape (raw string) for back-
     # compat with existing tests that monkeypatch it with a string return.
-    raw_response = await _sdk_query(filled, {"model": model, "max_tokens": 1024})
+    # max_tokens=4096 — bumped from 1024 after observing truncation on
+    # complex prd findings (KubeJobFailed alert produced a partial JSON
+    # with `Unterminated string` mid-summary 2026-05-26). A complete
+    # Finding is typically ~600-1200 output tokens; complex multi-evidence
+    # findings can push 2000+. 4096 leaves headroom without meaningful
+    # cost impact (output tokens dominate cost but Sonnet 4.6 caps the
+    # actual generation at what the model decides — max_tokens is a
+    # ceiling, not a target).
+    raw_response = await _sdk_query(filled, {"model": model, "max_tokens": 4096})
 
     # Back-compat: tests still stub _sdk_query to return a JSON string
     # directly (the assistant-text body). Branch on type.

@@ -1,4 +1,4 @@
-"""Grafana annotation API client — apiserver-proxy path."""
+"""Grafana annotation API client — apiserver-proxy + auth.proxy path."""
 import pytest
 
 from cluster_agent.tools.grafana import post_annotation
@@ -7,10 +7,9 @@ from cluster_agent.tools import grafana as grafana_mod
 
 def test_post_annotation_dev(monkeypatch):
     """post_annotation calls proxy_post against the dev cluster's Grafana
-    service with the DEV token in the request's Bearer header (passed
-    through to Grafana for app-layer auth)."""
-    monkeypatch.setenv("GRAFANA_API_TOKEN_DEV", "test-token-dev")
-
+    service. Auth via Grafana's auth.proxy mode — X-WEBAUTH-USER header
+    identifies us, Grafana trusts the proxy (whitelist=""), no Bearer
+    token needed."""
     captured = {}
 
     def fake_proxy_post(*, cluster, namespace, service, port, path, json_body, extra_headers, timeout=15.0):
@@ -43,21 +42,15 @@ def test_post_annotation_dev(monkeypatch):
     assert captured["json_body"]["text"] == "cluster-agent Mode A: PodCrashLooping in pocket-id"
     assert captured["json_body"]["tags"] == ["cluster-agent", "mode:A", "severity:medium"]
     assert captured["json_body"]["time"] == 1700000000000
-    # Grafana-side auth header (separate from the apiserver SA token)
-    assert captured["extra_headers"]["Authorization"] == "Bearer test-token-dev"
+    # auth.proxy headers — Grafana trusts the proxy + auto-creates user
+    assert captured["extra_headers"]["X-WEBAUTH-USER"] == "cluster-agent"
+    assert "X-WEBAUTH-EMAIL" in captured["extra_headers"]
+    assert "X-WEBAUTH-NAME" in captured["extra_headers"]
+    # And NOT the old Bearer token (which apiserver-proxy was stripping)
+    assert "Authorization" not in captured["extra_headers"]
 
 
 def test_post_annotation_unknown_cluster_raises():
     """Unknown cluster name → ValueError so callers can't silently miss the wrong Grafana."""
     with pytest.raises(ValueError, match="unknown cluster"):
         post_annotation(cluster="stg", text="x", tags=[], time_ms=0)
-
-
-def test_post_annotation_missing_token_raises(monkeypatch):
-    """No Grafana token in env → RuntimeError before any HTTP call.
-    Defense-in-depth: apiserver SA auth would pass but Grafana would 401.
-    Surface the misconfig with a clear message instead of letting it
-    fail at the upstream layer."""
-    monkeypatch.delenv("GRAFANA_API_TOKEN_DEV", raising=False)
-    with pytest.raises(RuntimeError, match="GRAFANA_API_TOKEN_DEV"):
-        post_annotation(cluster="dev", text="x", tags=[], time_ms=0)
