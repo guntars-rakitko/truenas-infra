@@ -1,7 +1,7 @@
 # cluster-agent P3 — log-pattern mining (Mode A extension)
 
-**Status:** 📝 Draft — open design questions for operator below.
-Implementation gated on resolving them.
+**Status:** ✅ Finalized 2026-05-26 — operator decisions in § 10.
+Ready for implementation.
 
 ## 1. Goal
 
@@ -196,44 +196,79 @@ False positives acceptable (over-redact > under-redact).
    issues or noise?
 6. Tune `ratio_threshold` / `max_patterns` / regex over 1-2 weeks
 
-## 10. Open design questions (operator input needed)
+## 10. Design decisions (locked 2026-05-26)
 
-I have reasonable defaults for each, but these benefit from operator
-confirmation:
+Operator-confirmed in conversation 2026-05-26:
 
-1. **Baseline window** — 7 days reasonable? Shorter (3 days) reacts
-   faster to recent changes but easier to be fooled by a busy week.
-   Longer (14 days) smoother but slow to forget transient anomalies.
+1. **Baseline window: 7 days** (default — standard "vs last week"
+   comparison; smooths daily variation, fast enough to forget old
+   anomalies within 1-2 weeks).
 
-2. **Ratio threshold** — start at 3.0× baseline? Lower (2.0×) catches
-   more, surfaces noise. Higher (5.0×) misses subtle creep.
+2. **Ratio threshold: 3.0×** baseline. Surfaces moderate outliers;
+   leaves room for LLM to be selective.
 
-3. **Minimum count floor** — currently proposed `count_24h ≥ 50`.
-   Should it be higher (e.g. 200 for a noisy namespace) or
-   per-namespace adaptive?
+3. **Minimum count floor: 50** lines/day. De-noises namespaces with
+   tiny absolute volumes (`5 → 15 errors` is `3×` but not meaningful).
 
-4. **Always-interesting patterns** — should the aggregator have a
-   hard-coded list of patterns that ALWAYS get surfaced regardless
-   of ratio? e.g. `panic`, `OOMKilled`, `crashloopbackoff`,
-   `certificate expired`, `connection refused`. Reduces LLM judgment
-   variability for known-critical signals.
+4. **Hard-coded tripwire patterns: YES — small list**. Always
+   surface these regardless of ratio/floor (one occurrence is
+   enough):
 
-5. **Severity default** — when LLM elevates a log-pattern to a
-   Finding, what severity default? `info` (catches operator
-   attention but doesn't page) or `low` (slightly more visible)?
+   ```python
+   _ALWAYS_SURFACE_PATTERNS = [
+       r"(?i)\bpanic\b",
+       r"(?i)\bfatal\b",
+       r"(?i)OOMKilled",
+       r"(?i)CrashLoopBackOff",
+       r"(?i)ImagePullBackOff",
+       r"(?i)certificate.{0,30}(expired|invalid)",
+       r"(?i)x509.{0,30}(expired|signed)",
+       r"(?i)dial tcp.{0,30}connect: connection refused",
+       r"(?i)permission denied",
+       r"(?i)evicted",
+   ]
+   ```
 
-6. **Granularity** — start with namespace-level only, or include
-   pod-prefix breakdown immediately? Pod-prefix adds cardinality
-   (~3-5× more patterns to consider) but better signal.
+   When the aggregator finds a matching line, it emits a `LogPattern`
+   with `chronicity="tripwire"` regardless of count. LLM sees both
+   ratio-driven patterns AND tripwires in the prompt.
 
-7. **Should P3 also include drift detection** (the original Mode B
-   territory — manual `kubectl edit` not reflected in Flux)? Or
-   keep that for P5 as planned?
+5. **Severity default for log-derived Findings: `info`**. The LLM
+   can elevate to `low` / `medium` based on pattern significance.
+   Avoids log-derived findings drowning out alert-derived findings.
 
-8. **Cost ceiling** — should `DAILY_DIGEST_BUDGET_USD` (currently
-   $0.50) be raised to $0.75 to accommodate the larger prompt? Or
-   keep tight and let the budget gate force re-tuning if we
-   over-extend?
+6. **Granularity: namespace-only for P3**. Defer pod-prefix
+   breakdown to a P3.5 enhancement if the namespace-level signal
+   proves too coarse. Keeps initial cardinality manageable (~30
+   namespaces vs ~100 pod-prefixes per cluster).
 
-Operator: pick / override any of the above. Defaults shown in §§
-4-5 are what I'd use if you have no preference.
+7. **Drift detection: NOT in P3**. Save for P5 (Mode B weekly
+   proactive scan). P3 stays narrow — logs only.
+
+8. **Cost ceiling: raise `DAILY_DIGEST_BUDGET_USD` from `0.50` to
+   `0.75`** at deploy time. Gives P3 the headroom for ~$0.05-0.10
+   additional input tokens without tripping the gate.
+
+### Schema impact — `LogPattern.chronicity`
+
+Add a `chronicity` field to `LogPattern` so the LLM can distinguish
+ratio-outliers from tripwire matches:
+
+```python
+LogPatternChronicity = Literal["ratio_outlier", "tripwire"]
+
+class LogPattern(BaseModel):
+    namespace: str
+    level: Literal["error", "warn"]
+    chronicity: LogPatternChronicity
+    count_24h: int
+    baseline_mean_24h: float | None    # None for tripwires
+    ratio_vs_baseline: float | None    # None for tripwires
+    sample_lines: list[str]
+    matched_tripwire: str | None       # which regex matched, if tripwire
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime
+```
+
+This way the prompt can include both: "10 ratio outliers + 2
+tripwire matches" with clear separation.
