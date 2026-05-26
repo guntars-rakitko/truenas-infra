@@ -36,6 +36,10 @@ def loki_query(
     """LogQL range query against the in-cluster Loki via apiserver proxy.
 
     Defaults to the last hour if start/end are not provided.
+
+    Returns Loki's `streams`-shaped response — best for raw log line
+    excerpts. For metric-form aggregations (count_over_time, rate,
+    etc.), use loki_metric_query_range instead.
     """
     now = dt.datetime.now(dt.timezone.utc)
     start = start or now - dt.timedelta(hours=1)
@@ -53,4 +57,43 @@ def loki_query(
         port=_LOKI_PORT,
         path="loki/api/v1/query_range",
         params=params,
+    )
+
+
+@audit(tool="loki_metric_query_range")
+def loki_metric_query_range(
+    cluster: str,
+    logql: str,
+    *,
+    start: dt.datetime,
+    end: dt.datetime,
+    step_seconds: int = 3600,
+) -> dict[str, Any]:
+    """LogQL range query for metric-form expressions (count_over_time,
+    rate, etc.). Returns a Prometheus-style `matrix` response: one
+    series per label set, each series a list of [timestamp, value]
+    pairs at `step_seconds` granularity.
+
+    Used by P3 log-pattern mining to compute per-namespace error/warn
+    counts over the 7-day baseline window. Step defaults to 1h
+    (3600s) — fine-grained enough to compute daily totals, coarse
+    enough to keep response size manageable.
+
+    Note: limit param is irrelevant for metric queries (Loki returns
+    the full series). Don't pass one.
+    """
+    params = {
+        "query": logql,
+        "start": str(int(start.timestamp() * 1e9)),
+        "end": str(int(end.timestamp() * 1e9)),
+        "step": f"{step_seconds}s",
+    }
+    return proxy_get(
+        cluster,
+        namespace=_LOKI_NAMESPACE,
+        service=_LOKI_SERVICE,
+        port=_LOKI_PORT,
+        path="loki/api/v1/query_range",
+        params=params,
+        timeout=30.0,
     )

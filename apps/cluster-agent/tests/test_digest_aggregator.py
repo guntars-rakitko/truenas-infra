@@ -152,3 +152,239 @@ def test_enrich_with_annotations_populates_summary():
     }]
     enrich_with_annotations(groups, active)
     assert groups[0].sample_annotation == "Pod pocket-id/pocket-id-0 is crash looping"
+
+
+# ── P3: Log-pattern aggregator tests ──────────────────────────────
+
+
+def _loki_metric_response(*pairs) -> dict:
+    """Build a Loki metric-form (`matrix`-shaped) response from
+    (namespace, total_count) pairs. The aggregator only cares about
+    the sum, not bucket distribution, so we put it all in one [ts, v]."""
+    now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
+    return {
+        "data": {
+            "resultType": "matrix",
+            "result": [
+                {"metric": {"namespace": ns}, "values": [[now_ts, str(count)]]}
+                for ns, count in pairs
+            ],
+        },
+    }
+
+
+def _loki_streams_response(*streams) -> dict:
+    """Build a Loki streams-shaped response from (namespace, [lines]) tuples."""
+    ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
+    return {
+        "data": {
+            "resultType": "streams",
+            "result": [
+                {
+                    "stream": {"namespace": ns},
+                    "values": [[ts, line] for line in lines],
+                }
+                for ns, lines in streams
+            ],
+        },
+    }
+
+
+def test_aggregate_log_patterns_ratio_outlier_surfaces():
+    """A namespace with 24h count ≥ 3× baseline AND ≥ 50 lines is surfaced
+    as a ratio_outlier LogPattern."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        # Heuristic: shorter window = "recent" response; longer = baseline
+        window_seconds = (end - start).total_seconds()
+        if window_seconds <= 24 * 3600 + 60:
+            # Recent 24h: pocket-id has a big spike, velero is normal
+            return _loki_metric_response(
+                ("pocket-id", 500),    # 500 errors in last 24h
+                ("velero", 30),        # below floor, ignored
+                ("flux-system", 60),   # at floor; ratio depends on baseline
+            )
+        else:
+            # Baseline 6 days at 1 bucket per day → 6 datapoints per ns
+            now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
+            return {
+                "data": {
+                    "result": [
+                        {"metric": {"namespace": "pocket-id"},
+                         "values": [[now_ts, "50"]] * 6},   # avg 50/day
+                        {"metric": {"namespace": "velero"},
+                         "values": [[now_ts, "20"]] * 6},
+                        {"metric": {"namespace": "flux-system"},
+                         "values": [[now_ts, "55"]] * 6},   # avg 55/day; ratio 60/55 ≈ 1.09
+                    ],
+                },
+            }
+
+    def streams_query(cluster, query, *, start, end, limit):
+        return _loki_streams_response()   # no tripwires fire in this test
+
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+    )
+    # pocket-id: 500 / 50 = 10× → ratio_outlier
+    # velero: count below 50 floor → skipped
+    # flux-system: ratio 1.09 (below 3.0) → skipped
+    assert len(patterns) == 1
+    assert patterns[0].namespace == "pocket-id"
+    assert patterns[0].chronicity == "ratio_outlier"
+    assert patterns[0].count_24h == 500
+    assert patterns[0].ratio_vs_baseline == 10.0
+
+
+def test_aggregate_log_patterns_tripwire_surfaces_one_occurrence():
+    """A tripwire pattern (e.g. panic) is surfaced even on a single
+    occurrence — no ratio/floor gating for tripwires."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        # No statistical outliers
+        return _loki_metric_response()
+
+    panic_count = {"count": 0}
+
+    def streams_query(cluster, query, *, start, end, limit):
+        # Match only when LogQL includes "panic"
+        if "panic" in query.lower():
+            panic_count["count"] += 1
+            ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
+            return {
+                "data": {
+                    "result": [{
+                        "stream": {"namespace": "flux-system"},
+                        "values": [[ts, "runtime error: invalid memory address — panic"]],
+                    }],
+                },
+            }
+        return _loki_streams_response()
+
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+    )
+    tripwires = [p for p in patterns if p.chronicity == "tripwire"]
+    assert any(p.matched_tripwire == "panic" for p in tripwires)
+    assert any(p.namespace == "flux-system" for p in tripwires)
+    panic_pattern = next(p for p in tripwires if p.matched_tripwire == "panic")
+    assert panic_pattern.count_24h == 1
+    assert len(panic_pattern.sample_lines) == 1
+
+
+def test_aggregate_log_patterns_redacts_secrets_in_sample_lines():
+    """Sample lines containing API keys / passwords / bearer tokens are
+    redacted before being included in a LogPattern."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        return _loki_metric_response()
+
+    def streams_query(cluster, query, *, start, end, limit):
+        if "panic" in query.lower():
+            ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
+            return {
+                "data": {
+                    "result": [{
+                        "stream": {"namespace": "secret-leaker"},
+                        "values": [
+                            [ts, 'panic: AUTH_TOKEN=sk-ant-api03-supersecretvalue123 failed'],
+                            [ts, 'panic: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig'],
+                            [ts, 'panic: password=hunter2 rejected'],
+                        ],
+                    }],
+                },
+            }
+        return _loki_streams_response()
+
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+    )
+    panic = next(p for p in patterns if p.matched_tripwire == "panic")
+    joined = " ".join(panic.sample_lines)
+    # Original secret values must NOT appear; [REDACTED] should be present
+    assert "sk-ant-api03-supersecretvalue123" not in joined
+    assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig" not in joined
+    assert "hunter2" not in joined
+    assert "[REDACTED]" in joined
+
+
+def test_aggregate_log_patterns_quiet_cluster_returns_empty():
+    """When no outliers exceed thresholds and no tripwires match,
+    the aggregator returns an empty list (no false positives)."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        return _loki_metric_response(("flux-system", 10))   # below floor
+
+    def streams_query(cluster, query, *, start, end, limit):
+        return _loki_streams_response()
+
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+    )
+    assert patterns == []
+
+
+def test_aggregate_log_patterns_tool_failure_does_not_abort():
+    """If the Loki metric query raises, the aggregator returns an empty
+    list (or just tripwires) rather than blowing up the whole digest."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        raise RuntimeError("loki backend not reachable")
+
+    def streams_query(cluster, query, *, start, end, limit):
+        return _loki_streams_response()
+
+    # Should not raise
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+    )
+    assert patterns == []
+
+
+def test_aggregate_log_patterns_caps_at_max_patterns():
+    """When more outliers + tripwires would exist than max_patterns,
+    the list is truncated. Tripwires take priority (sorted first)."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        if (end - start).total_seconds() <= 24 * 3600 + 60:
+            return _loki_metric_response(
+                *[(f"ns-{i}", 1000) for i in range(20)],   # 20 ratio outliers
+            )
+        else:
+            now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
+            return {
+                "data": {
+                    "result": [
+                        {"metric": {"namespace": f"ns-{i}"},
+                         "values": [[now_ts, "10"]] * 6}    # baseline 10/day → ratio 100x
+                        for i in range(20)
+                    ],
+                },
+            }
+
+    def streams_query(cluster, query, *, start, end, limit):
+        return _loki_streams_response()
+
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+        max_patterns=5,
+    )
+    assert len(patterns) == 5

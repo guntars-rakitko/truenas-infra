@@ -375,6 +375,7 @@ async def triage_digest(
     *,
     cluster: str,
     alert_groups: list,            # list[AlertGroup] — typed loosely to avoid circular import
+    log_patterns: list | None = None,   # list[LogPattern] — P3 (default None for tests)
     open_issue_keys: list[str],
     context_excerpts: str,
     window_hours: int,
@@ -401,12 +402,17 @@ async def triage_digest(
         [g.model_dump(mode="json") for g in alert_groups],
         indent=2, default=str,
     )
+    log_patterns_json = json.dumps(
+        [p.model_dump(mode="json") for p in (log_patterns or [])],
+        indent=2, default=str,
+    )
     window_end = "now (UTC)"
     filled = jinja2.Template(prompt_template).render(
         cluster=cluster,
         window_hours=window_hours,
         window_end=window_end,
         alert_groups_json=groups_json,
+        log_patterns_json=log_patterns_json,
         open_issue_keys_json=json.dumps(open_issue_keys, indent=2),
         context_excerpts=context_excerpts or "(no context excerpts gathered)",
     )

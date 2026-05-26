@@ -38,10 +38,10 @@ from ..llm import triage_digest, LLMBudgetExceeded
 from ..state.db import StateDB
 from ..state.dedup import lookup, DedupAction
 from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
-from ..tools.loki import loki_query
+from ..tools.loki import loki_query, loki_metric_query_range
 from ..tools.kubectl import kubectl_describe, ToolError
 from ..dispatch import dispatch
-from .digest_aggregator import aggregate, enrich_with_annotations
+from .digest_aggregator import aggregate, aggregate_log_patterns, enrich_with_annotations
 
 
 log = logging.getLogger(__name__)
@@ -98,6 +98,21 @@ async def run_async(*, cluster: str) -> DigestResult:
     # ── 4. Pull context excerpts for chronic + flapping groups only ─
     context_excerpts = _gather_context_for_chronic(groups, cluster)
 
+    # ── 4b. P3: Log-pattern mining (statistical outliers + tripwires) ─
+    # Failures here don't abort the digest — log patterns are
+    # supplementary signal, not the primary input. If Loki is down or
+    # the metric query fails, we still produce a useful alert digest.
+    try:
+        log_patterns = aggregate_log_patterns(
+            cluster,
+            loki_query_fn=loki_query,
+            loki_metric_query_fn=loki_metric_query_range,
+            window_hours=window_hours,
+        )
+    except Exception as e:
+        log.warning("digest %s: log-pattern mining failed: %r", cluster, e)
+        log_patterns = []
+
     # ── 5. Open issue dedup keys ────────────────────────────────────
     sdb = StateDB(os.environ["STATE_DB_PATH"])
     open_keys = _load_open_dedup_keys(sdb, cluster)
@@ -107,6 +122,7 @@ async def run_async(*, cluster: str) -> DigestResult:
         report = await triage_digest(
             cluster=cluster,
             alert_groups=groups,
+            log_patterns=log_patterns,
             open_issue_keys=open_keys,
             context_excerpts=context_excerpts,
             window_hours=window_hours,

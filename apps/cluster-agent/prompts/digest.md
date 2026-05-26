@@ -166,6 +166,44 @@ durations are over the digest window.
 {{ alert_groups_json }}
 ```
 
+### Notable log patterns (P3 — logs without alerts)
+
+These are log-volume / log-content patterns the aggregator surfaced.
+**They are NOT alerts** — they are pre-alert signals you might miss
+if you only watched Alertmanager. Two flavors:
+
+- **`tripwire`** patterns matched one of a small hard-coded list
+  (panic / fatal / OOMKilled / CrashLoopBackOff / certificate
+  expired / etc.). One occurrence is enough to surface. The
+  `matched_tripwire` field says which tripwire fired, and
+  `sample_lines` carries up to 3 redacted log lines.
+- **`ratio_outlier`** patterns are namespaces whose 24h error/warn
+  log volume is ≥ 3× their 7-day baseline AND ≥ 50 lines absolute.
+  No sample lines (just statistical signal); the LLM can elevate
+  to a Finding if the ratio is striking.
+
+Selection guidance:
+- A tripwire match is almost always worth at least a Finding with
+  severity `info` (or higher if the pattern is severe). Mention in
+  the digest summary even if you choose not to elevate.
+- A ratio outlier is worth a Finding ONLY if the ratio is high
+  (≥5×) AND the count is substantial (≥500). Otherwise summarize.
+- If a log pattern correlates with an alert in the section above
+  (same namespace, plausible causal link), fold it into the
+  alert-derived Finding's `evidence` rather than creating a
+  separate Finding.
+- **Default severity for log-derived Findings: `info`**. Elevate
+  to `low` only if the pattern indicates clear ongoing degradation;
+  `medium` only if it's plausibly going to cause an outage.
+
+If the `log_patterns_json` block below is empty `[]`, there were
+no notable patterns — just say "no anomalous log patterns" in the
+narrative and move on.
+
+```json
+{{ log_patterns_json }}
+```
+
 ### Already-open GH issues for this cluster (existing dedup_keys)
 
 If your Finding would re-cover ground already in one of these issues,
