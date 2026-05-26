@@ -23,7 +23,6 @@ dependencies = [
     "jinja2>=3.1",
     "pydantic>=2.10",
     "pyjwt>=2.10",
-    "claude-agent-sdk>=0.1.0",
     "tenacity>=9.0",
     "structlog>=24.4",
 ]

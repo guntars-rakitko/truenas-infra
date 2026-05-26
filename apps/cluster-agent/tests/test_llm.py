@@ -1,4 +1,4 @@
-"""LLM wrapper — claude-agent-sdk usage + budget + JSON parse."""
+"""LLM wrapper — direct Anthropic /v1/messages call + budget + JSON parse."""
 from __future__ import annotations
 import json
 
@@ -66,6 +66,40 @@ async def test_triage_alert_invalid_json_raises(monkeypatch):
             model="claude-sonnet-4-6",
             budget_usd=0.50,
         )
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_handles_real_api_response_shape(monkeypatch):
+    """When _sdk_query returns the real API dict shape (content/usage blocks),
+    triage_alert extracts the text correctly + uses usage tokens for metrics."""
+    from cluster_agent import llm
+
+    async def fake_query(prompt, options):
+        return {
+            "id": "msg_01TEST",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [
+                {"type": "text", "text": _good_finding_json()}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 4321,
+                "output_tokens": 456,
+            },
+        }
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+    finding = await triage_alert(
+        alert={"labels": {"alertname": "KubePodCrashLooping"}, "startsAt": "2026-05-25T17:00:00Z"},
+        context={"loki_excerpt": "OOMKilled", "kubectl_describe": "...", "prom_values": "...", "flux_state": "..."},
+        cluster="dev",
+        model="claude-sonnet-4-6",
+        budget_usd=0.50,
+    )
+    assert isinstance(finding, Finding)
+    assert finding.dedup_key == "alert:KubePodCrashLooping:pocket-id-0:dev"
 
 
 @pytest.mark.asyncio
