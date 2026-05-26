@@ -318,23 +318,27 @@ def aggregate_log_patterns(
         f'[{window_hours}h]))'
     )
 
-    # ── Parallel execution (2026-05-26) ──────────────────────────
+    # ── Parallel execution with backpressure throttling (2026-05-26) ──
     # Each Loki query is independent + slow (10-60s on real clusters
-    # depending on match cardinality). Running 12 queries sequentially
-    # — the 2 ratio-outlier queries + 10 tripwires — adds up to ~5-8
-    # minutes per digest with the 60s timeout. ThreadPoolExecutor
-    # cuts that to ~60s (bounded by the slowest single query).
+    # depending on match cardinality). Sequential at 60s timeout =
+    # ~8 min per digest. Naive parallelism with 12 workers saturates
+    # the single-binary homelab Loki — ALL queries time out because
+    # Loki's worker queue backs up.
+    #
+    # max_workers=3 is the empirical sweet spot for our cluster's
+    # Loki capacity:
+    #   - Sequential of 12 × ~30s avg = ~360s
+    #   - max=3:   ~120s expected
+    #   - max=12:  ALL fail (Loki saturates)
     #
     # Threads (not asyncio) because:
     #   - loki_query / loki_metric_query_fn are sync HTTP calls
     #   - we don't need cancellation-on-first-failure semantics
     #   - audit decorator's contextvar handling is thread-friendly
-    #   - max 12 concurrent connections is well below any reasonable
-    #     apiserver-proxy connection limit
     outliers: list[LogPattern] = []
     tripwires: list[LogPattern] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         # Submit the 2 ratio-outlier queries (recent + baseline windows)
         recent_future = pool.submit(
             loki_metric_query_fn,
