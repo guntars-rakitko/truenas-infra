@@ -89,29 +89,34 @@ class Scheduler:
             **trigger_kwargs,
         )
 
-    def add_mode_a_with_alert_gate(
+    def add_daily_digest(
         self,
         func: Callable[[], Any],
         *,
         cluster: str,
-        check_alerts_func: Callable[[str], int],
-        minutes: int = 5,
+        hour: int = 6,
+        minute: int = 0,
     ) -> None:
-        """Mode A specifically — fire only if Alertmanager has >0 active alerts.
+        """Mode A daily-digest job (2026-05-26 pivot — replaces the
+        5-min add_mode_a_with_alert_gate).
 
-        check_alerts_func(cluster) returns the count of active alerts. If 0,
-        skip the LLM call entirely (saves cost on idle clusters).
+        Fires once per day at hour:minute in the scheduler's timezone
+        (Europe/Riga, set in __init__). One job per cluster — dev and
+        prd can be staggered by passing different `minute` values so
+        their prompts can share Anthropic's 5-min prompt cache.
+
+        No per-fire alert-count gate (unlike the 5-min model) — the
+        runner itself decides "quiet day" semantics from the digest
+        window, which is the right place for that decision now.
         """
         def wrapped() -> None:
             if not is_mode_enabled("A"):
                 return
-            try:
-                count = check_alerts_func(cluster)
-            except Exception:
-                # If we can't reach AM, skip silently — the alertmanager
-                # tool's own audit log captures the failure
-                return
-            if count == 0:
-                return
             func()
-        self._sched.add_job(wrapped, trigger="interval", id=f"mode-A-{cluster}", minutes=minutes)
+        self._sched.add_job(
+            wrapped,
+            trigger="cron",
+            id=f"mode-A-{cluster}",
+            hour=hour,
+            minute=minute,
+        )

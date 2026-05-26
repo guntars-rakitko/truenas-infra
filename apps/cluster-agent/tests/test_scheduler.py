@@ -38,3 +38,35 @@ def test_scheduler_starts_and_stops():
     assert s.running
     s.shutdown(wait=False)
     assert not s.running
+
+
+def test_add_daily_digest_registers_cron_job_per_cluster():
+    """add_daily_digest creates a cron-triggered job at hour:minute,
+    one per cluster, with the job-id pattern the /health endpoint reads."""
+    s = Scheduler()
+    s.add_daily_digest(func=lambda: None, cluster="dev", hour=6, minute=0)
+    s.add_daily_digest(func=lambda: None, cluster="prd", hour=6, minute=1)
+    jobs = {j.id: j for j in s._sched.get_jobs()}
+    assert "mode-A-dev" in jobs
+    assert "mode-A-prd" in jobs
+    # Cron trigger fields are accessible via the trigger object
+    dev_trigger = jobs["mode-A-dev"].trigger
+    prd_trigger = jobs["mode-A-prd"].trigger
+    # APScheduler exposes the field as a list of CronField objects keyed
+    # by name — assert hour=6, minute=0 (dev) / 1 (prd)
+    assert str(dev_trigger).startswith("cron[")
+    assert "hour='6'" in str(dev_trigger)
+    assert "minute='0'" in str(dev_trigger)
+    assert "minute='1'" in str(prd_trigger)
+
+
+def test_add_daily_digest_respects_kill_switch(monkeypatch):
+    """If DISABLED_MODES includes A, the wrapped digest job no-ops."""
+    monkeypatch.setenv("DISABLED_MODES", "A")
+    called = []
+    s = Scheduler()
+    s.add_daily_digest(func=lambda: called.append(1), cluster="dev", hour=6, minute=0)
+    # Invoke the wrapped callable directly (skipping the cron trigger)
+    job = s._sched.get_job("mode-A-dev")
+    job.func()
+    assert called == []   # kill switch swallowed it

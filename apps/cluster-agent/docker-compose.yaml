@@ -139,14 +139,23 @@ services:
       - PYTHONPATH=/app/src
       - STATE_DB_PATH=/data/state.db
       - LOG_LEVEL=INFO
-      # ── Mode A (P1+)
+      # ── Mode A (P1 / now P2 daily-digest)
       - SANDBOX_REPO=${SANDBOX_REPO}
-      - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
       - LLM_MODEL=${LLM_MODEL}
       # MODE_A_CLUSTERS — per-cluster scheduler-time allowlist for Mode A.
-      # P1 doctrine is "dev only" (spec § 7.3); widen to "dev,prd" at P2
-      # after operator review of ≥20 findings, ≥80% useful, 0 secrets leaked.
+      # Default "dev,prd"; operator can set to just "dev" to silence prd.
       - MODE_A_CLUSTERS=${MODE_A_CLUSTERS}
+      # ── Daily-digest (P2 — 2026-05-26 pivot from 5-min polling)
+      # One LLM call per cluster per day at DAILY_DIGEST_HOUR:DAILY_DIGEST_MINUTE
+      # in the scheduler's timezone (Europe/Riga). prd job offsets +1
+      # minute so the second call can hit Anthropic's 5-min prompt cache.
+      - DAILY_DIGEST_HOUR=${DAILY_DIGEST_HOUR}
+      - DAILY_DIGEST_MINUTE=${DAILY_DIGEST_MINUTE}
+      - DAILY_DIGEST_WINDOW_HOURS=${DAILY_DIGEST_WINDOW_HOURS}
+      - DAILY_DIGEST_BUDGET_USD=${DAILY_DIGEST_BUDGET_USD}
+      # MODE_A_BUDGET_USD — legacy from 5-min model; kept for now in case
+      # we revive on-demand per-alert triage. No longer read by daily_digest.
+      - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
     working_dir: /app
     command:
       - sh

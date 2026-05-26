@@ -45,42 +45,42 @@ async def lifespan(app: FastAPI):
     # Startup
     _scheduler.start()
 
-    # ── Mode A registration (P1) ─────────────────────────────────────
-    # Fires every 5 min, but only on clusters with active alerts. Two
-    # gates control this:
-    #   - MODE_A_CLUSTERS env (comma-separated allowlist; default "dev"
-    #     for the P1 soak per spec § 7.3). Operator widens to "dev,prd"
-    #     when promoting to P2. This gate is COMPILE-TIME for the
-    #     scheduler — clusters not in the list never get a job at all.
-    #   - DISABLED_MODES env (per-mode kill switch checked at job-fire
-    #     time). Operator flips this without restarting the container.
+    # ── Mode A registration (P2 — daily digest, replaces 5-min poll) ─
+    # Fires once per day at DAILY_DIGEST_HOUR:DAILY_DIGEST_MINUTE in
+    # the scheduler's TZ (Europe/Riga by default). One job per cluster.
     #
-    # Why two gates: P1 doctrine is "dev only" — we need a way to
-    # express "Mode A is allowed to know about this cluster" that's
-    # separate from "Mode A is currently on/off". The DISABLED_MODES
-    # switch is per-mode, not per-cluster, so it can't express it
-    # alone.
-    from cluster_agent.modes.alert_triage import run as run_mode_a
-    from cluster_agent.tools.alertmanager import alertmanager_alerts
+    # Gating:
+    #   - MODE_A_CLUSTERS env (comma-separated; default "dev,prd").
+    #     Compile-time gate — clusters not listed get no job at all.
+    #   - DISABLED_MODES env — per-mode kill switch checked at fire time.
+    #     Operator flips this without restarting the container.
+    #
+    # Schedule:
+    #   - DAILY_DIGEST_HOUR (default "06") — local hour to fire
+    #   - DAILY_DIGEST_MINUTE (default "00")
+    #   - dev fires at HH:MM, prd at HH:(MM+1) so the two calls land
+    #     within Anthropic's 5-min prompt-cache TTL → cache read on the
+    #     second call (~85% input-cost savings on the cached prefix).
+    from cluster_agent.modes.daily_digest import run as run_daily_digest
 
-    def count_active(cluster: str) -> int:
-        return len(alertmanager_alerts(cluster, active=True, silenced=False, inhibited=False))
-
+    digest_hour = int(os.environ.get("DAILY_DIGEST_HOUR", "6"))
+    digest_minute = int(os.environ.get("DAILY_DIGEST_MINUTE", "0"))
     mode_a_clusters = {
         c.strip()
-        for c in os.environ.get("MODE_A_CLUSTERS", "dev").split(",")
+        for c in os.environ.get("MODE_A_CLUSTERS", "dev,prd").split(",")
         if c.strip()
     }
-    for cluster_name in ("dev", "prd"):
+    for offset, cluster_name in enumerate(("dev", "prd")):
         if cluster_name not in mode_a_clusters:
             continue
-        if f"KUBECONFIG_{cluster_name.upper()}" in os.environ:
-            _scheduler.add_mode_a_with_alert_gate(
-                func=lambda c=cluster_name: run_mode_a(cluster=c),
-                cluster=cluster_name,
-                check_alerts_func=count_active,
-                minutes=5,
-            )
+        if f"KUBECONFIG_{cluster_name.upper()}" not in os.environ:
+            continue
+        _scheduler.add_daily_digest(
+            func=lambda c=cluster_name: run_daily_digest(cluster=c),
+            cluster=cluster_name,
+            hour=digest_hour,
+            minute=(digest_minute + offset) % 60,   # stagger by 1 min for cache sharing
+        )
     yield
     # Shutdown
     _scheduler.shutdown(wait=False)
