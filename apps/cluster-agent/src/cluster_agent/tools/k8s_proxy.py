@@ -58,6 +58,14 @@ def _bearer_token(kubeconfig: dict[str, Any]) -> str:
     return kubeconfig["users"][0]["user"]["token"]
 
 
+def _build_proxy_url(kubeconfig: dict[str, Any], namespace: str, service: str, port: int, path: str) -> str:
+    base = _apiserver_url(kubeconfig).rstrip("/")
+    return (
+        f"{base}/api/v1/namespaces/{namespace}/services"
+        f"/{service}:{port}/proxy/{path.lstrip('/')}"
+    )
+
+
 def proxy_get(
     cluster: str,
     namespace: str,
@@ -77,13 +85,50 @@ def proxy_get(
     Raises httpx.HTTPStatusError on non-2xx responses.
     """
     kc = _kubeconfig_for(cluster)
-    base = _apiserver_url(kc).rstrip("/")
-    url = (
-        f"{base}/api/v1/namespaces/{namespace}/services"
-        f"/{service}:{port}/proxy/{path.lstrip('/')}"
-    )
+    url = _build_proxy_url(kc, namespace, service, port, path)
     verify = _ca_bundle(kc)
     headers = {"Authorization": f"Bearer {_bearer_token(kc)}"}
     r = httpx.get(url, params=params, headers=headers, timeout=timeout, verify=verify)
+    r.raise_for_status()
+    return r.json()
+
+
+def proxy_post(
+    cluster: str,
+    namespace: str,
+    service: str,
+    port: int,
+    path: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
+    timeout: float = 15.0,
+) -> Any:
+    """POST via K8s apiserver services/proxy.
+
+    Used by Mode A's Grafana annotation dispatch where the LB-IP path
+    (https://grafana-{env}.w1.lv) fails because the NAS is on the same
+    VLAN as the LB IP and ARPs locally instead of routing via MikroTik.
+    The apiserver-proxy bypass routes through the apiserver VIP (which
+    answers ARP directly from a cluster node), then forwards internally.
+
+    `json_body` is serialised with the default JSON encoder and POSTed
+    with content-type application/json.
+
+    `extra_headers` is merged into the request (after the apiserver
+    Authorization header) — used to pass the Grafana SA token through
+    to the proxied destination, which authenticates separately at the
+    application layer.
+
+    Returns the proxied response's parsed JSON. Raises
+    httpx.HTTPStatusError on non-2xx.
+    """
+    kc = _kubeconfig_for(cluster)
+    url = _build_proxy_url(kc, namespace, service, port, path)
+    verify = _ca_bundle(kc)
+    headers = {"Authorization": f"Bearer {_bearer_token(kc)}"}
+    if extra_headers:
+        headers.update(extra_headers)
+    r = httpx.post(url, json=json_body, headers=headers, timeout=timeout, verify=verify)
     r.raise_for_status()
     return r.json()
