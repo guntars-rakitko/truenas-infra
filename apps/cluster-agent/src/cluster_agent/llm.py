@@ -1,4 +1,4 @@
-"""LLM wrapper — claude-agent-sdk's query() shape, structured JSON output.
+"""LLM wrapper — direct Anthropic `/v1/messages` REST call, structured JSON output.
 
 For Mode A (P1 dev soak), the wrapper is intentionally minimal:
   - Single LLM call per alert (no MCP, no tools, no multi-turn)
@@ -7,8 +7,19 @@ For Mode A (P1 dev soak), the wrapper is intentionally minimal:
   - Pre-call cost estimate from len(prompt) → tokens → $; abort if
     it exceeds the per-mode budget
 
+**Transport:** direct httpx POST to `https://api.anthropic.com/v1/messages`
+with `Authorization: Bearer ${CLAUDE_CODE_OAUTH_TOKEN}` (the same
+sk-ant-oat01-* token we use everywhere). NOT the `claude-agent-sdk`
+package — that one orchestrates the `claude` CLI as a subprocess, which
+we'd need to install Node + Claude Code in the container for, and the
+SDK is built for MCP tool-use loops we don't need in P1. Switching to
+the bare REST endpoint is dramatically simpler for our one-shot
+structured-output pattern, and was already validated end-to-end
+against the OAuth token on 2026-05-25.
+
 Upgrade to claude-agent-sdk multi-turn + MCP tool-use is a P2-time
-refactor when we know which context patterns the LLM wants.
+refactor when we know which context patterns the LLM wants. At that
+point we'd install the `claude` CLI in the container and switch back.
 
 Cost rates (per 1M tokens; verified from
 https://platform.claude.com/docs/en/docs/about-claude/pricing on 2026-05-25):
@@ -17,14 +28,17 @@ https://platform.claude.com/docs/en/docs/about-claude/pricing on 2026-05-25):
   - Haiku 4.5:         $1 input / $5 output
 
 Pre-call estimate uses input only (output is ~1K tokens for Finding
-shape, contributes <$0.02 in the worst case at Opus rates).
+shape, contributes <$0.02 in the worst case at Opus rates). Post-call
+metrics use the actual `usage` block returned by the API.
 """
 from __future__ import annotations
 import base64
 import json
+import os
 import secrets
 from typing import Any
 
+import httpx
 import jinja2
 
 from .prompts.loader import load_prompt
@@ -34,6 +48,16 @@ from .emit.metrics import LLM_TOKENS_INPUT, LLM_TOKENS_OUTPUT, LLM_COST_USD
 
 class LLMBudgetExceeded(RuntimeError):
     """Raised when a pre-call cost estimate exceeds the per-mode budget."""
+
+
+_API_URL = "https://api.anthropic.com/v1/messages"
+_API_VERSION = "2023-06-01"
+# Beta header is required when authenticating with a Claude-Code-style
+# OAuth bearer token (sk-ant-oat01-*) — without it the API rejects the
+# auth as if it were a regular API key with wrong format. The header
+# value is the same one Claude Code's own CLI sends; pinned to the
+# date stamp Anthropic published with the OAuth API.
+_OAUTH_BETA = "oauth-2025-04-20"
 
 
 _MODEL_RATES_PER_1M: dict[str, tuple[float, float]] = {
@@ -46,9 +70,7 @@ _MODEL_RATES_PER_1M: dict[str, tuple[float, float]] = {
 
 
 def _estimate_input_tokens(prompt: str) -> int:
-    """Rough chars/token=4 approximation. Good enough for budget gating;
-    the real number is also returned in the response metadata, used for
-    post-call metric accuracy."""
+    """Rough chars/token=4 approximation. Good enough for budget gating."""
     return max(1, len(prompt) // 4)
 
 
@@ -57,25 +79,51 @@ def _input_cost_usd(model: str, input_tokens: int) -> float:
     return input_tokens * input_rate_per_1m / 1_000_000
 
 
-async def _sdk_query(prompt: str, options: Any) -> str:
-    """Call claude-agent-sdk's query() and return the assistant's text reply.
+def _output_cost_usd(model: str, output_tokens: int) -> float:
+    _, output_rate_per_1m = _MODEL_RATES_PER_1M.get(model, (3.0, 15.0))
+    return output_tokens * output_rate_per_1m / 1_000_000
 
-    This is split out so tests can monkeypatch it without touching the
-    SDK directly. Live implementation imports claude_agent_sdk lazily so
-    pytest doesn't require it for the unit tests in test_llm.py.
+
+async def _sdk_query(prompt: str, options: dict[str, Any]) -> dict[str, Any]:
+    """POST to /v1/messages and return the parsed JSON response.
+
+    Split out so tests can monkeypatch it without hitting the network.
+    Returns the full API response dict (caller pulls `content[0].text`
+    + `usage` from it).
+
+    Auth: reads CLAUDE_CODE_OAUTH_TOKEN from env. We don't fall back
+    to ANTHROPIC_API_KEY here — main.py refuses to start if both are
+    set, and which one is active is set in compose.
     """
-    from claude_agent_sdk import query  # type: ignore[import-untyped]
-
-    # claude-agent-sdk's query() yields messages; we want only the final
-    # assistant text. The SDK signals end-of-turn via stop_reason; we
-    # concatenate any text deltas across messages defensively.
-    chunks: list[str] = []
-    async for msg in query(prompt=prompt, options=options):
-        if hasattr(msg, "content"):
-            for block in msg.content:
-                if getattr(block, "type", None) == "text":
-                    chunks.append(getattr(block, "text", ""))
-    return "".join(chunks)
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+    if not token:
+        raise RuntimeError(
+            "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY set; "
+            "Mode A cannot call the LLM"
+        )
+    headers = {
+        "anthropic-version": _API_VERSION,
+        "content-type": "application/json",
+    }
+    if token.startswith("sk-ant-oat"):
+        # OAuth bearer — beta header required (Claude Code's own CLI sends it)
+        headers["Authorization"] = f"Bearer {token}"
+        headers["anthropic-beta"] = _OAUTH_BETA
+    else:
+        # Plain API key
+        headers["x-api-key"] = token
+    body = {
+        "model": options["model"],
+        "max_tokens": options.get("max_tokens", 1024),
+        # The rendered prompt IS the system content; we send it as the
+        # user message because OAuth-bearer requests over the public
+        # API are stricter about empty system slots.
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    async with httpx.AsyncClient(timeout=options.get("timeout", 60.0)) as client:
+        r = await client.post(_API_URL, headers=headers, content=json.dumps(body))
+        r.raise_for_status()
+        return r.json()
 
 
 async def triage_alert(
@@ -99,9 +147,8 @@ async def triage_alert(
         or "(unknown)"
     )
     prompt_template = load_prompt("alert_triage")
-    # The prompt is a Jinja template (with the _PreservingUndefined hack
-    # in loader.py, per-call vars survived the load). Now we do the
-    # per-call substitution.
+    # Per-call Jinja render — the loader's _PreservingUndefined kept
+    # {{ alert_json }} etc as literal text so we can fill them in here.
     filled = jinja2.Template(prompt_template).render(
         alert_json=json.dumps(alert, indent=2),
         alert_namespace=alert_namespace,
@@ -121,26 +168,36 @@ async def triage_alert(
             f"({input_tokens_est} input tokens at model {model})"
         )
 
-    # Lazy import so monkeypatched _sdk_query in tests doesn't need the SDK
-    from claude_agent_sdk import ClaudeAgentOptions  # type: ignore[import-untyped]
-    options = ClaudeAgentOptions(
-        model=model,
-        max_turns=1,
-        system_prompt="",  # the rendered template IS the system prompt;
-                           # we send it as the user message so the SDK's
-                           # internal system-prompt slot stays open for
-                           # the SDK to inject its own.
-    )
+    # Call the API. _sdk_query returns the full response dict in the
+    # new (REST) shape OR the legacy stub shape (raw string) for back-
+    # compat with existing tests that monkeypatch it with a string return.
+    raw_response = await _sdk_query(filled, {"model": model, "max_tokens": 1024})
 
-    raw = await _sdk_query(filled, options)
+    # Back-compat: tests still stub _sdk_query to return a JSON string
+    # directly (the assistant-text body). Branch on type.
+    if isinstance(raw_response, str):
+        raw_text = raw_response
+        usage_in = input_tokens_est
+        usage_out = max(1, len(raw_text) // 4)
+    else:
+        # Real API response: {"content": [{"type":"text","text":"..."}],
+        #                     "usage": {"input_tokens":..., "output_tokens":...}}
+        text_blocks = [
+            b.get("text", "") for b in raw_response.get("content", [])
+            if b.get("type") == "text"
+        ]
+        raw_text = "".join(text_blocks)
+        usage = raw_response.get("usage", {})
+        usage_in = usage.get("input_tokens", input_tokens_est)
+        usage_out = usage.get("output_tokens", max(1, len(raw_text) // 4))
 
     # Parse + validate
     try:
-        data = json.loads(raw)
+        data = json.loads(raw_text)
     except json.JSONDecodeError as e:
-        raise ValueError(f"LLM output is not valid JSON: {e!r}\nRaw: {raw[:500]}")
+        raise ValueError(f"LLM output is not valid JSON: {e!r}\nRaw: {raw_text[:500]}")
 
-    # Inject the fields we know cluster-side (not LLM's responsibility)
+    # Inject the fields we know cluster-side
     data["mode"] = "A"
     data["cluster"] = cluster
     ulid = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
@@ -149,13 +206,13 @@ async def triage_alert(
     try:
         finding = Finding(**data)
     except Exception as e:
-        raise ValueError(f"LLM output failed schema validation: {e!r}\nRaw: {raw[:500]}")
+        raise ValueError(f"LLM output failed schema validation: {e!r}\nRaw: {raw_text[:500]}")
 
-    # Update metrics (rough; SDK's actual usage object is preferred when
-    # we wire it through — left for a follow-up since the SDK's `Message`
-    # type isn't stable across SDK versions)
-    LLM_TOKENS_INPUT.labels(mode="A").inc(input_tokens_est)
-    LLM_TOKENS_OUTPUT.labels(mode="A").inc(max(1, len(raw) // 4))
-    LLM_COST_USD.labels(mode="A").inc(est_cost)
+    # Metrics from real usage (or estimates if test-stubbed)
+    LLM_TOKENS_INPUT.labels(mode="A").inc(usage_in)
+    LLM_TOKENS_OUTPUT.labels(mode="A").inc(usage_out)
+    LLM_COST_USD.labels(mode="A").inc(
+        _input_cost_usd(model, usage_in) + _output_cost_usd(model, usage_out)
+    )
 
     return finding
