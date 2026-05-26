@@ -88,6 +88,7 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "SANDBOX_REPO":                  "SANDBOX_REPO",
         "MODE_A_BUDGET_USD":             "MODE_A_BUDGET_USD",
         "LLM_MODEL":                     "LLM_MODEL",
+        "MODE_A_CLUSTERS":               "MODE_A_CLUSTERS",
     },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token
