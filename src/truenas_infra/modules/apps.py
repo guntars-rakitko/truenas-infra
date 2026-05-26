@@ -73,10 +73,11 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
         "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
         "KUBECONFIG_TEST_RESTORE_DEV":   "KUBECONFIG_TEST_RESTORE_DEV",
-        # Loki/Prom/AM now use apiserver proxy via kubeconfig SA token —
-        # no separate basic-auth keys needed (removed in 2026-05-25 refactor).
-        "GRAFANA_API_TOKEN_DEV":         "GRAFANA_API_TOKEN_DEV",
-        "GRAFANA_API_TOKEN_PRD":         "GRAFANA_API_TOKEN_PRD",
+        # Loki/Prom/AM/Grafana all use apiserver proxy via kubeconfig SA
+        # token — no separate annotation-auth keys needed. Grafana itself
+        # is in auth.proxy mode + auto-creates the cluster-agent user
+        # from X-WEBAUTH-USER. (Old GRAFANA_API_TOKEN_{DEV,PRD} entries
+        # removed 2026-05-26 with cluster-agent PR #42.)
         "MINIO_NAS_KEY_ID":              "MINIO_NAS_KEY_ID",
         "MINIO_NAS_SECRET_KEY":          "MINIO_NAS_SECRET_KEY",
         "B2_KEY_ID":                     "B2_KEY_ID",

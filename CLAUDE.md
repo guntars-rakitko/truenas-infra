@@ -352,8 +352,9 @@ document the toggle line-swap.
   with `CLUSTER_AGENT_` prefix on injection, since the github tool
   reads `CLUSTER_AGENT_GH_APP_*`)
 - `KUBECONFIG_DEV` / `KUBECONFIG_PRD` / `KUBECONFIG_TEST_RESTORE_DEV` —
-  base64-encoded kubeconfigs with SA tokens
-- `GRAFANA_API_TOKEN_DEV` / `GRAFANA_API_TOKEN_PRD` — annotation auth
+  base64-encoded kubeconfigs with SA tokens (these ALSO carry the auth
+  the agent uses to reach Loki / Prometheus / Alertmanager / Grafana via
+  apiserver-proxy — no separate annotation-auth token)
 - `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for the future Mode G
   backup-verification mode
 - `B2_KEY_ID` / `B2_APP_KEY` — same, for off-site verification
