@@ -150,7 +150,7 @@ services:
         # package's `import` line, else old venvs never pick it up.
         # Markers checked: uvicorn (P0), jinja2 (P1 prompt loader),
         # claude_agent_sdk (P1 LLM wrapper).
-        if ! /venv/bin/python -c 'import uvicorn, jinja2' 2>/dev/null; then
+        if ! /venv/bin/python -c 'import uvicorn, jinja2, cryptography' 2>/dev/null; then
           echo "venv missing or stale — rebuilding…"
           python -m venv --clear /venv
           /venv/bin/pip install --no-cache-dir -q \
@@ -161,7 +161,7 @@ services:
             'httpx==0.28.*' \
             'jinja2==3.1.*' \
             'pydantic==2.10.*' \
-            'pyjwt==2.10.*' \
+            'pyjwt[crypto]==2.10.*' \
             'tenacity==9.0.*' \
             'structlog==24.4.*' \
             'pyyaml==6.0.*'
