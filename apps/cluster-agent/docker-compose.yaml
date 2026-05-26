@@ -82,18 +82,25 @@ services:
       - DISABLED_MODES=${DISABLED_MODES}
       - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
       # ── Claude LLM auth
-      # CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-...) — operator obtains via
-      # `claude setup-token` on laptop, pastes into Doppler. Agent SDK reads
-      # this env var natively. Bills against Max subscription (shared pool
-      # with interactive Claude Code until June 15, 2026; separate $100/mo
-      # bucket after).
+      # Operator toggle: ANTHROPIC_API_KEY vs CLAUDE_CODE_OAUTH_TOKEN.
+      # main.py refuses to start if both are set in the container env, so
+      # only one of these two lines is active at any time.
       #
-      # ANTHROPIC_API_KEY is INTENTIONALLY NOT passed here even though it
-      # exists in Doppler. The SDK shadows OAuth with API key silently if
-      # both are set — operator-side toggle: if you ever need to fall back
-      # to API key, swap this line for ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # and remove the CLAUDE_CODE_OAUTH_TOKEN line.
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      # CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-...) bills against the
+      # operator's Max subscription. Pre-June-15, that pool is SHARED with
+      # interactive Claude Code — concurrent usage by the operator can
+      # rate-limit Mode A (429). Post-June-15 it's a separate $100/mo
+      # bucket.
+      #
+      # ANTHROPIC_API_KEY (sk-ant-api03-...) bills against the regular
+      # API account — completely independent quota, no interaction with
+      # Max subscription. Use this during the P1 soak (current state),
+      # flip back to OAuth post-June-15 when the Max bucket is dedicated.
+      #
+      # Switched 2026-05-26 after the 429-on-first-fire confirmed shared-
+      # pool throttling. See spec § 3.6.1.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       # ── GitHub App identity
       # Mode A onwards: the github tool (src/cluster_agent/tools/github.py)
       # reads CLUSTER_AGENT_GH_APP_* (matches the test fixtures); the
