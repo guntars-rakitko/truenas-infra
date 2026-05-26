@@ -74,6 +74,33 @@ def _estimate_input_tokens(prompt: str) -> int:
     return max(1, len(prompt) // 4)
 
 
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown ```json / ``` fences if the LLM wrapped its output.
+
+    Despite explicit "no prose, no fences" in the prompt, models still
+    sometimes wrap JSON in fences. Be lenient about it.
+
+    Patterns handled:
+      - "```json\n{...}\n```"   (most common)
+      - "```\n{...}\n```"        (bare backticks)
+      - "{...}"                  (no fences — pass through)
+      - "  ```json\n{...}\n```  " (with surrounding whitespace)
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    # Drop opening fence line ("```" or "```json")
+    nl = s.find("\n")
+    if nl == -1:
+        # single-line fenced content like ```{"k":1}``` — strip both ends
+        return s.strip("`").strip()
+    s = s[nl + 1:]
+    # Drop trailing fence
+    if s.rstrip().endswith("```"):
+        s = s.rstrip()[:-3].rstrip()
+    return s
+
+
 def _input_cost_usd(model: str, input_tokens: int) -> float:
     input_rate_per_1m, _ = _MODEL_RATES_PER_1M.get(model, (3.0, 15.0))
     return input_tokens * input_rate_per_1m / 1_000_000
@@ -192,8 +219,13 @@ async def triage_alert(
         usage_out = usage.get("output_tokens", max(1, len(raw_text) // 4))
 
     # Parse + validate
+    # LLM sometimes wraps JSON in ```json ... ``` fences despite explicit
+    # "no prose, no fences" instructions in the prompt. Strip them
+    # leniently before parsing — first observed on Mode A's first
+    # successful Watchdog run 2026-05-26 04:38 UTC.
+    cleaned = _strip_code_fences(raw_text.strip())
     try:
-        data = json.loads(raw_text)
+        data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise ValueError(f"LLM output is not valid JSON: {e!r}\nRaw: {raw_text[:500]}")
 
