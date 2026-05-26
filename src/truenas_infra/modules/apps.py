@@ -85,11 +85,16 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "ENABLED":                       "ENABLED",
         "DISABLED_MODES":                "DISABLED_MODES",
         "AUTOMERGE_DISABLED_REPOS":      "AUTOMERGE_DISABLED_REPOS",
-        # Mode A (P1+)
+        # Mode A (P1 / now P2 daily-digest)
         "SANDBOX_REPO":                  "SANDBOX_REPO",
-        "MODE_A_BUDGET_USD":             "MODE_A_BUDGET_USD",
+        "MODE_A_BUDGET_USD":             "MODE_A_BUDGET_USD",   # legacy 5-min model; unused by daily_digest
         "LLM_MODEL":                     "LLM_MODEL",
         "MODE_A_CLUSTERS":               "MODE_A_CLUSTERS",
+        # Daily-digest (P2 — 2026-05-26 pivot from 5-min polling)
+        "DAILY_DIGEST_HOUR":             "DAILY_DIGEST_HOUR",     # default "6"
+        "DAILY_DIGEST_MINUTE":           "DAILY_DIGEST_MINUTE",   # default "0"
+        "DAILY_DIGEST_WINDOW_HOURS":     "DAILY_DIGEST_WINDOW_HOURS",   # default "24"
+        "DAILY_DIGEST_BUDGET_USD":       "DAILY_DIGEST_BUDGET_USD",     # default "0.50"
     },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token

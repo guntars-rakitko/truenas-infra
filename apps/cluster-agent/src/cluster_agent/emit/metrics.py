@@ -130,14 +130,10 @@ LLM_CACHE_CREATE_TOKENS = Counter(
     ["mode"],
 )
 
-# Mode A tick-level skip (2026-05-26 cost-cut) — counts ticks where the
-# alert-set hash matched the previous tick AND every alert already had
-# an open GH issue, so the LLM was not called at all.
-MODE_A_TICKS_SKIPPED = Counter(
-    "cluster_agent_mode_a_ticks_skipped_total",
-    "Mode A ticks that early-returned without invoking LLM",
-    ["cluster", "reason"],  # reason: alert_set_unchanged / no_alerts
-)
+# (MODE_A_TICKS_SKIPPED was introduced + removed same day 2026-05-26
+# with the daily-digest pivot — the 5-min polling model it instrumented
+# no longer exists. The cluster_agent_mode_a_ticks_skipped_total series
+# stops growing at the redeploy; old samples persist in Prometheus.)
 
 
 def render() -> str:

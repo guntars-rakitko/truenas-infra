@@ -72,3 +72,76 @@ class Finding(BaseModel):
         if len(v) > 200:
             raise ValueError("title must be ≤ 200 chars (GH issue title limit)")
         return v
+
+
+# ── Daily Digest (P2, 2026-05-26) ────────────────────────────────────
+#
+# The digest model replaces the per-alert 5-min triage model with a
+# once-daily synthesis pass: ONE LLM call per cluster examines 24h of
+# alert history + Loki excerpts and produces a curated Report that
+# lists ONLY the things the operator should act on. Most days that's
+# 0-3 Findings; bad days may be more. Self-healed transients are
+# summarized in narrative form but do NOT create GH issues.
+
+
+Chronicity = Literal[
+    "chronic",      # firing > 1h cumulative duration in window
+    "transient",    # one-off, resolved within 5min
+    "flapping",     # > 3 fire/resolve cycles in window
+    "self_healed",  # fired and resolved without intervention
+    "active",       # currently firing, not yet long enough to call chronic
+]
+
+
+class AlertGroup(BaseModel):
+    """One (alertname, fingerprint) group's behaviour over the digest window.
+
+    Produced by `digest_aggregator` from raw Prometheus ALERTS-metric
+    time-series; consumed by the digest prompt. The LLM never sees raw
+    fire-by-fire events — it sees this pre-classified summary, which
+    keeps the prompt to ~10 lines per group instead of ~200 raw points.
+    """
+    alertname: str
+    fingerprint: str
+    labels: dict[str, str]   # everything from the alert's labels block
+    fire_count: int          # distinct fire→resolve cycles in window
+    total_firing_seconds: int   # cumulative time alert was in state=firing
+    chronicity: Chronicity
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime
+    currently_firing: bool
+    sample_annotation: str | None = None   # one-line summary from the latest alert annotations
+
+
+class Report(BaseModel):
+    """Output of one daily-digest LLM call (one Report per cluster per day).
+
+    The digest is the agent's narrative for the cluster's last 24h. The
+    operator reads `summary` first; `findings` is the actionable list
+    (each Finding → 1 GH issue via the existing dispatch path). If
+    `quiet_period=True`, no findings emitted — agent saw nothing worth
+    paging on. `total_alerts_24h` / `chronic_count` etc. are telemetry
+    so the operator can scan whether the digest is finding real signal
+    or just rubber-stamping a quiet cluster.
+    """
+    id: Annotated[str, Field(min_length=26, max_length=26)]   # ULID
+    created_at: dt.datetime = Field(
+        default_factory=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+    mode: Mode = "A"
+    cluster: Cluster
+    digest_window_hours: int
+    summary: str                          # 2-4 sentence narrative for the operator
+    quiet_period: bool                    # true = nothing actionable, no findings
+    findings: list[Finding]               # 0..N actionable items, each → 1 GH issue
+    total_alerts_24h: int                 # raw count of distinct fire events
+    chronic_count: int
+    transient_count: int
+    self_healed_count: int
+
+    @field_validator("summary")
+    @classmethod
+    def summary_must_be_reasonable(cls, v: str) -> str:
+        if len(v) > 2000:
+            raise ValueError("digest summary must be ≤ 2000 chars (operator-readable)")
+        return v

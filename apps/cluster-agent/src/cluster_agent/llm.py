@@ -42,7 +42,7 @@ import httpx
 import jinja2
 
 from .prompts.loader import load_prompt
-from .schema import Finding
+from .schema import Finding, Report
 from .emit.metrics import (
     LLM_TOKENS_INPUT, LLM_TOKENS_OUTPUT, LLM_COST_USD,
     LLM_CACHE_READ_TOKENS, LLM_CACHE_CREATE_TOKENS,
@@ -66,6 +66,13 @@ _CACHE_READ_MULT = 0.10
 # per-call {{ alert_json }} / {{ kubectl_describe }} / ... substitutions
 # and is sent uncached.
 _CACHE_BOUNDARY_MARKER = "\n## Active alert\n"
+
+# Same idea for the daily-digest prompt. Boundary is the `## Cluster:`
+# header — everything above (role, estate context, alertname guidance,
+# output rules, selection criteria, house_style include) is identical
+# across every digest call. The cached prefix is ~2300 tokens — well
+# above Anthropic's 1024-token minimum for caching to kick in.
+_DIGEST_CACHE_BOUNDARY_MARKER = "\n## Cluster: `"
 
 
 class LLMBudgetExceeded(RuntimeError):
@@ -362,3 +369,132 @@ async def triage_alert(
     LLM_COST_USD.labels(mode="A").inc(cost)
 
     return finding
+
+
+async def triage_digest(
+    *,
+    cluster: str,
+    alert_groups: list,            # list[AlertGroup] — typed loosely to avoid circular import
+    open_issue_keys: list[str],
+    context_excerpts: str,
+    window_hours: int,
+    model: str,
+    budget_usd: float,
+) -> Report:
+    """Daily-digest LLM call → curated Report.
+
+    ONE call per cluster per day. Input is pre-aggregated (AlertGroups
+    summarize 24h of activity, not raw fire events) + open-issue dedup
+    keys + selected log/metric excerpts for chronic groups only. Output
+    is a `Report` containing 0..N actionable Findings.
+
+    Cost shape vs per-alert triage:
+      - Larger per-call input (~10-30K tokens vs ~5K) — bigger context
+      - Output similar size per Finding emitted (~600-1500 tokens) but
+        FEWER Findings per day (digest is curated, not exhaustive)
+      - Static prefix ~2300 tokens — cleanly above the 1024 cache
+        threshold, so the 2 daily calls (dev + prd) can share a cache
+        read if scheduled close together
+    """
+    prompt_template = load_prompt("digest")
+    groups_json = json.dumps(
+        [g.model_dump(mode="json") for g in alert_groups],
+        indent=2, default=str,
+    )
+    window_end = "now (UTC)"
+    filled = jinja2.Template(prompt_template).render(
+        cluster=cluster,
+        window_hours=window_hours,
+        window_end=window_end,
+        alert_groups_json=groups_json,
+        open_issue_keys_json=json.dumps(open_issue_keys, indent=2),
+        context_excerpts=context_excerpts or "(no context excerpts gathered)",
+    )
+
+    # Pre-call budget gate. Digest input can be substantial, so we
+    # compute the estimated cost (ignoring expected cache discount —
+    # cache may not apply on the very first call after a deploy).
+    input_tokens_est = _estimate_input_tokens(filled)
+    est_cost = _input_cost_usd(model, input_tokens_est)
+    if est_cost > budget_usd:
+        raise LLMBudgetExceeded(
+            f"digest estimated input cost ${est_cost:.4f} exceeds budget "
+            f"${budget_usd:.2f} ({input_tokens_est} input tokens at model {model})"
+        )
+
+    # Split for caching at the per-call boundary
+    split_at = filled.find(_DIGEST_CACHE_BOUNDARY_MARKER)
+    prompt_payload: str | tuple[str, str]
+    if split_at == -1:
+        prompt_payload = filled
+    else:
+        prompt_payload = (filled[:split_at], filled[split_at:])
+
+    # max_tokens=8192 — digest Reports CAN be large (multiple Findings
+    # each with full evidence chains). Headroom is cheap; truncated
+    # JSON is a wasted call.
+    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 8192})
+
+    cache_read = 0
+    cache_create = 0
+    if isinstance(raw_response, str):
+        raw_text = raw_response
+        usage_in = input_tokens_est
+        usage_out = max(1, len(raw_text) // 4)
+    else:
+        text_blocks = [
+            b.get("text", "") for b in raw_response.get("content", [])
+            if b.get("type") == "text"
+        ]
+        raw_text = "".join(text_blocks)
+        usage = raw_response.get("usage", {})
+        usage_in = usage.get("input_tokens", input_tokens_est)
+        usage_out = usage.get("output_tokens", max(1, len(raw_text) // 4))
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+
+    cleaned = _strip_code_fences(raw_text.strip())
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Digest LLM output is not valid JSON: {e!r}\nRaw: {raw_text[:500]}"
+        )
+
+    # Inject runtime-known fields the LLM is told to placeholder
+    data["mode"] = "A"
+    data["cluster"] = cluster
+    data["id"] = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
+    # Each Finding inside the Report gets the same runtime overrides
+    for f in data.get("findings", []) or []:
+        f["mode"] = "A"
+        f["cluster"] = cluster
+        f["id"] = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
+        # Same dedup-key cluster-suffix normalization the per-alert
+        # triage applies — the LLM is non-deterministic about scope
+        # naming, and we want consistent state.db keys.
+        if "dedup_key" in f and isinstance(f["dedup_key"], str):
+            parts = f["dedup_key"].rsplit(":", 1)
+            if len(parts) == 2:
+                f["dedup_key"] = f"{parts[0]}:{cluster}"
+
+    try:
+        report = Report(**data)
+    except Exception as e:
+        raise ValueError(f"Digest output failed schema validation: {e!r}\nRaw: {raw_text[:500]}")
+
+    # Metrics (shared with per-alert triage — mode label still "A")
+    LLM_TOKENS_INPUT.labels(mode="A").inc(usage_in)
+    LLM_TOKENS_OUTPUT.labels(mode="A").inc(usage_out)
+    LLM_CACHE_READ_TOKENS.labels(mode="A").inc(cache_read)
+    LLM_CACHE_CREATE_TOKENS.labels(mode="A").inc(cache_create)
+    base_input_rate, _ = _MODEL_RATES_PER_1M.get(model, (3.0, 15.0))
+    cost = (
+        _input_cost_usd(model, usage_in)
+        + cache_create * base_input_rate * _CACHE_WRITE_MULT / 1_000_000
+        + cache_read * base_input_rate * _CACHE_READ_MULT / 1_000_000
+        + _output_cost_usd(model, usage_out)
+    )
+    LLM_COST_USD.labels(mode="A").inc(cost)
+
+    return report

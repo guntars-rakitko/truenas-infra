@@ -48,3 +48,41 @@ def alertmanager_alerts(
             "inhibited": str(inhibited).lower(),
         },
     )
+
+
+@audit(tool="alertmanager_history")
+def alertmanager_history(
+    cluster: str,
+    *,
+    since_hours: int = 24,
+    step_seconds: int = 60,
+) -> dict[str, Any]:
+    """Fetch ALL alert fire activity over the trailing window.
+
+    AM's `/api/v2/alerts` only returns alerts that are CURRENTLY firing
+    or in the limited resolved-cache (last few hours). For a true 24h
+    history we query Prometheus directly for the `ALERTS` metric —
+    Prometheus exposes a `ALERTS{alertstate="firing"|"pending"}` series
+    for every alert ever fired in the retention window.
+
+    Returns the raw `query_range` response (Prom v1 shape). Each
+    `result[i]` is one (alertname, labels) time-series with `values=[[ts,v]]`
+    where v="1" while firing. Caller (digest_aggregator) groups these
+    into fire→resolve cycles and computes chronicity.
+
+    We query with `alertstate="firing"` only (pending state is internal
+    to AM's grouping window; nothing we'd want to surface). step=60s
+    matches Prom's scrape interval — finer granularity would just
+    duplicate samples, coarser would lose short fires.
+    """
+    import datetime as _dt
+    from .prometheus import prometheus_query_range
+    end = _dt.datetime.now(_dt.timezone.utc)
+    start = end - _dt.timedelta(hours=since_hours)
+    return prometheus_query_range(
+        cluster,
+        promql='ALERTS{alertstate="firing"}',
+        start=start.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        end=end.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        step=f"{step_seconds}s",
+    )

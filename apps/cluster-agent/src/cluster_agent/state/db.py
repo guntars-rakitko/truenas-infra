@@ -60,19 +60,17 @@ CREATE TABLE IF NOT EXISTS phase_history (
     operator_note   TEXT
 );
 
--- Mode A tick-level dedup state (2026-05-26 cost-cut). Each cluster's
--- last evaluated alert-set hash lets us short-circuit ticks where the
--- active alert set is unchanged AND every alert already has an open
--- GH issue — i.e. the whole tick would just produce the same findings
--- the previous tick already produced, costing $0.035/run of LLM spend
--- per cluster for zero new information.
-CREATE TABLE IF NOT EXISTS mode_a_tick_state (
-    cluster                 TEXT PRIMARY KEY,
-    last_alert_set_hash     TEXT NOT NULL,    -- sha256 of sorted (alertname, fingerprint) tuples
-    last_evaluated_at       TEXT NOT NULL,    -- ISO8601 UTC
-    all_have_open_issues    INTEGER NOT NULL  -- 0 / 1
-);
+-- mode_a_tick_state was used by the 5-min polling model (added
+-- 2026-05-26, removed same day with the daily-digest pivot). Existing
+-- deployments drop it via the migration below.
 """
+
+# One-shot cleanup migrations applied at StateDB init. SQLite has no
+# ALTER-table flexibility, so we just DROP what's gone. Cheap to run
+# every startup; idempotent.
+_MIGRATIONS = [
+    "DROP TABLE IF EXISTS mode_a_tick_state",
+]
 
 
 class StateDB:
@@ -96,6 +94,8 @@ class StateDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        for stmt in _MIGRATIONS:
+            self._conn.execute(stmt)
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         return self._conn.execute(sql, params)
