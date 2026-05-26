@@ -19,6 +19,7 @@ import dataclasses
 import logging
 import os
 
+from .emit.metrics import DISPATCH_ERRORS
 from .schema import Finding
 from .state.db import StateDB
 from .state.dedup import DedupAction, _DedupActionKind, record
@@ -82,6 +83,7 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
         )
     except Exception as e:
         log.warning("grafana annotation failed: %r", e)
+        DISPATCH_ERRORS.labels(surface="grafana_annotation").inc()
 
     # 2) GH — create or comment, conditionally
     repo = os.environ.get("SANDBOX_REPO")
@@ -104,6 +106,7 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                 gh_ref = f"{repo}#{resp['number']}"
             except Exception as e:
                 log.warning("gh_issue_create failed: %r", e)
+                DISPATCH_ERRORS.labels(surface="gh_issue_create").inc()
     elif action.kind == _DedupActionKind.COMMENT:
         gh_ref = action.gh_issue_ref
         if action.gh_issue_ref and repo:
@@ -115,6 +118,7 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                 )
             except Exception as e:
                 log.warning("gh_issue_comment failed: %r", e)
+                DISPATCH_ERRORS.labels(surface="gh_issue_comment").inc()
     elif action.kind == _DedupActionKind.REOPEN:
         # For the P1 dev soak we treat reopen identically to comment —
         # the issue stays open, we add a re-fire comment. Promoting
@@ -129,6 +133,7 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                 )
             except Exception as e:
                 log.warning("gh_issue_comment (reopen) failed: %r", e)
+                DISPATCH_ERRORS.labels(surface="gh_issue_reopen_comment").inc()
 
     # 3) SQLite — always (record / upsert)
     record(

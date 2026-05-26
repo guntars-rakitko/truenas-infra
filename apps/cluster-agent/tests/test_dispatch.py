@@ -85,3 +85,33 @@ def test_dispatch_comment_does_not_create_new_issue(tmp_path, monkeypatch):
     assert gh_comment.called is True
     assert result.gh_issue_ref == "guntars-rakitko/cluster-agent-sandbox#5"
     assert result.grafana_annotation_id == "43"
+
+
+def test_dispatch_grafana_failure_increments_metric_but_does_not_break_pipeline(tmp_path, monkeypatch):
+    """Grafana annotation is best-effort — if it raises, dispatch still
+    writes GH + SQLite, AND the dispatch_errors_total counter ticks so
+    Prometheus can alert on sustained failures."""
+    from cluster_agent import dispatch as d
+    from cluster_agent.state import db as db_mod
+    from cluster_agent.emit.metrics import DISPATCH_ERRORS
+
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+
+    def boom(**_):
+        raise RuntimeError("apiserver-proxy returned 401")
+
+    gh = MagicMock(return_value={"number": 11, "html_url": "https://example/issues/11"})
+    monkeypatch.setattr(d, "post_annotation", boom)
+    monkeypatch.setattr(d, "gh_issue_create", gh)
+    monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+
+    before = DISPATCH_ERRORS.labels(surface="grafana_annotation")._value.get()
+    result = dispatch(_make_finding(), DedupAction(kind=_DedupActionKind.CREATE), db=sdb)
+    after = DISPATCH_ERRORS.labels(surface="grafana_annotation")._value.get()
+
+    # GH still got the finding even though Grafana failed
+    assert result.gh_issue_ref == "guntars-rakitko/cluster-agent-sandbox#11"
+    # Grafana annotation didn't return an ID
+    assert result.grafana_annotation_id is None
+    # And the failure counter ticked exactly once
+    assert after - before == 1

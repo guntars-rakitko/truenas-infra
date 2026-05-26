@@ -86,6 +86,17 @@ cluster_agent_doctrine_drift_count = Gauge(
     ["repo"],
 )
 
+# Dispatch failure tracking (P1+) — each surface is best-effort, so a
+# failure on (say) Grafana annotation doesn't abort the run. But silent
+# log-only failures hide pipeline degradation (apiserver-proxy RBAC
+# drift, GH App token expiry, etc.), so we count them here and let
+# Prometheus alert on a sustained nonzero rate.
+DISPATCH_ERRORS = Counter(
+    "cluster_agent_dispatch_errors_total",
+    "Dispatch failures by output surface",
+    ["surface"],  # grafana_annotation / gh_issue_create / gh_issue_comment / gh_issue_reopen_comment
+)
+
 # Mode A LLM accounting (P1+)
 LLM_TOKENS_INPUT = Counter(
     "cluster_agent_llm_input_tokens_total",
