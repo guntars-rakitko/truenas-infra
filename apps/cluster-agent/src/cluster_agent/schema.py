@@ -145,3 +145,55 @@ class Report(BaseModel):
         if len(v) > 2000:
             raise ValueError("digest summary must be ≤ 2000 chars (operator-readable)")
         return v
+
+
+# ── P3: Log-pattern mining (2026-05-26) ────────────────────────────
+#
+# Extends Mode A's digest to surface logs containing errors/warnings
+# that didn't trigger an Alertmanager alert. Two flavors of signal:
+#
+#   - ratio_outlier: namespace's 24h error/warn line count is ≥3× its
+#                    7d rolling baseline AND ≥50 lines absolute (so
+#                    a busy namespace getting busier shows up, but
+#                    "5 → 15 errors" doesn't).
+#
+#   - tripwire:      one of ~10 hard-coded regexes matched (panic,
+#                    OOMKilled, CrashLoopBackOff, certificate expired,
+#                    etc.). Always surfaced regardless of count/ratio
+#                    — one occurrence is enough.
+#
+# These feed into the digest LLM call as additional context. The LLM
+# decides whether to elevate a pattern to a full Finding (default
+# severity:info) or fold it into an alert-derived Finding's evidence.
+
+LogPatternChronicity = Literal["ratio_outlier", "tripwire"]
+
+
+class LogPattern(BaseModel):
+    """One notable log pattern surfaced from 24h of Loki history.
+
+    Produced by digest_aggregator.aggregate_log_patterns(); consumed
+    by the digest prompt. NOT a Finding — the LLM decides whether a
+    pattern is worth elevating.
+
+    For tripwires (count-independent), `baseline_mean_24h` and
+    `ratio_vs_baseline` are None; `matched_tripwire` carries the
+    regex label that fired.
+
+    For ratio_outliers, `matched_tripwire` is None; the ratio fields
+    carry the statistical detail.
+
+    `sample_lines` are up to 3 representative log lines with secrets
+    redacted (see _redact() in digest_aggregator). Lines are capped
+    at 200 chars each. Empty list is allowed (LLM-only-the-stats case).
+    """
+    namespace: str
+    level: Literal["error", "warn", "fatal", "panic"]
+    chronicity: LogPatternChronicity
+    count_24h: int
+    baseline_mean_24h: float | None = None       # None for tripwires
+    ratio_vs_baseline: float | None = None       # None for tripwires
+    matched_tripwire: str | None = None          # short label, e.g. "panic" / "OOMKilled"
+    sample_lines: list[str] = Field(default_factory=list)
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime

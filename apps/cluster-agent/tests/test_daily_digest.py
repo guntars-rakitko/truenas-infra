@@ -128,6 +128,114 @@ async def test_daily_digest_budget_exceeded_returns_error_no_dispatch(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_daily_digest_passes_log_patterns_to_llm(tmp_path, monkeypatch):
+    """P3: log-pattern aggregator output reaches the LLM via triage_digest's
+    `log_patterns` kwarg. Runner must call aggregate_log_patterns AND
+    forward the result to triage_digest."""
+    from cluster_agent.modes import daily_digest
+    from cluster_agent.schema import LogPattern, Report
+
+    # Stub Prom history → one chronic group so we don't short-circuit on no alerts
+    now = dt.datetime.now(dt.timezone.utc)
+    samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(120, 0, -1)]
+    monkeypatch.setattr(daily_digest, "alertmanager_history",
+                        lambda cluster, since_hours=24: {
+                            "data": {"result": [{
+                                "metric": {"alertname": "KubePodCrashLooping",
+                                           "namespace": "pocket-id", "pod": "pocket-id-0"},
+                                "values": samples,
+                            }]},
+                        })
+    monkeypatch.setattr(daily_digest, "alertmanager_alerts", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_gather_context_for_chronic",
+                        lambda groups, cluster: "(stubbed)")
+
+    # Stub the log-pattern aggregator to return one tripwire pattern
+    fake_pattern = LogPattern(
+        namespace="velero",
+        level="panic",
+        chronicity="tripwire",
+        count_24h=2,
+        baseline_mean_24h=None,
+        ratio_vs_baseline=None,
+        matched_tripwire="panic",
+        sample_lines=["panic: runtime error somewhere"],
+        first_seen_at=now - dt.timedelta(hours=2),
+        last_seen_at=now - dt.timedelta(minutes=5),
+    )
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns",
+                        lambda cluster, **kw: [fake_pattern])
+
+    # Capture triage_digest kwargs
+    captured = {}
+    async def fake_triage(**kw):
+        captured.update(kw)
+        return Report(
+            id="01JK3R8Q9M01234567890123XZ", cluster="dev", digest_window_hours=24,
+            summary="quiet", quiet_period=True, findings=[],
+            total_alerts_24h=1, chronic_count=1, transient_count=0, self_healed_count=0,
+        )
+    monkeypatch.setattr(daily_digest, "triage_digest", fake_triage)
+    monkeypatch.setattr(daily_digest, "dispatch", MagicMock())
+
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+
+    await daily_digest.run_async(cluster="dev")
+    # Critical assertion: log_patterns reached triage_digest
+    assert "log_patterns" in captured
+    assert len(captured["log_patterns"]) == 1
+    assert captured["log_patterns"][0].matched_tripwire == "panic"
+    assert captured["log_patterns"][0].namespace == "velero"
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_log_mining_failure_does_not_abort(tmp_path, monkeypatch):
+    """If aggregate_log_patterns raises, the digest continues with an
+    empty log_patterns list — log mining is supplementary, not required."""
+    from cluster_agent.modes import daily_digest
+    from cluster_agent.schema import Report
+
+    now = dt.datetime.now(dt.timezone.utc)
+    samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(5, 0, -1)]
+    monkeypatch.setattr(daily_digest, "alertmanager_history",
+                        lambda cluster, since_hours=24: {
+                            "data": {"result": [{
+                                "metric": {"alertname": "X"}, "values": samples,
+                            }]},
+                        })
+    monkeypatch.setattr(daily_digest, "alertmanager_alerts", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_gather_context_for_chronic",
+                        lambda groups, cluster: "")
+
+    # The aggregator BLOWS UP
+    def boom(cluster, **kw):
+        raise RuntimeError("loki backend exploded")
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns", boom)
+
+    captured = {}
+    async def fake_triage(**kw):
+        captured.update(kw)
+        return Report(
+            id="01JK3R8Q9M01234567890123XZ", cluster="dev", digest_window_hours=24,
+            summary="quiet", quiet_period=True, findings=[],
+            total_alerts_24h=0, chronic_count=0, transient_count=0, self_healed_count=0,
+        )
+    monkeypatch.setattr(daily_digest, "triage_digest", fake_triage)
+    monkeypatch.setattr(daily_digest, "dispatch", MagicMock())
+
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+
+    # Should NOT raise — partial digest is more useful than no digest
+    result = await daily_digest.run_async(cluster="dev")
+    assert result.error is None
+    # And log_patterns reached triage_digest as an empty list (not missing)
+    assert captured["log_patterns"] == []
+
+
+@pytest.mark.asyncio
 async def test_daily_digest_passes_open_dedup_keys_to_llm(tmp_path, monkeypatch):
     """Existing open findings in state.db are passed to the LLM as
     `open_issue_keys` so it can avoid creating semantically-duplicate
