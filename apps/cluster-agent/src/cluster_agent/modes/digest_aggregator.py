@@ -17,7 +17,6 @@ Algorithm:
   5. Classify chronicity from thresholds (see _classify_chronicity)
 """
 from __future__ import annotations
-import concurrent.futures
 import datetime as dt
 import hashlib
 import json
@@ -318,85 +317,63 @@ def aggregate_log_patterns(
         f'[{window_hours}h]))'
     )
 
-    # ── Parallel execution with backpressure throttling (2026-05-26) ──
-    # Each Loki query is independent + slow (10-60s on real clusters
-    # depending on match cardinality). Sequential at 60s timeout =
-    # ~8 min per digest. Naive parallelism with 12 workers saturates
-    # the single-binary homelab Loki — ALL queries time out because
-    # Loki's worker queue backs up.
+    # ── Sequential execution with graceful degradation ──────────────
+    # Concurrency was tried (PR #57 at max=12, PR #58 at max=3) — both
+    # saturated single-binary homelab Loki and produced ZERO patterns.
+    # Sequential trades wall time (~8 min per digest at 60s timeout)
+    # for sustainable Loki load. For a once-a-day cron at 06:00 EEST
+    # this is fine; the digest can take 16 minutes total across both
+    # clusters and still produce findings well before the operator
+    # starts their day.
     #
-    # max_workers=3 is the empirical sweet spot for our cluster's
-    # Loki capacity:
-    #   - Sequential of 12 × ~30s avg = ~360s
-    #   - max=3:   ~120s expected
-    #   - max=12:  ALL fail (Loki saturates)
-    #
-    # Threads (not asyncio) because:
-    #   - loki_query / loki_metric_query_fn are sync HTTP calls
-    #   - we don't need cancellation-on-first-failure semantics
-    #   - audit decorator's contextvar handling is thread-friendly
+    # If a future Loki HA setup raises capacity, we can revisit
+    # parallelization. Until then, sequential is the only thing
+    # that actually returns signal.
     outliers: list[LogPattern] = []
     tripwires: list[LogPattern] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        # Submit the 2 ratio-outlier queries (recent + baseline windows)
-        recent_future = pool.submit(
-            loki_metric_query_fn,
+    # Ratio outliers — two sequential queries (recent + baseline)
+    try:
+        recent_resp = loki_metric_query_fn(
             cluster, promql,
             start=now - dt.timedelta(hours=window_hours),
             end=now,
             step_seconds=window_hours * 3600,
         )
-        baseline_future = pool.submit(
-            loki_metric_query_fn,
+        baseline_resp = loki_metric_query_fn(
             cluster, promql,
             start=baseline_start,
             end=now - dt.timedelta(hours=window_hours),
             step_seconds=24 * 3600,
         )
+        outliers = _build_ratio_outliers(
+            recent_resp=recent_resp,
+            baseline_resp=baseline_resp,
+            ratio_threshold=ratio_threshold,
+            min_count_floor=min_count_floor,
+            now=now,
+            window_hours=window_hours,
+        )
+    except Exception as e:
+        log.warning("digest log-pattern outlier query failed: %r", e)
 
-        # Submit the 10 tripwire queries
-        tripwire_futures: dict[concurrent.futures.Future, str] = {}
-        for label, pattern in _TRIPWIRE_PATTERNS:
-            f = pool.submit(
-                loki_query_fn,
+    # Tripwires — sequential queries, per-tripwire graceful degradation
+    for label, pattern in _TRIPWIRE_PATTERNS:
+        try:
+            resp = loki_query_fn(
                 cluster,
                 f'{{namespace=~".+"}} |~ "{_logql_escape(pattern.pattern)}"',
                 start=now - dt.timedelta(hours=window_hours),
                 end=now,
                 limit=sample_lines_per_pattern * 5,
             )
-            tripwire_futures[f] = label
-
-        # Collect outlier results — need BOTH to compute ratios
-        try:
-            recent_resp = recent_future.result()
-            baseline_resp = baseline_future.result()
-            outliers = _build_ratio_outliers(
-                recent_resp=recent_resp,
-                baseline_resp=baseline_resp,
-                ratio_threshold=ratio_threshold,
-                min_count_floor=min_count_floor,
-                now=now,
+            tripwires.extend(_extract_tripwire_patterns(
+                resp, label=label, now=now,
                 window_hours=window_hours,
-            )
+                sample_lines_per_pattern=sample_lines_per_pattern,
+            ))
         except Exception as e:
-            log.warning("digest log-pattern outlier query failed: %r", e)
-
-        # Collect tripwire results as they complete; per-future failure
-        # is logged + skipped, not propagated. Same graceful degradation
-        # as the sequential version.
-        for f in concurrent.futures.as_completed(tripwire_futures):
-            label = tripwire_futures[f]
-            try:
-                resp = f.result()
-                tripwires.extend(_extract_tripwire_patterns(
-                    resp, label=label, now=now,
-                    window_hours=window_hours,
-                    sample_lines_per_pattern=sample_lines_per_pattern,
-                ))
-            except Exception as e:
-                log.warning("digest tripwire query for %s failed: %r", label, e)
+            log.warning("digest tripwire query for %s failed: %r", label, e)
 
     # ── Merge: tripwires first, then ratio outliers, cap at max_patterns
     combined = tripwires + sorted(
