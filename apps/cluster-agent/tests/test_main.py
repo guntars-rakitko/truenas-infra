@@ -52,18 +52,89 @@ def test_anthropic_api_key_env_is_visible(monkeypatch):
     assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-test-placeholder"
 
 
-def test_fail_fast_on_both_auth_envs_set(monkeypatch):
-    """Both ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN set → import raises."""
+def test_llm_auth_mode_oauth_strips_api_key(monkeypatch):
+    """LLM_AUTH_MODE=oauth → ANTHROPIC_API_KEY removed from env so the
+    SDK can't accidentally use it. CLAUDE_CODE_OAUTH_TOKEN preserved."""
+    import importlib
+    import sys
+    import os
+
+    monkeypatch.setenv("LLM_AUTH_MODE", "oauth")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-shadow-risk")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-active")
+    sys.modules.pop("main", None)
+    try:
+        importlib.import_module("main")
+        assert os.environ.get("ANTHROPIC_API_KEY") is None
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat01-active"
+    finally:
+        sys.modules.pop("main", None)
+
+
+def test_llm_auth_mode_api_key_strips_oauth(monkeypatch):
+    """LLM_AUTH_MODE=api_key → CLAUDE_CODE_OAUTH_TOKEN removed, API key kept."""
+    import importlib
+    import sys
+    import os
+
+    monkeypatch.setenv("LLM_AUTH_MODE", "api_key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-active")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-stripped")
+    sys.modules.pop("main", None)
+    try:
+        importlib.import_module("main")
+        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-api03-active"
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None
+    finally:
+        sys.modules.pop("main", None)
+
+
+def test_llm_auth_mode_default_is_api_key(monkeypatch):
+    """LLM_AUTH_MODE unset → default 'api_key' (backwards-compatible
+    with pre-2026-05-26 deployments)."""
+    import importlib
+    import sys
+    import os
+
+    monkeypatch.delenv("LLM_AUTH_MODE", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-active")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-stripped")
+    sys.modules.pop("main", None)
+    try:
+        importlib.import_module("main")
+        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-api03-active"
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None
+    finally:
+        sys.modules.pop("main", None)
+
+
+def test_llm_auth_mode_invalid_value_raises(monkeypatch):
+    """LLM_AUTH_MODE set to a bogus value → startup error (operator typo)."""
     import importlib
     import sys
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fake")
-    # Remove cached module so the top-level check runs fresh on re-import.
+    monkeypatch.setenv("LLM_AUTH_MODE", "bogus")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
     sys.modules.pop("main", None)
     try:
-        with pytest.raises(RuntimeError, match="shadow"):
+        with pytest.raises(RuntimeError, match="LLM_AUTH_MODE"):
             importlib.import_module("main")
     finally:
-        # Restore the cached module so subsequent tests can use it normally.
+        sys.modules.pop("main", None)
+
+
+def test_llm_auth_mode_oauth_but_no_token_raises(monkeypatch):
+    """LLM_AUTH_MODE=oauth but CLAUDE_CODE_OAUTH_TOKEN empty in Doppler
+    → fail fast at startup with a clear hint, not 401 hours later."""
+    import importlib
+    import sys
+
+    monkeypatch.setenv("LLM_AUTH_MODE", "oauth")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-irrelevant")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    sys.modules.pop("main", None)
+    try:
+        with pytest.raises(RuntimeError, match="CLAUDE_CODE_OAUTH_TOKEN"):
+            importlib.import_module("main")
+    finally:
         sys.modules.pop("main", None)

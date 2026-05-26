@@ -65,6 +65,11 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         # CLAUDE_OAUTH_CREDENTIALS_B64DECODED entry — dropped 2026-05-25
         # after empirical research showed CLAUDE_CODE_OAUTH_TOKEN env var
         # is the canonical headless mechanism.)
+        # LLM auth — both tokens are always passed; LLM_AUTH_MODE
+        # ("oauth" or "api_key") decides which one main.py keeps in
+        # os.environ at startup. Flip with `doppler secrets set
+        # LLM_AUTH_MODE=oauth` + container restart.
+        "LLM_AUTH_MODE":                 "LLM_AUTH_MODE",
         "CLAUDE_CODE_OAUTH_TOKEN":       "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
         "GH_APP_ID":                     "GH_APP_ID",
