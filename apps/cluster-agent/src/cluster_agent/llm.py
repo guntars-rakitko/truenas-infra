@@ -430,10 +430,15 @@ async def triage_digest(
     else:
         prompt_payload = (filled[:split_at], filled[split_at:])
 
-    # max_tokens=8192 — digest Reports CAN be large (multiple Findings
-    # each with full evidence chains). Headroom is cheap; truncated
-    # JSON is a wasted call.
-    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 8192})
+    # max_tokens=3000 — observed dev digest output ~1500 tokens; prd
+    # ~2500 even on noisy days. 3000 gives ~20% headroom without
+    # over-reserving against Tier-1 OTPM (10K/min) — bumping to 8192
+    # triggered persistent 429s during 2026-05-26 manual smoke tests
+    # because Anthropic charges the reservation against the per-minute
+    # output budget. A real truncation will show up as JSON parse
+    # failure (LLMBudgetExceeded won't fire on tokens, only $); we
+    # can raise this back up if we ever see one.
+    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 3000})
 
     cache_read = 0
     cache_create = 0
