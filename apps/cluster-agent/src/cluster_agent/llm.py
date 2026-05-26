@@ -149,7 +149,31 @@ async def _sdk_query(prompt: str, options: dict[str, Any]) -> dict[str, Any]:
     }
     async with httpx.AsyncClient(timeout=options.get("timeout", 60.0)) as client:
         r = await client.post(_API_URL, headers=headers, content=json.dumps(body))
-        r.raise_for_status()
+        # On 429 (rate limit) or other 4xx/5xx, surface Anthropic's
+        # rate-limit headers in the exception message. Without these,
+        # 429s are indistinguishable from budget-exhaustion failures
+        # and operator can't tell which bucket (requests/tokens) tripped.
+        # First bit us 2026-05-26 when shared-Max-pool OAuth tripped
+        # the per-minute limit while interactive Claude Code was busy.
+        if r.status_code >= 400:
+            rl_keys = [
+                "anthropic-ratelimit-requests-limit",
+                "anthropic-ratelimit-requests-remaining",
+                "anthropic-ratelimit-requests-reset",
+                "anthropic-ratelimit-tokens-limit",
+                "anthropic-ratelimit-tokens-remaining",
+                "anthropic-ratelimit-tokens-reset",
+                "retry-after",
+            ]
+            rl = {k: r.headers[k] for k in rl_keys if k in r.headers}
+            # Raise with the rate-limit info woven into the message —
+            # captured by the audit log + propagates to Loki via the
+            # mode runner's exception handler.
+            raise httpx.HTTPStatusError(
+                f"{r.status_code} {r.reason_phrase} — body={r.text[:300]} rate_limits={rl}",
+                request=r.request,
+                response=r,
+            )
         return r.json()
 
 
