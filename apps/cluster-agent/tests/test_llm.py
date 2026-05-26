@@ -176,3 +176,35 @@ async def test_triage_alert_handles_fenced_llm_output(monkeypatch):
     )
     assert isinstance(finding, Finding)
     assert finding.severity == "medium"
+
+
+@pytest.mark.asyncio
+async def test_triage_alert_overrides_llm_cluster_suffix(monkeypatch):
+    """LLM is non-deterministic about the cluster suffix in dedup_key
+    (observed picking ':prd' and ':monitoring' for dev-cluster alerts
+    on consecutive runs during the 2026-05-26 P1 soak). triage_alert
+    overwrites the suffix with the actual cluster to keep dedup
+    consistent across runs."""
+    from cluster_agent import llm
+    import json as _json
+
+    # LLM returns dedup_key with WRONG cluster suffix (:prd)
+    bad_json = _json.loads(_good_finding_json())
+    bad_json["dedup_key"] = "alert:KubePodCrashLooping:pocket-id-0:prd"
+
+    async def fake_query(prompt, options):
+        return _json.dumps(bad_json)
+
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+
+    # Run for cluster=dev — should normalize suffix to :dev
+    finding = await triage_alert(
+        alert={"labels": {"alertname": "KubePodCrashLooping"}, "startsAt": "2026-05-25T17:00:00Z"},
+        context={"loki_excerpt": "x", "kubectl_describe": "x", "prom_values": "x", "flux_state": "x"},
+        cluster="dev",
+        model="claude-sonnet-4-6",
+        budget_usd=0.50,
+    )
+    assert finding.dedup_key == "alert:KubePodCrashLooping:pocket-id-0:dev"
+    # The non-cluster parts (alertname + scope) preserved
+    assert finding.dedup_key.startswith("alert:KubePodCrashLooping:pocket-id-0:")
