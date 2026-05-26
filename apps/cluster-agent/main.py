@@ -25,15 +25,54 @@ from cluster_agent.emit.metrics import render
 from cluster_agent.scheduler import Scheduler
 
 
-# Fail-fast on auth-shadowing footgun: the Agent SDK silently uses
-# ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN if both are set,
-# meaning we'd quietly burn API-key credit instead of Max subscription.
-# Our docker-compose passes only one at a time — this catches future
-# regressions / operator-side mistakes.
-if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+# LLM auth routing (2026-05-26).
+#
+# The container now receives BOTH `ANTHROPIC_API_KEY` and
+# `CLAUDE_CODE_OAUTH_TOKEN` env vars from Doppler (they coexist there
+# already; previously the compose file commented one out to choose).
+# A single Doppler key `LLM_AUTH_MODE` ("api_key" or "oauth") now
+# decides which one is actually active, and this startup block removes
+# the OTHER from os.environ before any code path can read it.
+#
+# Why route in Python instead of compose: lets the operator flip auth
+# modes via `doppler secrets set LLM_AUTH_MODE=oauth` + restart, with
+# no compose edit / no PR. Useful for chasing rate-limit issues
+# (flip to API key bucket when Max throttles, flip back later).
+#
+# Why route BEFORE the fail-fast check: the original auth-shadowing
+# footgun still applies — if both keys reach the SDK, it silently uses
+# the API key and we lose visibility. Routing first means there's only
+# ever one key in env by the time the rest of the app boots.
+_AUTH_MODE = os.environ.get("LLM_AUTH_MODE", "api_key").lower()
+if _AUTH_MODE == "oauth":
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+elif _AUTH_MODE == "api_key":
+    os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+else:
     raise RuntimeError(
-        "Both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set — the SDK "
-        "would silently shadow OAuth with API key. Pass only one in container env."
+        f"LLM_AUTH_MODE must be 'oauth' or 'api_key', got {_AUTH_MODE!r}. "
+        f"Set via `doppler secrets set LLM_AUTH_MODE=oauth --project "
+        f"cluster-agent --config prd` then restart the container."
+    )
+
+# Post-routing safety check. Production deployments set LLM_AUTH_MODE
+# explicitly in compose, so a missing token there is operator error
+# and we fail fast with a clear hint. In tests (LLM_AUTH_MODE never
+# set, both keys unset), skip the check — tests stub the LLM call
+# anyway, never reach the auth path.
+_has_api = bool(os.environ.get("ANTHROPIC_API_KEY"))
+_has_oauth = bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+if _has_api and _has_oauth:
+    # Should be impossible after the routing above; defensive guard.
+    raise RuntimeError(
+        "Both auth tokens present after LLM_AUTH_MODE routing — bug, please file"
+    )
+if "LLM_AUTH_MODE" in os.environ and not _has_api and not _has_oauth:
+    raise RuntimeError(
+        f"LLM_AUTH_MODE={_AUTH_MODE!r} selected but its Doppler key is empty. "
+        f"Verify in `doppler secrets get "
+        f"{'CLAUDE_CODE_OAUTH_TOKEN' if _AUTH_MODE == 'oauth' else 'ANTHROPIC_API_KEY'} "
+        f"--project cluster-agent --config prd`."
     )
 
 _BOOT_TIME = time.time()

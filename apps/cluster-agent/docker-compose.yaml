@@ -81,26 +81,32 @@ services:
       - ENABLED=${ENABLED}
       - DISABLED_MODES=${DISABLED_MODES}
       - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
-      # ── Claude LLM auth
-      # Operator toggle: ANTHROPIC_API_KEY vs CLAUDE_CODE_OAUTH_TOKEN.
-      # main.py refuses to start if both are set in the container env, so
-      # only one of these two lines is active at any time.
+      # ── Claude LLM auth (Doppler-driven toggle, 2026-05-26)
+      # Both auth tokens are passed in unconditionally; the active one
+      # is chosen by LLM_AUTH_MODE ("oauth" or "api_key"). main.py reads
+      # LLM_AUTH_MODE at startup and removes the inactive key from
+      # os.environ before any code path can read it. This means
+      # operator can flip auth mode with:
+      #
+      #   doppler secrets set LLM_AUTH_MODE=oauth --project cluster-agent --config prd
+      #   ssh truenas@nas 'sudo docker restart cluster-agent'
+      #
+      # without ever editing this compose file. See main.py header.
       #
       # CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-...) bills against the
       # operator's Max subscription. Pre-June-15, that pool is SHARED with
       # interactive Claude Code — concurrent usage by the operator can
       # rate-limit Mode A (429). Post-June-15 it's a separate $100/mo
-      # bucket.
+      # bucket. Safe for daily-digest cadence: 2 calls/day at 06:00 EEST
+      # (operator-asleep window) are extremely unlikely to overlap with
+      # interactive use.
       #
       # ANTHROPIC_API_KEY (sk-ant-api03-...) bills against the regular
       # API account — completely independent quota, no interaction with
-      # Max subscription. Use this during the P1 soak (current state),
-      # flip back to OAuth post-June-15 when the Max bucket is dedicated.
-      #
-      # Switched 2026-05-26 after the 429-on-first-fire confirmed shared-
-      # pool throttling. See spec § 3.6.1.
+      # Max subscription.
+      - LLM_AUTH_MODE=${LLM_AUTH_MODE}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       # ── GitHub App identity
       # Mode A onwards: the github tool (src/cluster_agent/tools/github.py)
       # reads CLUSTER_AGENT_GH_APP_* (matches the test fixtures); the
