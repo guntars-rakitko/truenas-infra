@@ -115,9 +115,13 @@ services:
       - KUBECONFIG_DEV=${KUBECONFIG_DEV}
       - KUBECONFIG_PRD=${KUBECONFIG_PRD}
       - KUBECONFIG_TEST_RESTORE_DEV=${KUBECONFIG_TEST_RESTORE_DEV}
-      # ── Observability — Grafana annotation API (Loki/Prom/AM use apiserver proxy)
-      - GRAFANA_API_TOKEN_DEV=${GRAFANA_API_TOKEN_DEV}
-      - GRAFANA_API_TOKEN_PRD=${GRAFANA_API_TOKEN_PRD}
+      # ── Observability — Loki/Prom/AM + Grafana annotation API all reach
+      # cluster services via apiserver-proxy (kubeconfig SA token), so no
+      # separate annotation auth token is needed. Grafana itself runs in
+      # auth.proxy mode (whitelist=""), trusts X-WEBAUTH-USER from the
+      # proxy + auto-creates the cluster-agent user with Admin role.
+      # (Old GRAFANA_API_TOKEN_{DEV,PRD} env vars dropped 2026-05-26 with
+      # PR #42 — they were dead since the apiserver-proxy switch.)
       # ── S3 (Mode G backup verification)
       - MINIO_NAS_KEY_ID=${MINIO_NAS_KEY_ID}
       - MINIO_NAS_SECRET_KEY=${MINIO_NAS_SECRET_KEY}
