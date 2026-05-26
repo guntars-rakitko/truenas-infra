@@ -130,7 +130,7 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 | NFS (prd) | Longhorn backups | 10.10.10.10 (NFS, service-level bindip) |
 | NFS (dev) | Longhorn backups | 10.10.15.10 |
 | PXE / TFTP server | custom iPXE 1.21.1+ built from source (apps/pxe/) — USB_HCD_USBIO fix for Intel Q170. Dynamic menu auto-listed from /mnt/tank/system/pxe/http/extras/{utils,distros,live}/*.iso by apps/pxe/pxe-genmenu.sh. Operator runbook: `docs/pxe-operator.md` | 10.10.5.10:69/udp (TFTP), :8080 (HTTP assets) |
-| cluster-agent | LLM-driven SRE assistant. **P2 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST → 0-N curated GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
+| cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
@@ -305,23 +305,40 @@ live and SKIPs cleanly if not — a premature run is harmless. Full
 setup steps are in the script's header comment. SSE-S3 encrypts NEW
 objects only; pre-existing objects stay plaintext and age out.
 
-### cluster-agent ops (P2 daily-digest live since 2026-05-26)
+### cluster-agent ops (P3 daily-digest + log mining, live since 2026-05-26)
 
 The cluster-agent runs as a NAS-side Docker container
 (`apps/cluster-agent/docker-compose.yaml`). Mode A pivoted from 5-min
-polling to a daily 06:00-EEST digest on 2026-05-26 — one LLM call per
-cluster per day produces a curated `Report` with 0-N actionable Findings
-that land as GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox).
+polling to a daily 06:00-EEST digest on 2026-05-26 (P2), then extended
+same day to also mine Loki for notable log patterns that didn't trigger
+an alert (P3). One LLM call per cluster per day produces a curated
+`Report` with 0-N actionable Findings that land as GH issues in
+[cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox).
 Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 
-**Daily-digest architecture (short version).** Each 06:00 fire pulls 24h
-of `ALERTS{alertstate="firing"}` from Prometheus, aggregates per
-`(alertname, fingerprint)` with chronicity classification (chronic /
-flapping / active / self_healed / transient), pre-fetches context for
-chronic+flapping groups only, looks up existing open issues from
-state.db, and makes ONE LLM call → Report. Watchdog is silently
-skipped. Cost: ~$0.20-0.50/day on Sonnet 4.6 (cached prefix shared
-between dev + prd runs).
+**Daily-digest architecture (short version).** Each 06:00 fire:
+
+1. Pulls 24h of `ALERTS{alertstate="firing"}` from Prometheus,
+   aggregates per `(alertname, fingerprint)` with chronicity
+   classification (chronic / flapping / active / self_healed / transient).
+   Watchdog is silently skipped.
+2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
+   alerts (not for self_healed/transient — presumed noise).
+3. **P3: Mines Loki for notable log patterns** — namespaces with
+   24h error/warn line count ≥ 3× their 7d baseline (`ratio_outlier`),
+   PLUS 10 hard-coded tripwire regexes that surface on any occurrence
+   (`panic`, `fatal`, `OOMKilled`, `CrashLoopBackOff`, `ImagePullBackOff`,
+   `certificate_expired`, `x509_expired`, `connection_refused`,
+   `permission_denied`, `evicted`). Sample lines are scrubbed of
+   probable secrets before reaching the LLM.
+4. Looks up existing open GH issue dedup_keys from state.db (LLM
+   avoids semantic duplicates).
+5. ONE LLM call → Report (alerts + log patterns + dedup context).
+6. Each Finding dispatched to Grafana annotation + GH issue +
+   state.db record.
+
+Cost: ~$0.25-0.50/day on Sonnet 4.6 (cached prefix shared between
+dev + prd runs since they fire 60s apart).
 
 **Code change vs config change.** The compose bind-mounts
 `apps/cluster-agent/` → `/app`, so Python source edits land on disk
@@ -382,8 +399,9 @@ prd at `+1 minute` so the second call hits the first's prompt cache
 - `CLAUDE_CODE_OAUTH_TOKEN` — sk-ant-oat01-* (1y validity from
   `claude setup-token`). Always present; stripped from env if
   LLM_AUTH_MODE=api_key.
-- `DAILY_DIGEST_HOUR` / `_MINUTE` / `_WINDOW_HOURS` / `_BUDGET_USD` —
-  digest schedule + budget.
+- `DAILY_DIGEST_HOUR` (default `6`) / `_MINUTE` (default `0`) /
+  `_WINDOW_HOURS` (default `24`) / `_BUDGET_USD` (default `0.75` —
+  bumped from 0.50 with P3 to give log-mining the prompt headroom).
 - `GH_APP_ID` / `GH_APP_PRIVATE_KEY` / `GH_APP_INSTALLATION_ID` —
   cluster-agent[bot] App credentials. Compose renames with
   `CLUSTER_AGENT_` prefix on injection (the github tool reads
