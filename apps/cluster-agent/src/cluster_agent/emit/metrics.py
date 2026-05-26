@@ -114,6 +114,31 @@ LLM_COST_USD = Counter(
     ["mode"],
 )
 
+# Prompt caching (2026-05-26 cost-cut) — Anthropic charges 0.10× normal
+# input rate on cache reads, 1.25× on cache creation writes. With the
+# rendered prompt prefix marked cache_control=ephemeral, repeated mode
+# runs within 5min reuse the cached prefix. Track separately so the
+# operator can see the cache hit ratio in Grafana.
+LLM_CACHE_READ_TOKENS = Counter(
+    "cluster_agent_llm_cache_read_tokens_total",
+    "Input tokens served from cache (0.10x rate)",
+    ["mode"],
+)
+LLM_CACHE_CREATE_TOKENS = Counter(
+    "cluster_agent_llm_cache_create_tokens_total",
+    "Input tokens written to cache (1.25x rate)",
+    ["mode"],
+)
+
+# Mode A tick-level skip (2026-05-26 cost-cut) — counts ticks where the
+# alert-set hash matched the previous tick AND every alert already had
+# an open GH issue, so the LLM was not called at all.
+MODE_A_TICKS_SKIPPED = Counter(
+    "cluster_agent_mode_a_ticks_skipped_total",
+    "Mode A ticks that early-returned without invoking LLM",
+    ["cluster", "reason"],  # reason: alert_set_unchanged / no_alerts
+)
+
 
 def render() -> str:
     """Render all metrics in Prometheus exposition format.

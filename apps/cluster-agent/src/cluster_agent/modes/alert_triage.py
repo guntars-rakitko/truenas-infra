@@ -18,9 +18,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime as dt
+import hashlib
 import logging
 import os
 
+from ..emit.metrics import MODE_A_TICKS_SKIPPED
 from ..llm import triage_alert, LLMBudgetExceeded
 from ..state.db import StateDB
 from ..state.dedup import lookup, DedupAction
@@ -48,11 +50,52 @@ async def run_async(*, cluster: str) -> ModeResult:
         return ModeResult(alerts_seen=0, findings_emitted=0, findings_skipped_dedup=0)
 
     if not alerts:
+        MODE_A_TICKS_SKIPPED.labels(cluster=cluster, reason="no_alerts").inc()
         return ModeResult(alerts_seen=0, findings_emitted=0, findings_skipped_dedup=0)
 
     sdb = StateDB(os.environ["STATE_DB_PATH"])
     model = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
     budget = float(os.environ.get("MODE_A_BUDGET_USD", "0.50"))
+
+    # Tick-level cost gate (2026-05-26): if the active alert set is
+    # byte-for-byte the same as last tick AND every alert in the set
+    # already has an open GH issue in state.db, this tick would just
+    # re-fire the LLM on the same alerts and produce the same findings
+    # the previous tick already produced. Skip the whole tick — saves
+    # ~$0.035/run/cluster of pure waste. NEW alerts (hash changes) still
+    # trigger immediately; alerts whose GH issue was closed by operator
+    # (all_have_open_issues=False) also fall through to normal flow so
+    # the REOPEN dispatch path fires.
+    alert_set_hash = _hash_alert_set(alerts)
+    all_have_issues = _all_alerts_have_open_issues(sdb, alerts, cluster)
+    prev = sdb.fetchone(
+        "SELECT last_alert_set_hash, all_have_open_issues FROM mode_a_tick_state "
+        "WHERE cluster = ?",
+        (cluster,),
+    )
+    if (
+        prev is not None
+        and prev["last_alert_set_hash"] == alert_set_hash
+        and prev["all_have_open_issues"]
+        and all_have_issues
+    ):
+        # Update the tick-state row so last_evaluated_at advances (lets
+        # operator see in state.db that the agent is still alive even
+        # when it's not calling the LLM).
+        sdb.execute(
+            "UPDATE mode_a_tick_state SET last_evaluated_at = ? WHERE cluster = ?",
+            (dt.datetime.now(dt.timezone.utc).isoformat(), cluster),
+        )
+        MODE_A_TICKS_SKIPPED.labels(cluster=cluster, reason="alert_set_unchanged").inc()
+        log.info(
+            "mode_a tick skipped (cluster=%s alerts_seen=%d): alert-set unchanged "
+            "+ all have open issues", cluster, len(alerts),
+        )
+        return ModeResult(
+            alerts_seen=len(alerts),
+            findings_emitted=0,
+            findings_skipped_dedup=len(alerts),
+        )
 
     emitted = 0
     skipped = 0
@@ -101,11 +144,79 @@ async def run_async(*, cluster: str) -> ModeResult:
         dispatch(finding, action, db=sdb)
         emitted += 1
 
+    # Record the tick state so the next tick can short-circuit if
+    # nothing changed. We mark all_have_open_issues based on the post-
+    # dispatch state (every alert this tick processed either created
+    # or commented on an issue, so they all have refs now).
+    final_all_have = _all_alerts_have_open_issues(sdb, alerts, cluster)
+    sdb.execute(
+        "INSERT INTO mode_a_tick_state (cluster, last_alert_set_hash, "
+        "last_evaluated_at, all_have_open_issues) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(cluster) DO UPDATE SET "
+        "last_alert_set_hash = excluded.last_alert_set_hash, "
+        "last_evaluated_at = excluded.last_evaluated_at, "
+        "all_have_open_issues = excluded.all_have_open_issues",
+        (
+            cluster,
+            alert_set_hash,
+            dt.datetime.now(dt.timezone.utc).isoformat(),
+            1 if final_all_have else 0,
+        ),
+    )
+
     return ModeResult(
         alerts_seen=len(alerts),
         findings_emitted=emitted,
         findings_skipped_dedup=skipped,
     )
+
+
+def _hash_alert_set(alerts: list[dict]) -> str:
+    """Stable hash of (alertname, fingerprint) tuples for the active set.
+
+    Alertmanager's `fingerprint` field is its hash of the alert's labels,
+    so two structurally-identical alerts (same name + same labels) hash
+    to the same value. Using fingerprint avoids label-ordering issues
+    we'd hit if we hashed labels directly.
+
+    Sorted before hashing so the order AM returns alerts in (which can
+    vary tick-to-tick) doesn't change the hash.
+    """
+    fingerprints = sorted(
+        (
+            a.get("labels", {}).get("alertname", ""),
+            a.get("fingerprint", ""),
+        )
+        for a in alerts
+    )
+    h = hashlib.sha256()
+    for name, fp in fingerprints:
+        h.update(name.encode())
+        h.update(b"\x00")
+        h.update(fp.encode())
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def _all_alerts_have_open_issues(sdb: StateDB, alerts: list[dict], cluster: str) -> bool:
+    """Does every alert in the set already have an open GH issue?
+
+    Uses the conservative dedup key (same one the runner uses pre-LLM)
+    to look up state.db. An alert with state='open' AND a non-NULL
+    gh_issue_ref counts as having an open issue. If ANY alert is missing
+    an issue (e.g. operator closed it manually, or it's a brand-new
+    alert that hasn't been triaged yet), returns False — the runner
+    will then go down the normal flow and dispatch.
+    """
+    for alert in alerts:
+        key = _conservative_dedup_key(alert, cluster)
+        row = sdb.fetchone(
+            "SELECT state, gh_issue_ref FROM findings WHERE dedup_key = ?",
+            (key,),
+        )
+        if row is None or row["state"] != "open" or not row["gh_issue_ref"]:
+            return False
+    return True
 
 
 def _conservative_dedup_key(alert: dict, cluster: str) -> str:

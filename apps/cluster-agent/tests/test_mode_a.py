@@ -103,6 +103,112 @@ async def test_mode_a_dedup_skips_recent_open_issue(tmp_path, monkeypatch):
     assert gh_comment.called is True
 
 
+@pytest.mark.asyncio
+async def test_mode_a_tick_skip_when_alert_set_unchanged(tmp_path, monkeypatch):
+    """Tick-level cost gate (2026-05-26): if the active alert set hash
+    matches the previous tick AND every alert already has an open GH
+    issue, the runner must NOT call the LLM at all.
+
+    Setup mirrors the first run (creates state.db rows + sets the
+    tick-state row), then runs a second time with the same alert and
+    asserts the LLM was never called."""
+    from cluster_agent.modes import alert_triage
+    from cluster_agent.state import db as db_mod
+    from cluster_agent.state.dedup import record
+
+    alert = json.loads((FIXTURES / "alert_pod_oom.json").read_text())
+    monkeypatch.setattr(alert_triage, "alertmanager_alerts", lambda cluster, **kw: [alert])
+    monkeypatch.setattr(alert_triage, "gather_context_for_alert",
+                        lambda alert, cluster, window_min=30: {
+                            "loki_excerpt": "", "kubectl_describe": "",
+                            "prom_values": "", "flux_state": "",
+                        })
+
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("MODE_A_BUDGET_USD", "0.50")
+
+    # Pre-seed: the alert already has an open GH issue under the
+    # conservative dedup key (this matches what the previous tick would
+    # have written after creating the issue + recording tick state).
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+    conservative_key = alert_triage._conservative_dedup_key(alert, "dev")
+    record(sdb, conservative_key,
+           gh_issue_ref="guntars-rakitko/cluster-agent-sandbox#5",
+           state="open")
+    # Pre-seed: matching tick state row from "previous tick"
+    h = alert_triage._hash_alert_set([alert])
+    sdb.execute(
+        "INSERT INTO mode_a_tick_state VALUES (?, ?, ?, ?)",
+        ("dev", h, "2026-05-26T00:00:00+00:00", 1),
+    )
+
+    # If the LLM is called, that's the bug we're catching.
+    from cluster_agent import llm as llm_mod
+    async def boom(prompt, options):
+        raise AssertionError("LLM should not be called — alert set unchanged")
+    monkeypatch.setattr(llm_mod, "_sdk_query", boom)
+
+    result = await alert_triage.run_async(cluster="dev")
+    # The runner reported the alert as seen + skipped without emitting
+    # a finding (since no LLM call was made).
+    assert result.alerts_seen == 1
+    assert result.findings_emitted == 0
+    assert result.findings_skipped_dedup == 1
+
+
+@pytest.mark.asyncio
+async def test_mode_a_tick_skip_does_not_skip_when_issue_closed(tmp_path, monkeypatch):
+    """If the alert set hash matches but the operator closed the GH
+    issue (state='closed' in SQLite), the runner must fall through to
+    the normal flow so the alert can be RE-OPENED.
+
+    Without this guard the alert would silently never re-fire."""
+    from cluster_agent.modes import alert_triage
+    from cluster_agent.state import db as db_mod
+    from cluster_agent.state.dedup import record
+
+    alert = json.loads((FIXTURES / "alert_pod_oom.json").read_text())
+    monkeypatch.setattr(alert_triage, "alertmanager_alerts", lambda cluster, **kw: [alert])
+    monkeypatch.setattr(alert_triage, "gather_context_for_alert",
+                        lambda alert, cluster, window_min=30: {
+                            "loki_excerpt": "", "kubectl_describe": "",
+                            "prom_values": "", "flux_state": "",
+                        })
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+    monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("MODE_A_BUDGET_USD", "0.50")
+
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+    conservative_key = alert_triage._conservative_dedup_key(alert, "dev")
+    # Issue exists but was CLOSED by the operator
+    record(sdb, conservative_key,
+           gh_issue_ref="guntars-rakitko/cluster-agent-sandbox#5",
+           state="closed")
+    h = alert_triage._hash_alert_set([alert])
+    sdb.execute(
+        "INSERT INTO mode_a_tick_state VALUES (?, ?, ?, ?)",
+        ("dev", h, "2026-05-26T00:00:00+00:00", 1),
+    )
+
+    # LLM is expected to be called; stub returns canned response
+    from cluster_agent import llm as llm_mod
+    async def fake(prompt, options):
+        return (FIXTURES / "llm_response_pod_oom.json").read_text()
+    monkeypatch.setattr(llm_mod, "_sdk_query", fake)
+    from cluster_agent import dispatch as d_mod
+    monkeypatch.setattr(d_mod, "post_annotation", lambda **kw: "9")
+    monkeypatch.setattr(d_mod, "gh_issue_comment", MagicMock())
+    monkeypatch.setattr(d_mod, "gh_issue_create", MagicMock())
+
+    result = await alert_triage.run_async(cluster="dev")
+    # Critical: the LLM WAS invoked (not skipped) — operator-closed
+    # issues mustn't be silently shadowed by the tick-hash dedup.
+    assert result.findings_emitted == 1
+
+
 def test_run_sync_wraps_run_async(monkeypatch):
     """run() is the sync entrypoint scheduler.add_mode expects; it must
     run the async coroutine to completion in a fresh event loop."""

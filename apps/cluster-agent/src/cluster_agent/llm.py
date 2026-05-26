@@ -43,7 +43,29 @@ import jinja2
 
 from .prompts.loader import load_prompt
 from .schema import Finding
-from .emit.metrics import LLM_TOKENS_INPUT, LLM_TOKENS_OUTPUT, LLM_COST_USD
+from .emit.metrics import (
+    LLM_TOKENS_INPUT, LLM_TOKENS_OUTPUT, LLM_COST_USD,
+    LLM_CACHE_READ_TOKENS, LLM_CACHE_CREATE_TOKENS,
+)
+
+
+# Anthropic prompt-caching multipliers (vs base input rate, per docs:
+# https://docs.claude.com/en/docs/build-with-claude/prompt-caching).
+# Writing to cache costs more than a normal token, but the breakeven
+# is ~2 reads. Our 5-min cron with 5-min cache TTL gives us 1 read per
+# write on average; longer-running clusters (alert keeps firing for 1h)
+# get many reads per write, so the savings compound.
+_CACHE_WRITE_MULT = 1.25
+_CACHE_READ_MULT = 0.10
+
+
+# The split boundary inside the alert_triage.md template. Everything
+# above this header line (system role + cluster context + included
+# house_style + output_schema) is identical across every Mode A call
+# and is sent as a cached prefix. Everything below contains the
+# per-call {{ alert_json }} / {{ kubectl_describe }} / ... substitutions
+# and is sent uncached.
+_CACHE_BOUNDARY_MARKER = "\n## Active alert\n"
 
 
 class LLMBudgetExceeded(RuntimeError):
@@ -139,13 +161,33 @@ async def _sdk_query(prompt: str, options: dict[str, Any]) -> dict[str, Any]:
     else:
         # Plain API key
         headers["x-api-key"] = token
+    # Two-content-block message (2026-05-26 cost-cut): the static prefix
+    # of the prompt (system role + cluster context + house_style + output
+    # schema — everything up to "## Active alert") is marked with
+    # cache_control=ephemeral so Anthropic caches it for 5min. The variable
+    # tail (the alert + its context excerpts) is sent uncached. With our
+    # 5-min cron cadence we expect ~1 cache read per cache write per
+    # cluster, falling to 0 reads/write when the cluster is quiet (cache
+    # expires before next call) but climbing to many reads/write when the
+    # cluster is busy and Mode A fires repeatedly.
+    #
+    # Caller passes prompt as either a string (legacy — wrap in single
+    # uncached block) or a tuple (cached_prefix, uncached_suffix).
+    if isinstance(prompt, tuple):
+        cached_prefix, uncached_suffix = prompt
+        content_blocks = [
+            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": uncached_suffix},
+        ]
+    else:
+        content_blocks = [{"type": "text", "text": prompt}]
     body = {
         "model": options["model"],
         "max_tokens": options.get("max_tokens", 1024),
         # The rendered prompt IS the system content; we send it as the
         # user message because OAuth-bearer requests over the public
         # API are stricter about empty system slots.
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content_blocks}],
     }
     async with httpx.AsyncClient(timeout=options.get("timeout", 60.0)) as client:
         r = await client.post(_API_URL, headers=headers, content=json.dumps(body))
@@ -219,6 +261,18 @@ async def triage_alert(
             f"({input_tokens_est} input tokens at model {model})"
         )
 
+    # Split the rendered prompt at the "## Active alert" boundary so the
+    # prefix (system role + cluster context + included house_style +
+    # output_schema — all static across every Mode A call) can be cached.
+    # If the marker isn't found (someone edited the template without
+    # respecting the boundary contract), fall back to sending the whole
+    # prompt uncached — correctness over cost optimization.
+    split_at = filled.find(_CACHE_BOUNDARY_MARKER)
+    if split_at == -1:
+        prompt_payload: str | tuple[str, str] = filled
+    else:
+        prompt_payload = (filled[:split_at], filled[split_at:])
+
     # Call the API. _sdk_query returns the full response dict in the
     # new (REST) shape OR the legacy stub shape (raw string) for back-
     # compat with existing tests that monkeypatch it with a string return.
@@ -230,17 +284,21 @@ async def triage_alert(
     # cost impact (output tokens dominate cost but Sonnet 4.6 caps the
     # actual generation at what the model decides — max_tokens is a
     # ceiling, not a target).
-    raw_response = await _sdk_query(filled, {"model": model, "max_tokens": 4096})
+    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 4096})
 
     # Back-compat: tests still stub _sdk_query to return a JSON string
     # directly (the assistant-text body). Branch on type.
+    cache_read = 0
+    cache_create = 0
     if isinstance(raw_response, str):
         raw_text = raw_response
         usage_in = input_tokens_est
         usage_out = max(1, len(raw_text) // 4)
     else:
         # Real API response: {"content": [{"type":"text","text":"..."}],
-        #                     "usage": {"input_tokens":..., "output_tokens":...}}
+        #                     "usage": {"input_tokens":..., "output_tokens":...,
+        #                               "cache_creation_input_tokens":...,
+        #                               "cache_read_input_tokens":...}}
         text_blocks = [
             b.get("text", "") for b in raw_response.get("content", [])
             if b.get("type") == "text"
@@ -249,6 +307,8 @@ async def triage_alert(
         usage = raw_response.get("usage", {})
         usage_in = usage.get("input_tokens", input_tokens_est)
         usage_out = usage.get("output_tokens", max(1, len(raw_text) // 4))
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
 
     # Parse + validate
     # LLM sometimes wraps JSON in ```json ... ``` fences despite explicit
@@ -283,11 +343,22 @@ async def triage_alert(
     except Exception as e:
         raise ValueError(f"LLM output failed schema validation: {e!r}\nRaw: {raw_text[:500]}")
 
-    # Metrics from real usage (or estimates if test-stubbed)
+    # Metrics from real usage (or estimates if test-stubbed). Cache-tier
+    # cost accounting follows Anthropic's pricing:
+    #   - usage_in is BARE-input (uncached) tokens — counts at base rate
+    #   - cache_create tokens count at 1.25x base rate (one-time write cost)
+    #   - cache_read tokens count at 0.10x base rate (the big savings)
     LLM_TOKENS_INPUT.labels(mode="A").inc(usage_in)
     LLM_TOKENS_OUTPUT.labels(mode="A").inc(usage_out)
-    LLM_COST_USD.labels(mode="A").inc(
-        _input_cost_usd(model, usage_in) + _output_cost_usd(model, usage_out)
+    LLM_CACHE_READ_TOKENS.labels(mode="A").inc(cache_read)
+    LLM_CACHE_CREATE_TOKENS.labels(mode="A").inc(cache_create)
+    base_input_rate, _ = _MODEL_RATES_PER_1M.get(model, (3.0, 15.0))
+    cost = (
+        _input_cost_usd(model, usage_in)
+        + cache_create * base_input_rate * _CACHE_WRITE_MULT / 1_000_000
+        + cache_read * base_input_rate * _CACHE_READ_MULT / 1_000_000
+        + _output_cost_usd(model, usage_out)
     )
+    LLM_COST_USD.labels(mode="A").inc(cost)
 
     return finding
