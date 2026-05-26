@@ -89,21 +89,25 @@ def test_llm_auth_mode_api_key_strips_oauth(monkeypatch):
         sys.modules.pop("main", None)
 
 
-def test_llm_auth_mode_default_is_api_key(monkeypatch):
-    """LLM_AUTH_MODE unset → default 'api_key' (backwards-compatible
-    with pre-2026-05-26 deployments)."""
+def test_llm_auth_mode_default_is_oauth(monkeypatch):
+    """LLM_AUTH_MODE unset → default 'oauth'.
+
+    Flipped from 'api_key' default 2026-05-26 after the daily-digest
+    pivot made OAuth/Max the cheaper, safer default for the 06:00 EEST
+    cadence.
+    """
     import importlib
     import sys
     import os
 
     monkeypatch.delenv("LLM_AUTH_MODE", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-active")
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-stripped")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-stripped")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-active")
     sys.modules.pop("main", None)
     try:
         importlib.import_module("main")
-        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-ant-api03-active"
-        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat01-active"
+        assert os.environ.get("ANTHROPIC_API_KEY") is None
     finally:
         sys.modules.pop("main", None)
 

@@ -43,7 +43,13 @@ from cluster_agent.scheduler import Scheduler
 # footgun still applies — if both keys reach the SDK, it silently uses
 # the API key and we lose visibility. Routing first means there's only
 # ever one key in env by the time the rest of the app boots.
-_AUTH_MODE = os.environ.get("LLM_AUTH_MODE", "api_key").lower()
+# Default `oauth` — the daily-digest cadence (2 calls/day at 06:00
+# EEST, well outside operator interactive-Claude-Code hours) means the
+# OAuth/Max-subscription path is the cheaper, safer default. Operator
+# set Doppler `LLM_AUTH_MODE=oauth` 2026-05-26. The default here is
+# the fallback if the env var disappears (it shouldn't, but cheap to
+# match the operational intent).
+_AUTH_MODE = os.environ.get("LLM_AUTH_MODE", "oauth").lower()
 if _AUTH_MODE == "oauth":
     os.environ.pop("ANTHROPIC_API_KEY", None)
 elif _AUTH_MODE == "api_key":
