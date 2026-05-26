@@ -430,15 +430,22 @@ async def triage_digest(
     else:
         prompt_payload = (filled[:split_at], filled[split_at:])
 
-    # max_tokens=3000 — observed dev digest output ~1500 tokens; prd
-    # ~2500 even on noisy days. 3000 gives ~20% headroom without
-    # over-reserving against Tier-1 OTPM (10K/min) — bumping to 8192
-    # triggered persistent 429s during 2026-05-26 manual smoke tests
-    # because Anthropic charges the reservation against the per-minute
-    # output budget. A real truncation will show up as JSON parse
-    # failure (LLMBudgetExceeded won't fire on tokens, only $); we
-    # can raise this back up if we ever see one.
-    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 3000})
+    # max_tokens=8192 — generous headroom for noisy days (digest with
+    # 5+ findings can hit ~4K output tokens). Safe at our cadence: dev
+    # at HH:MM, prd at HH:MM+1, so each call sees a fresh 10K Tier-1
+    # OTPM bucket. Truncation costs us a wasted call (parser raises
+    # ValueError); over-reservation would only matter if we did
+    # multiple calls within the same minute, which production cadence
+    # doesn't.
+    #
+    # 2026-05-26 lesson: briefly lowered to 3000 chasing a 429 that
+    # we initially attributed to OTPM reservation backpressure. Deeper
+    # research (anthropics/claude-code#22876, runbook gotcha #12)
+    # revealed it was actually an account-level platform limit — empty
+    # `rate_limits={}` headers + persistence across auth-mode flips +
+    # documented behavior of Anthropic's not-shown-in-dashboard caps.
+    # Token reservation wasn't the cause; restoring 8192.
+    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 8192})
 
     cache_read = 0
     cache_create = 0
