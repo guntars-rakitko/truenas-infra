@@ -59,6 +59,19 @@ CREATE TABLE IF NOT EXISTS phase_history (
     exited_at       TEXT,
     operator_note   TEXT
 );
+
+-- Mode A tick-level dedup state (2026-05-26 cost-cut). Each cluster's
+-- last evaluated alert-set hash lets us short-circuit ticks where the
+-- active alert set is unchanged AND every alert already has an open
+-- GH issue — i.e. the whole tick would just produce the same findings
+-- the previous tick already produced, costing $0.035/run of LLM spend
+-- per cluster for zero new information.
+CREATE TABLE IF NOT EXISTS mode_a_tick_state (
+    cluster                 TEXT PRIMARY KEY,
+    last_alert_set_hash     TEXT NOT NULL,    -- sha256 of sorted (alertname, fingerprint) tuples
+    last_evaluated_at       TEXT NOT NULL,    -- ISO8601 UTC
+    all_have_open_issues    INTEGER NOT NULL  -- 0 / 1
+);
 """
 
 
