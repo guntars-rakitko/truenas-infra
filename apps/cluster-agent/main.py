@@ -46,17 +46,34 @@ async def lifespan(app: FastAPI):
     _scheduler.start()
 
     # ── Mode A registration (P1) ─────────────────────────────────────
-    # Fires every 5 min, but only on clusters with active alerts. The
-    # cluster-side kill switch (DISABLED_MODES=A) lets the operator
-    # disable Mode A at runtime via Doppler without restarting the
-    # container.
+    # Fires every 5 min, but only on clusters with active alerts. Two
+    # gates control this:
+    #   - MODE_A_CLUSTERS env (comma-separated allowlist; default "dev"
+    #     for the P1 soak per spec § 7.3). Operator widens to "dev,prd"
+    #     when promoting to P2. This gate is COMPILE-TIME for the
+    #     scheduler — clusters not in the list never get a job at all.
+    #   - DISABLED_MODES env (per-mode kill switch checked at job-fire
+    #     time). Operator flips this without restarting the container.
+    #
+    # Why two gates: P1 doctrine is "dev only" — we need a way to
+    # express "Mode A is allowed to know about this cluster" that's
+    # separate from "Mode A is currently on/off". The DISABLED_MODES
+    # switch is per-mode, not per-cluster, so it can't express it
+    # alone.
     from cluster_agent.modes.alert_triage import run as run_mode_a
     from cluster_agent.tools.alertmanager import alertmanager_alerts
 
     def count_active(cluster: str) -> int:
         return len(alertmanager_alerts(cluster, active=True, silenced=False, inhibited=False))
 
+    mode_a_clusters = {
+        c.strip()
+        for c in os.environ.get("MODE_A_CLUSTERS", "dev").split(",")
+        if c.strip()
+    }
     for cluster_name in ("dev", "prd"):
+        if cluster_name not in mode_a_clusters:
+            continue
         if f"KUBECONFIG_{cluster_name.upper()}" in os.environ:
             _scheduler.add_mode_a_with_alert_gate(
                 func=lambda c=cluster_name: run_mode_a(cluster=c),

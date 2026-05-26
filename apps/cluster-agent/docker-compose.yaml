@@ -125,6 +125,10 @@ services:
       - SANDBOX_REPO=${SANDBOX_REPO}
       - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
       - LLM_MODEL=${LLM_MODEL}
+      # MODE_A_CLUSTERS — per-cluster scheduler-time allowlist for Mode A.
+      # P1 doctrine is "dev only" (spec § 7.3); widen to "dev,prd" at P2
+      # after operator review of ≥20 findings, ≥80% useful, 0 secrets leaked.
+      - MODE_A_CLUSTERS=${MODE_A_CLUSTERS}
     working_dir: /app
     command:
       - sh
