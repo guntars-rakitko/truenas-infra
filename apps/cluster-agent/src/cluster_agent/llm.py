@@ -235,6 +235,17 @@ async def triage_alert(
     ulid = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
     data["id"] = ulid
 
+    # Override the LLM-picked cluster suffix in dedup_key. The LLM is
+    # non-deterministic about scope-id naming — observed picking `:prd`,
+    # `:monitoring`, and other values across runs for dev-cluster alerts.
+    # Each run with a fresh scope would create a NEW issue, destroying
+    # dedup. We trust the LLM for the alertname + scope-id parts but
+    # always overwrite the cluster suffix with the actual cluster.
+    if "dedup_key" in data and isinstance(data["dedup_key"], str):
+        parts = data["dedup_key"].rsplit(":", 1)
+        if len(parts) == 2:
+            data["dedup_key"] = f"{parts[0]}:{cluster}"
+
     try:
         finding = Finding(**data)
     except Exception as e:

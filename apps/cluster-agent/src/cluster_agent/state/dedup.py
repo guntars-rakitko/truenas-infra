@@ -74,6 +74,14 @@ def lookup(db: StateDB, dedup_key: str) -> DedupAction:
     if row is None:
         return DedupAction(kind=_DedupActionKind.CREATE)
     if row["state"] == "open":
+        # Orphan record handling: if a prior run's gh_issue_create failed
+        # (rate limit, transient API error, missing crypto dep, etc.) but
+        # dispatch() still wrote state=open + gh_issue_ref=None, treat as
+        # CREATE so the next fire retries instead of silently no-op'ing.
+        # First surfaced 2026-05-26 during P1 Mode A soak when the
+        # pyjwt[crypto] dep gap blocked GH creates for one fire.
+        if not row["gh_issue_ref"]:
+            return DedupAction(kind=_DedupActionKind.CREATE)
         return DedupAction(kind=_DedupActionKind.COMMENT, gh_issue_ref=row["gh_issue_ref"])
     # state == 'closed'
     if row["closed_at"]:

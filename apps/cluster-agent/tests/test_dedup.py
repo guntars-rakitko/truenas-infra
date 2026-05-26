@@ -54,3 +54,18 @@ def test_long_closed_issue_returns_create(tmp_path):
     )
     action = lookup(db, "alert:Foo:pod-0:dev")
     assert action == DedupAction.create
+
+
+def test_orphan_open_record_returns_create(tmp_path):
+    """A state=open record with gh_issue_ref=None is an orphan: dispatch
+    wrote it but the actual GH create failed. Next fire should retry
+    CREATE, not COMMENT-with-nothing.
+
+    Regression test for the 2026-05-26 P1 soak observation where the
+    pyjwt[crypto] dep gap caused gh_issue_create to fail; dedup then
+    blocked subsequent fires from retrying."""
+    db = StateDB(tmp_path / "state.db")
+    record(db, "alert:Foo:pod-0:dev", gh_issue_ref=None, state="open")
+    action = lookup(db, "alert:Foo:pod-0:dev")
+    assert action == DedupAction.create
+    assert action.gh_issue_ref is None
