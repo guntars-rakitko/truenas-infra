@@ -100,7 +100,11 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                     labels=[
                         f"mode-{finding.mode}",
                         f"severity-{finding.severity}",
-                        f"cluster-{finding.cluster}",
+                        # `kub-{cluster}` matches the Loki/Prom cluster
+                        # label convention (`cluster=kub-prd` / `kub-dev`
+                        # is what gets stamped on every series). Keeps
+                        # GH issue labels grep-compatible with metrics.
+                        f"kub-{finding.cluster}",
                     ],
                 )
                 gh_ref = f"{repo}#{resp['number']}"

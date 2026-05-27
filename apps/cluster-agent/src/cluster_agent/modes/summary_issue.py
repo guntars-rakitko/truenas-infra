@@ -341,7 +341,7 @@ def _close_previous_summaries(
     """
     try:
         issues = gh_issue_list(
-            repo, labels=["digest-summary", f"cluster-{cluster}"], state="open"
+            repo, labels=["digest-summary", f"kub-{cluster}"], state="open"
         )
     except Exception as e:
         log.warning("close_previous_summaries: list failed: %r", e)
@@ -388,6 +388,28 @@ def _markdown_to_simple_html(body_md: str) -> str:
     )
 
 
+def _cluster_scoped_from(cluster: str) -> str | None:
+    """Build a per-cluster `From` header like
+    `cluster-agent dev <noreply@w1.lv>` so the operator can tell
+    dev vs prd digests apart in the inbox without opening them.
+
+    Reads the base address from SES_FROM_DEFAULT (which may be a bare
+    `noreply@w1.lv` or a pre-formatted `Name <noreply@w1.lv>`); strips
+    any pre-existing display name and replaces it with the cluster-
+    scoped one. Returns None if SES_FROM_DEFAULT is unset — caller
+    falls back to send_email's own default behavior.
+    """
+    raw = os.environ.get("SES_FROM_DEFAULT", "").strip()
+    if not raw:
+        return None
+    # parseaddr handles both `"Name" <addr>` and bare `addr` cases.
+    from email.utils import parseaddr, formataddr
+    _, address = parseaddr(raw)
+    if not address:
+        return None
+    return formataddr((f"cluster-agent {cluster}", address))
+
+
 def emit_summary_email(
     *,
     cluster: str,
@@ -412,6 +434,7 @@ def emit_summary_email(
             subject=title,
             body_text=body_md,
             body_html=_markdown_to_simple_html(body_md),
+            from_addr=_cluster_scoped_from(cluster),
         )
         return True
     except Exception as e:
@@ -464,7 +487,7 @@ def emit_summary_issue(
             repo,
             title=title,
             body=body,
-            labels=["digest-summary", f"cluster-{cluster}", "mode-A"],
+            labels=["digest-summary", f"kub-{cluster}", "mode-A"],
         )
         log.info("emit_summary_issue: filed %s#%s",
                  repo, resp.get("number"))
