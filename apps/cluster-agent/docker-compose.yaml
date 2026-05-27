@@ -162,13 +162,29 @@ services:
       # MODE_A_BUDGET_USD — legacy from 5-min model; kept for now in case
       # we revive on-demand per-alert triage. No longer read by daily_digest.
       - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
-      # DIGEST_SUMMARY_ISSUE_ENABLED — when "true", each digest run files
-      # one extra GH issue per cluster per day containing the full
-      # alert-group landscape (incl. chronic-but-known noise the LLM
-      # didn't promote to a Finding). Zero LLM cost — pure aggregation
-      # of data already in memory. Yesterday's summary auto-closes
-      # when today's is filed. See modes/summary_issue.py.
-      - DIGEST_SUMMARY_ISSUE_ENABLED=${DIGEST_SUMMARY_ISSUE_ENABLED}
+      # DIGEST_SUMMARY — comma-separated destinations for the daily
+      # summary that lists ALL alert groups (incl. chronic-but-known
+      # noise the LLM didn't promote to a Finding). Zero LLM cost.
+      # Values: "" (disabled), "issue", "email", "email,issue".
+      # GH issue: cluster-agent-sandbox repo, label `digest-summary`,
+      # auto-closes yesterday's. Email: SES SMTP via SHARED_SES_W1_*.
+      # See modes/summary_issue.py + tools/email.py.
+      - DIGEST_SUMMARY=${DIGEST_SUMMARY}
+      - DIGEST_SUMMARY_EMAIL_TO=${DIGEST_SUMMARY_EMAIL_TO}
+      # SES SMTP credentials — sourced from Doppler keys mirrored
+      # from infrastructure/shr (single source of truth for the
+      # cluster's email sender). The cluster-agent uses these to
+      # deliver the daily-digest summary email. Same creds Alertmanager
+      # + every other system sender uses; rotate in lockstep via
+      # `doppler secrets set SHARED_SES_W1_SMTP_PASSWORD=... \
+      # --project infrastructure --config shr` (canonical) AND
+      # `doppler secrets set SES_SMTP_PASSWORD=... \
+      # --project cluster-agent --config prd` (mirror).
+      - SES_SMTP_HOST=${SES_SMTP_HOST}
+      - SES_SMTP_PORT=${SES_SMTP_PORT}
+      - SES_SMTP_USERNAME=${SES_SMTP_USERNAME}
+      - SES_SMTP_PASSWORD=${SES_SMTP_PASSWORD}
+      - SES_FROM_DEFAULT=${SES_FROM_DEFAULT}
     working_dir: /app
     command:
       - sh

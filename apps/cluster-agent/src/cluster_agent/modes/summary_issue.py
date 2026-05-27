@@ -1,4 +1,4 @@
-"""Daily-digest summary issue (2026-05-27).
+"""Daily-digest summary delivery (2026-05-27).
 
 Operator-visible companion to the curated Finding-issues. The digest
 emits 0-N Findings (LLM-judged actionable) but SEES every alert group
@@ -8,15 +8,20 @@ operator's view — even though some of them are exactly the kind of
 recurring-but-self-healing pattern that points at a real underlying
 issue nobody has investigated.
 
-This module renders ONE summary issue per cluster per day that lists
+This module produces ONE markdown summary per cluster per day listing
 ALL alert groups (and log patterns) grouped by chronicity, with a
-`rolled_into` column pointing at the Finding-issue that covers each
-group when one applies. Gated behind `DIGEST_SUMMARY_ISSUE_ENABLED`
-in Doppler so it can be disabled if it ever becomes noise itself.
+`rolled_into` column linking the Finding-issue covering each group.
 
-Cost impact: zero LLM cost (we use the AlertGroup data already in
-memory from the digest run). One extra GH API call per cluster per
-day to file the issue + one to close yesterday's.
+**Delivery destinations** controlled by Doppler key `DIGEST_SUMMARY`
+(CSV, empty = disabled):
+
+    DIGEST_SUMMARY=               # disabled, no delivery
+    DIGEST_SUMMARY=issue          # file as GH issue only
+    DIGEST_SUMMARY=email          # send as email only
+    DIGEST_SUMMARY=email,issue    # both
+
+Cost impact: zero LLM cost (uses AlertGroup data already in memory).
+1-2 extra GH API calls per delivery + 1 SMTP send per email recipient.
 
 Issue lifecycle:
   - New issue per day per cluster (label `digest-summary` +
@@ -25,17 +30,53 @@ Issue lifecycle:
     gets a fresh email notification each morning.
   - Title carries the date + raw counts so the inbox preview is
     self-explanatory without opening the issue.
+
+Email lifecycle:
+  - One email per cluster per day to `DIGEST_SUMMARY_EMAIL_TO`.
+  - Subject: same as issue title.
+  - Body: same markdown rendered as plain text + (Pre-wrapped) HTML
+    alternative so tables stay aligned in HTML-capable clients.
 """
 from __future__ import annotations
 import datetime as dt
+import html
 import logging
+import os
 from typing import Any
 
 from ..schema import AlertGroup, Finding, LogPattern
+from ..tools.email import send_email
 from ..tools.github import gh_issue_close, gh_issue_create, gh_issue_list
 
 
 log = logging.getLogger(__name__)
+
+
+def parse_destinations(raw: str | None) -> set[str]:
+    """Parse the DIGEST_SUMMARY CSV into a set of destination tokens.
+
+    Empty/unset → empty set (= disabled). Unknown tokens are silently
+    dropped with a warning log — fail-open prevents a typo from
+    breaking the whole digest.
+
+    >>> sorted(parse_destinations(""))
+    []
+    >>> sorted(parse_destinations("issue"))
+    ['issue']
+    >>> sorted(parse_destinations("email, issue"))
+    ['email', 'issue']
+    >>> sorted(parse_destinations("EMAIL,issue,bogus"))
+    ['email', 'issue']
+    """
+    valid = {"email", "issue"}
+    if not raw:
+        return set()
+    tokens = {tok.strip().lower() for tok in raw.split(",") if tok.strip()}
+    unknown = tokens - valid
+    if unknown:
+        log.warning("DIGEST_SUMMARY: ignoring unknown destination(s): %s",
+                    sorted(unknown))
+    return tokens & valid
 
 
 # Chronicity bucket order for rendering (chronic/flapping = most
@@ -326,48 +367,93 @@ def _close_previous_summaries(
     return closed
 
 
+def _markdown_to_simple_html(body_md: str) -> str:
+    """Wrap markdown body in a minimal HTML document with <pre> tags
+    so tables stay aligned in HTML-capable mail clients (Gmail wraps
+    plain-text-monospace badly otherwise).
+
+    Not a real markdown→HTML conversion — we ship the markdown verbatim
+    inside a <pre> block. Email clients that prefer HTML get readable
+    monospace; clients that fall back to plain-text get the raw
+    markdown directly. No new dependency.
+    """
+    escaped = html.escape(body_md)
+    return (
+        "<!doctype html><html><body>"
+        '<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, '
+        'Consolas, monospace; font-size: 12px; line-height: 1.45; '
+        'white-space: pre-wrap;">'
+        f"{escaped}"
+        "</pre></body></html>"
+    )
+
+
+def emit_summary_email(
+    *,
+    cluster: str,
+    title: str,
+    body_md: str,
+) -> bool:
+    """Deliver the daily summary as an email.
+
+    Returns True on success, False on any failure (which is logged but
+    never raised — summary delivery is best-effort).
+    """
+    to = os.environ.get("DIGEST_SUMMARY_EMAIL_TO", "").strip()
+    if not to:
+        log.warning(
+            "emit_summary_email: DIGEST_SUMMARY_EMAIL_TO is unset; "
+            "cannot deliver %s email", cluster,
+        )
+        return False
+    try:
+        send_email(
+            to=to,
+            subject=title,
+            body_text=body_md,
+            body_html=_markdown_to_simple_html(body_md),
+        )
+        return True
+    except Exception as e:
+        log.warning("emit_summary_email: send failed for %s: %r", cluster, e)
+        return False
+
+
+def _build_summary_title(*, cluster: str, groups: list[AlertGroup],
+                         findings: list[Finding]) -> str:
+    """Title shared by both the GH issue title and email subject.
+
+    Excludes Watchdog from counts so the inbox-preview matches what
+    the operator actually sees in the body's tables.
+    """
+    today_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    non_watchdog = [g for g in groups if g.alertname != "Watchdog"]
+    return (
+        f"Daily digest — {cluster} {today_iso} "
+        f"({len(non_watchdog)} alerts · {len(findings)} actionable · "
+        f"{max(0, len(non_watchdog) - len(findings))} background)"
+    )
+
+
 def emit_summary_issue(
     *,
     repo: str,
     cluster: str,
-    groups: list[AlertGroup],
-    log_patterns: list[LogPattern],
-    findings: list[Finding],
-    dispatch_refs: dict[str, str],
-    window_hours: int,
-    model: str,
-    digest_summary: str,
+    title: str,
+    body: str,
 ) -> dict[str, Any] | None:
     """Create today's summary issue (and close yesterday's).
 
-    `dispatch_refs` maps finding.id → "owner/repo#NN" so the summary
-    can hyperlink to the per-finding issues just created.
+    Title + body are pre-rendered by the caller (typically via
+    `_build_summary_title` + `render_summary_body`), so the same
+    rendered output can be reused for the email path.
 
     Returns the GH API response dict on success, None on failure.
     Failure to file the summary should NOT fail the entire digest run
     — the actionable findings are the primary deliverable; the summary
     is a UX nicety. All exceptions caught + logged.
     """
-    today = dt.datetime.now(dt.timezone.utc)
-    today_iso = today.strftime("%Y-%m-%d")
-    # Exclude Watchdog from the title count to match the body's
-    # exclusion. "background" = non-actionable, non-Watchdog groups.
-    non_watchdog = [g for g in groups if g.alertname != "Watchdog"]
-    title = (
-        f"Daily digest — {cluster} {today_iso} "
-        f"({len(non_watchdog)} alerts · {len(findings)} actionable · "
-        f"{max(0, len(non_watchdog) - len(findings))} background)"
-    )
-    body = render_summary_body(
-        cluster=cluster,
-        groups=groups,
-        log_patterns=log_patterns,
-        findings=findings,
-        dispatch_refs=dispatch_refs,
-        window_hours=window_hours,
-        model=model,
-        digest_summary=digest_summary,
-    )
+    today_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
     closed = _close_previous_summaries(
         repo=repo, cluster=cluster, today_iso=today_iso
     )
@@ -386,3 +472,62 @@ def emit_summary_issue(
     except Exception as e:
         log.warning("emit_summary_issue: create failed: %r", e)
         return None
+
+
+def emit_summary(
+    *,
+    repo: str,
+    cluster: str,
+    groups: list[AlertGroup],
+    log_patterns: list[LogPattern],
+    findings: list[Finding],
+    dispatch_refs: dict[str, str],
+    window_hours: int,
+    model: str,
+    digest_summary: str,
+) -> dict[str, bool]:
+    """Top-level summary-delivery orchestrator.
+
+    Reads `DIGEST_SUMMARY` from env (CSV: "email", "issue",
+    "email,issue", or empty = disabled), renders title + body once,
+    and dispatches to each requested destination. Returns a dict
+    mapping destination → success bool for caller visibility.
+    Both destinations are best-effort; an exception in one does
+    NOT block the other or fail the digest.
+    """
+    destinations = parse_destinations(os.environ.get("DIGEST_SUMMARY"))
+    if not destinations:
+        return {}
+
+    title = _build_summary_title(cluster=cluster, groups=groups, findings=findings)
+    body = render_summary_body(
+        cluster=cluster,
+        groups=groups,
+        log_patterns=log_patterns,
+        findings=findings,
+        dispatch_refs=dispatch_refs,
+        window_hours=window_hours,
+        model=model,
+        digest_summary=digest_summary,
+    )
+
+    results: dict[str, bool] = {}
+    if "issue" in destinations:
+        try:
+            resp = emit_summary_issue(
+                repo=repo, cluster=cluster, title=title, body=body,
+            )
+            results["issue"] = resp is not None
+        except Exception as e:
+            log.warning("emit_summary[issue]: %r", e)
+            results["issue"] = False
+    if "email" in destinations:
+        try:
+            results["email"] = emit_summary_email(
+                cluster=cluster, title=title, body_md=body,
+            )
+        except Exception as e:
+            log.warning("emit_summary[email]: %r", e)
+            results["email"] = False
+    log.info("emit_summary %s: %s", cluster, results)
+    return results
