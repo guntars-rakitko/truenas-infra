@@ -89,10 +89,12 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "B2_APP_KEY":                    "B2_APP_KEY",
         "ENABLED":                       "ENABLED",
         "DISABLED_MODES":                "DISABLED_MODES",
-        "AUTOMERGE_DISABLED_REPOS":      "AUTOMERGE_DISABLED_REPOS",
-        # Mode A (P1 / now P2 daily-digest)
+        # AUTOMERGE_DISABLED_REPOS (Mode J reservation) +
+        # MODE_A_BUDGET_USD (P1 5-min legacy) removed 2026-05-27 during
+        # post-P3 cleanup. Re-add if Mode J or on-demand per-alert
+        # triage is ever revived.
+        # Mode A (P2 daily-digest)
         "SANDBOX_REPO":                  "SANDBOX_REPO",
-        "MODE_A_BUDGET_USD":             "MODE_A_BUDGET_USD",   # legacy 5-min model; unused by daily_digest
         "LLM_MODEL":                     "LLM_MODEL",
         "MODE_A_CLUSTERS":               "MODE_A_CLUSTERS",
         # Daily-digest (P2 — 2026-05-26 pivot from 5-min polling)

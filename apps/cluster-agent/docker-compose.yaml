@@ -80,7 +80,9 @@ services:
       # ── Identity / kill switches (source: cluster-agent/prd)
       - ENABLED=${ENABLED}
       - DISABLED_MODES=${DISABLED_MODES}
-      - AUTOMERGE_DISABLED_REPOS=${AUTOMERGE_DISABLED_REPOS}
+      # AUTOMERGE_DISABLED_REPOS removed 2026-05-27 — was reserved for
+      # Mode J (Renovate auto-merge) which was never spec'd. If Mode J
+      # is ever built, re-add the Doppler key + the line above.
       # ── Claude LLM auth (Doppler-driven toggle, 2026-05-26)
       # Both auth tokens are passed in unconditionally; the active one
       # is chosen by LLM_AUTH_MODE ("oauth" or "api_key"). main.py reads
@@ -159,9 +161,9 @@ services:
       - DAILY_DIGEST_MINUTE=${DAILY_DIGEST_MINUTE}
       - DAILY_DIGEST_WINDOW_HOURS=${DAILY_DIGEST_WINDOW_HOURS}
       - DAILY_DIGEST_BUDGET_USD=${DAILY_DIGEST_BUDGET_USD}
-      # MODE_A_BUDGET_USD — legacy from 5-min model; kept for now in case
-      # we revive on-demand per-alert triage. No longer read by daily_digest.
-      - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
+      # MODE_A_BUDGET_USD removed 2026-05-27 — was a P1-only key from
+      # the 5-min polling model; daily_digest uses DAILY_DIGEST_BUDGET_USD.
+      # If on-demand per-alert triage is ever revived, re-introduce.
       # DIGEST_SUMMARY — comma-separated destinations for the daily
       # summary that lists ALL alert groups (incl. chronic-but-known
       # noise the LLM didn't promote to a Finding). Zero LLM cost.
