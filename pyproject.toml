@@ -16,7 +16,7 @@ dependencies = [
     "pydantic>=2.6",
     "structlog>=24.4.0",
     "PyYAML>=6.0.3",
-    "click>=8.1",
+    "click>=8.4.1",
 ]
 
 [project.optional-dependencies]
