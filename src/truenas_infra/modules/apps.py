@@ -100,6 +100,19 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "DAILY_DIGEST_MINUTE":           "DAILY_DIGEST_MINUTE",   # default "0"
         "DAILY_DIGEST_WINDOW_HOURS":     "DAILY_DIGEST_WINDOW_HOURS",   # default "24"
         "DAILY_DIGEST_BUDGET_USD":       "DAILY_DIGEST_BUDGET_USD",     # default "0.50"
+        # Summary delivery (P3+ — 2026-05-27). CSV destinations:
+        # "" disabled, "issue", "email", or "email,issue".
+        "DIGEST_SUMMARY":                "DIGEST_SUMMARY",
+        "DIGEST_SUMMARY_EMAIL_TO":       "DIGEST_SUMMARY_EMAIL_TO",
+        # SES SMTP credentials (mirrored from infrastructure/shr
+        # SHARED_SES_W1_* — same creds Alertmanager + everything else
+        # uses for w1.lv outbound). Rotate in lockstep with the
+        # canonical copy in infrastructure/shr.
+        "SES_SMTP_HOST":                 "SES_SMTP_HOST",
+        "SES_SMTP_PORT":                 "SES_SMTP_PORT",
+        "SES_SMTP_USERNAME":             "SES_SMTP_USERNAME",
+        "SES_SMTP_PASSWORD":             "SES_SMTP_PASSWORD",
+        "SES_FROM_DEFAULT":              "SES_FROM_DEFAULT",
     },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token
