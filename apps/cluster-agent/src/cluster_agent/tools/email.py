@@ -46,7 +46,17 @@ def _required_env(key: str) -> str:
     return val
 
 
-@audit(tool="email_send")
+@audit(
+    tool="email_send",
+    # Body + subject can contain raw log excerpts + kubectl describe
+    # output (un-redacted per current digest pipeline; see P4 redaction
+    # follow-up). Subject is operator-readable but unsuitable for the
+    # audit log because it includes the daily-digest title which is
+    # sourced from LLM output. Redact all of them — the email
+    # delivery itself + recipient address are enough for the audit
+    # trail; the body content is in the GH issue anyway.
+    redact=["body_text", "body_html", "subject"],
+)
 def send_email(
     *,
     to: str,

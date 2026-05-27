@@ -53,3 +53,50 @@ def test_gh_list_prs_returns_array(monkeypatch):
     prs = gh_list_prs("guntars-rakitko/kube-infra")
     assert len(prs) == 1
     assert prs[0]["title"] == "test pr"
+
+
+def test_gh_issue_create_refuses_non_allowlisted_repo(monkeypatch):
+    """Writes to a non-allowlisted repo must raise PermissionError BEFORE
+    any HTTP call. Belt-and-suspenders against env-typo / LLM-controlled
+    repo escape (P4 security audit follow-up, 2026-05-27)."""
+    import cluster_agent.tools.github as gh
+
+    # Patch _gh_headers so we don't need real auth; the assertion should
+    # fire before any header lookup.
+    monkeypatch.setattr(gh, "_gh_headers", lambda: {})
+
+    try:
+        gh.gh_issue_create("guntars-rakitko/kube-infra", "test", "body")
+    except PermissionError as e:
+        assert "kube-infra" in str(e)
+        assert "_WRITE_ALLOWED_REPOS" in str(e)
+    else:
+        raise AssertionError("expected PermissionError on non-allowlisted repo")
+
+
+def test_gh_issue_comment_refuses_non_allowlisted_repo(monkeypatch):
+    """gh_issue_comment must also enforce the allowlist (used by
+    _close_previous_summaries comment + dispatch comment paths)."""
+    import cluster_agent.tools.github as gh
+    monkeypatch.setattr(gh, "_gh_headers", lambda: {})
+
+    try:
+        gh.gh_issue_comment("guntars-rakitko/giks", 1, "body")
+    except PermissionError as e:
+        assert "guntars-rakitko/giks" in str(e)
+    else:
+        raise AssertionError("expected PermissionError on non-allowlisted repo")
+
+
+def test_gh_issue_close_refuses_non_allowlisted_repo(monkeypatch):
+    """gh_issue_close must also enforce the allowlist (close ops are
+    no less destructive than create)."""
+    import cluster_agent.tools.github as gh
+    monkeypatch.setattr(gh, "_gh_headers", lambda: {})
+
+    try:
+        gh.gh_issue_close("guntars-rakitko/truenas-infra", 1)
+    except PermissionError as e:
+        assert "truenas-infra" in str(e)
+    else:
+        raise AssertionError("expected PermissionError on non-allowlisted repo")

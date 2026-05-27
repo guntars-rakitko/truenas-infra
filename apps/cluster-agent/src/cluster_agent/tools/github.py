@@ -132,7 +132,49 @@ def gh_get_commit(repo: str, sha: str) -> dict[str, Any]:
 
 # ── Write tools (P0 lands them, P1+ exercises them) ──────────────────────
 
-@audit(tool="gh_issue_create")
+# Hard-coded allowlist of repos this module may WRITE to. The GH App
+# `cluster-agent[bot]` carries Issues RW + PRs RW on every repo it's
+# installed in; this in-code gate is belt-and-suspenders against:
+#   - Doppler typo on `SANDBOX_REPO` redirecting writes to a real repo
+#   - Future code path taking `repo` from an LLM-controlled string
+#   - Container env override via compromise
+# Read tools (gh_issue_list, gh_get_pr) are NOT scoped — read-only is
+# fine even cross-repo and we need it for cross-cluster awareness in
+# future modes.
+# To add a new sandbox repo (e.g. once Mode G's backup-verify reports
+# graduate beyond the agent-sandbox), add it here AND uninstall the
+# GH App from anywhere it shouldn't write.
+_WRITE_ALLOWED_REPOS: frozenset[str] = frozenset({
+    "guntars-rakitko/cluster-agent-sandbox",
+})
+
+
+def _assert_write_allowed(repo: str) -> None:
+    """Raise if the target repo isn't in the write allowlist.
+
+    Called by every write tool below. Raises a clear PermissionError
+    that the dispatch layer's try/except can log + skip without
+    pretending the issue was filed (vs e.g. a 403 from GitHub which
+    looks more like a transient auth issue)."""
+    if repo not in _WRITE_ALLOWED_REPOS:
+        raise PermissionError(
+            f"cluster-agent attempted GH write to {repo!r} which is "
+            f"NOT in _WRITE_ALLOWED_REPOS={sorted(_WRITE_ALLOWED_REPOS)}. "
+            f"This is an in-code safety gate against env-typo + LLM-"
+            f"controlled-repo escape. Edit tools/github.py to add a "
+            f"new allowed repo."
+        )
+
+
+@audit(
+    tool="gh_issue_create",
+    # `body` can contain raw log excerpts + kubectl describe output
+    # (un-redacted per current digest pipeline). The audit log is
+    # written to stdout → captured by Loki → indexed. Redact body to
+    # keep secrets out of the log pipeline; title stays so operator
+    # can still see WHICH issue was created from audit alone.
+    redact=["body"],
+)
 def gh_issue_create(
     repo: str,
     title: str,
@@ -140,6 +182,7 @@ def gh_issue_create(
     *,
     labels: list[str] | None = None,
 ) -> dict[str, Any]:
+    _assert_write_allowed(repo)
     payload: dict[str, Any] = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
@@ -153,8 +196,9 @@ def gh_issue_create(
     return r.json()
 
 
-@audit(tool="gh_issue_comment")
+@audit(tool="gh_issue_comment", redact=["body"])
 def gh_issue_comment(repo: str, number: int, body: str) -> dict[str, Any]:
+    _assert_write_allowed(repo)
     r = httpx.post(
         f"{_GH_API}/repos/{repo}/issues/{number}/comments",
         json={"body": body},
@@ -213,6 +257,7 @@ def gh_issue_close(
 ) -> dict[str, Any]:
     """Close an issue. If `comment` is given, post it first (so the
     close action shows up below the comment in the issue timeline)."""
+    _assert_write_allowed(repo)
     if comment:
         gh_issue_comment(repo, number, comment)
     r = httpx.patch(
