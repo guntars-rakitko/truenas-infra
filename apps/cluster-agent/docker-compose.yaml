@@ -122,7 +122,12 @@ services:
       # to reach Loki/Prom/AM via the apiserver services/proxy endpoint.
       - KUBECONFIG_DEV=${KUBECONFIG_DEV}
       - KUBECONFIG_PRD=${KUBECONFIG_PRD}
-      - KUBECONFIG_TEST_RESTORE_DEV=${KUBECONFIG_TEST_RESTORE_DEV}
+      # KUBECONFIG_TEST_RESTORE_DEV removed 2026-05-27 (post-P3 wrap):
+      # the SA token targeted the `cluster-agent-tests` ns on dev,
+      # provisioned in P0 Task 2 for Mode G backup-verification.
+      # Mode G is paused; the namespace + Role are removed in
+      # kube-infra (same date). Re-provision via P0 Task 2 + 4 if
+      # Mode G is ever revived.
       # ── Observability — Loki/Prom/AM + Grafana annotation API all reach
       # cluster services via apiserver-proxy (kubeconfig SA token), so no
       # separate annotation auth token is needed. Grafana itself runs in
@@ -130,11 +135,13 @@ services:
       # proxy + auto-creates the cluster-agent user with Admin role.
       # (Old GRAFANA_API_TOKEN_{DEV,PRD} env vars dropped 2026-05-26 with
       # PR #42 — they were dead since the apiserver-proxy switch.)
-      # ── S3 (Mode G backup verification)
-      - MINIO_NAS_KEY_ID=${MINIO_NAS_KEY_ID}
-      - MINIO_NAS_SECRET_KEY=${MINIO_NAS_SECRET_KEY}
-      - B2_KEY_ID=${B2_KEY_ID}
-      - B2_APP_KEY=${B2_APP_KEY}
+      # ── S3 (Mode G backup verification) — keys removed 2026-05-27
+      # (post-P3 wrap): MINIO_NAS_KEY_ID / MINIO_NAS_SECRET_KEY /
+      # B2_KEY_ID / B2_APP_KEY were provisioned in P0 for the planned
+      # Mode G backup-verification path. Mode G is paused; corresponding
+      # MinIO `cluster-agent` user removed from nas-{dev,prd}, B2 app
+      # key revoked. Re-provision via setup-minio-users.sh + Doppler
+      # if Mode G is ever revived.
       # ── Runtime
       # /sbin is REQUIRED — `apk` lives at /sbin/apk on alpine, and the
       # startup script's `apk add kubectl mc curl jq sqlite` line

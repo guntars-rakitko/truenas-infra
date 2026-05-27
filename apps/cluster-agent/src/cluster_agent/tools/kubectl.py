@@ -29,8 +29,9 @@ class ToolError(RuntimeError):
 
 
 # Each kubectl invocation needs a kubeconfig. The cluster-agent has
-# per-cluster kubeconfigs in env vars (KUBECONFIG_DEV / KUBECONFIG_PRD /
-# KUBECONFIG_TEST_RESTORE_DEV), base64-encoded YAML. The tool decodes
+# per-cluster kubeconfigs in env vars (KUBECONFIG_DEV / KUBECONFIG_PRD),
+# base64-encoded YAML. (KUBECONFIG_TEST_RESTORE_DEV removed 2026-05-27
+# along with Mode G reservations.) The tool decodes
 # them lazily to temp files on first use per process and re-uses the
 # paths thereafter — kubectl always invoked with `--kubeconfig=<path>`
 # so it never has to merge files or rely on a default ~/.kube/config
