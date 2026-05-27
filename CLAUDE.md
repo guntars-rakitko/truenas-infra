@@ -427,6 +427,44 @@ prd at `+1 minute` so the second call hits the first's prompt cache
 - `DAILY_DIGEST_WINDOW_HOURS` (default `24`)
 - `DAILY_DIGEST_BUDGET_USD` (default `0.50` — pre-call cost gate per run)
 
+**Daily summary delivery (P3+ extension, 2026-05-27).** In addition
+to the curated per-Finding GH issues the digest already files, each
+run can ALSO deliver a "full landscape" summary listing *every*
+alert group the LLM saw (including chronic-but-known noise it didn't
+escalate). Surfaces the recurring-but-self-healing patterns that
+otherwise vanish from operator view. Zero LLM cost — pure aggregation
+of `AlertGroup` data already in memory.
+
+Destinations are CSV-controlled via Doppler `DIGEST_SUMMARY`:
+
+| Value | Behavior |
+|---|---|
+| _(empty)_ | disabled — no summary delivery |
+| `issue` | GH issue only (label `digest-summary` + `kub-{dev,prd}` + `mode-A`) |
+| `email` | email only (to `DIGEST_SUMMARY_EMAIL_TO`, From: `cluster-agent {cluster} <noreply@w1.lv>`) |
+| `email,issue` | both — current default |
+
+Per-day issue: title carries date + counts (e.g. `Daily digest — prd
+2026-05-27 (26 alerts · 3 actionable · 23 background)`) for inbox
+preview. Yesterday's auto-closes when today's is filed. Body groups
+alerts by chronicity (chronic / flapping / active / self-healed /
+transient), with a `rolled into` column linking back to the per-
+Finding issues. Watchdog is silently excluded from the rendering.
+
+Email body is the same markdown rendered as plain-text + HTML
+alternative (HTML wraps in `<pre>` so monospace tables stay aligned
+in Gmail / Outlook). SES SMTP credentials are mirrored from
+`infrastructure/shr` `SHARED_SES_W1_*` into `cluster-agent/prd` as
+`SES_SMTP_*` + `SES_FROM_DEFAULT` — rotate in lockstep with the
+canonical copy. Implementation: `modes/summary_issue.py` orchestrator
++ `tools/email.py` stdlib smtplib wrapper.
+
+**Label naming convention.** All GH issues created by the agent (both
+per-Finding and per-digest-summary) carry a cluster label of the form
+`kub-{dev,prd}` — matching the cluster label stamped on every Loki/
+Prometheus series. A GitHub inbox query `label:kub-prd` lines up with
+PromQL `{cluster="kub-prd"}` — same identifier, same vocabulary.
+
 **Doppler keys** (`cluster-agent/prd`):
 
 - `LLM_AUTH_MODE` — `oauth` | `api_key`. Source-of-truth for which
@@ -447,16 +485,30 @@ prd at `+1 minute` so the second call hits the first's prompt cache
   base64-encoded kubeconfigs with SA tokens. These ALSO carry the auth
   the agent uses to reach Loki / Prometheus / Alertmanager / Grafana
   via apiserver-proxy — no separate annotation-auth token.
-- `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for the future Mode G
-  backup-verification mode.
-- `B2_KEY_ID` / `B2_APP_KEY` — same, for off-site verification.
+- `GRAFANA_API_TOKEN_DEV` / `_PRD` — for `grafana_post_annotation` tool
+  (creates findings as Grafana annotations on the dev/prd Grafana).
+- `DIGEST_SUMMARY` (CSV, `email,issue` currently) /
+  `DIGEST_SUMMARY_EMAIL_TO` — per-day summary delivery config (see
+  "Daily summary delivery" subsection above).
+- `SES_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` /
+  `SES_FROM_DEFAULT` — SES SMTP creds, mirrored from
+  `infrastructure/shr` `SHARED_SES_W1_*`. Rotate in lockstep with the
+  canonical copy.
 - `SANDBOX_REPO` / `LLM_MODEL` — Mode A config (sandbox repo for digest
   issues, model name for `_MODEL_RATES_PER_1M` lookup).
-- `MODE_A_BUDGET_USD` — legacy from 5-min model; unused by daily_digest
-  (which uses `DAILY_DIGEST_BUDGET_USD`). Kept in case on-demand
-  per-alert triage is revived.
-- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` /
-  `AUTOMERGE_DISABLED_REPOS` — runtime kill switches.
+- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` — runtime kill switches.
+
+**Reserved-for-future keys (paused after 2026-05-27 wrap):**
+- `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for Mode G
+  (backup verification, deferred — see roadmap-reshape spec)
+- `B2_KEY_ID` / `B2_APP_KEY` — same, for off-site verification
+- `KUBECONFIG_TEST_RESTORE_DEV` — for Mode G's ephemeral test-restore
+  namespace SA token
+
+**Removed 2026-05-27** (post-P3 cleanup; re-add if reviving the
+related mode): `AUTOMERGE_DISABLED_REPOS` (Mode J never spec'd),
+`MODE_A_BUDGET_USD` (P1 5-min legacy, replaced by
+`DAILY_DIGEST_BUDGET_USD`).
 
 ---
 

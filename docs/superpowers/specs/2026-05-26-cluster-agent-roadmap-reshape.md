@@ -1,5 +1,17 @@
 # cluster-agent — roadmap reshape (2026-05-26)
 
+> **STATUS as of 2026-05-27 wrap:** All build work paused. P3 +
+> P3.5 are live in production (daily digest + log mining + summary
+> issue/email + per-cluster sender + `kub-*` labels). P4 (Mode G —
+> backup verification) was brainstormed in a follow-up session but
+> NOT spec'd — operator chose to let the live system soak before
+> opening a new build. Reserved infrastructure (MinIO/B2 Doppler
+> keys, `cluster-agent-tests` ns, mc tool stubs, schema mode slots)
+> stays in place. See `wiki/docs/cluster-agent/phase-history.md`
+> "P3.5 — Summary delivery + auth fix" and "P4+ — paused" sections
+> for the current state. Re-open this doc when ready to plan the
+> next mode.
+
 Strategic audit + replan after the P1 soak surfaced that the agent's
 original 9-mode design was partially shaped by industry conventions
 that don't fit a **solo-operator homelab**. This memo captures what
