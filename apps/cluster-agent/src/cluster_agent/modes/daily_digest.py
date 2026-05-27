@@ -27,6 +27,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from ..emit.metrics import (
@@ -41,7 +42,12 @@ from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
 from ..tools.loki import loki_query, loki_metric_query_range
 from ..tools.kubectl import kubectl_describe, ToolError
 from ..dispatch import dispatch
-from .digest_aggregator import aggregate, aggregate_log_patterns, enrich_with_annotations
+from .digest_aggregator import (
+    aggregate,
+    aggregate_log_patterns,
+    enrich_with_annotations,
+    _redact,
+)
 
 
 log = logging.getLogger(__name__)
@@ -216,7 +222,22 @@ async def run_async(*, cluster: str) -> DigestResult:
 def _gather_context_for_chronic(groups: list, cluster: str) -> str:
     """Pull kubectl describe + a small Loki excerpt for each chronic/
     flapping/active alert group. Self-healed and transient groups get
-    no context — they're presumed noise and not worth API calls."""
+    no context — they're presumed noise and not worth API calls.
+
+    **All raw output is passed through `_redact()`** before being
+    appended to the context. The context blob flows downstream into:
+    the LLM prompt, GH issue bodies (public-by-default sandbox repo),
+    the SES email body, and the audit log. Any of these is an
+    unacceptable secret-leak surface for un-redacted log/describe
+    text. P4 hardening (2026-05-27): redaction added after the security
+    audit flagged that `_redact()` was only applied to the P3
+    tripwire path, not the per-chronic-alert context path.
+    """
+    # Namespace label is RFC-1123 (`[a-z0-9-]{1,63}`), but defensively
+    # validate before string-interpolating into LogQL to bound any
+    # malformed-label blast radius. See security audit P4 follow-up.
+    _NS_RE = re.compile(r"^[a-z0-9-]{1,63}$")
+
     lines: list[str] = []
     investigate_chronicities = {"chronic", "flapping", "active"}
     for g in groups:
@@ -226,12 +247,19 @@ def _gather_context_for_chronic(groups: list, cluster: str) -> str:
         pod = g.labels.get("pod")
         if not namespace:
             continue
+        if not _NS_RE.fullmatch(namespace):
+            log.warning(
+                "digest %s: skipping chronic %s — namespace %r doesn't "
+                "match RFC-1123, refusing to interpolate into LogQL",
+                cluster, g.alertname, namespace,
+            )
+            continue
         lines.append(f"\n### {g.alertname} ({g.fingerprint}) — {g.chronicity}")
         # kubectl describe pod if we have one, otherwise namespace
         if pod:
             try:
                 desc = kubectl_describe(cluster, "pods", pod, namespace=namespace)
-                lines.append(f"```\n{desc[:1500]}\n```")
+                lines.append(f"```\n{_redact(desc[:1500])}\n```")
             except ToolError as e:
                 lines.append(f"_(kubectl describe failed: {e})_")
         # Loki — last 30min of logs from the namespace
@@ -245,7 +273,7 @@ def _gather_context_for_chronic(groups: list, cluster: str) -> str:
             if log_lines:
                 lines.append("Recent error/warning log lines:")
                 lines.append("```")
-                lines.extend(log_lines)
+                lines.extend(_redact(line) for line in log_lines)
                 lines.append("```")
         except Exception as e:
             lines.append(f"_(loki query failed: {e})_")
