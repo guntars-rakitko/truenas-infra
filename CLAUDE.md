@@ -371,15 +371,52 @@ in `os.environ` at startup. Operator flips billing modes with a single
 Doppler command — no compose edit:
 
 ```sh
-doppler secrets set LLM_AUTH_MODE=oauth --project cluster-agent --config prd
+doppler secrets set LLM_AUTH_MODE=api_key --project cluster-agent --config prd
 ./manage.sh phase apps --apply       # env hash changed → container recreated
 ```
 
-Current default: `oauth` — daily-digest cadence at 06:00 EEST is in
-the operator-asleep window, so the shared-Max-pool conflict that
-drove us to API key during P1 5-min polling is no longer a real
-concern. Flip to `api_key` if 429s persist (known Anthropic
-account-level limit, see runbook gotcha #12).
+**Current default: `api_key` — and OAuth is no longer a viable path
+for cluster-agent.** Flipped 2026-05-27 after discovering OAuth has
+effectively never worked for this use case. Two compounding
+Anthropic-side issues block it:
+
+1. **TOS restriction (Feb 2026):** Anthropic's Authentication and
+   Credential Use policy explicitly restricts OAuth tokens
+   (`sk-ant-oat01-*`) to Claude Code and claude.ai. Calling
+   `api.anthropic.com/v1/messages` directly with the bearer token —
+   which is exactly what `llm.py:_sdk_query` does — is a TOS
+   violation pattern and gets hard-blocked at the auth gate.
+2. **Billing-system bug ([anthropics/claude-code#45326](https://github.com/anthropics/claude-code/issues/45326)):** Max plan
+   subscribers without a "promotional credit claim flag" get
+   silently 429'd on Sonnet/Opus calls via OAuth even with balance
+   available. The error masquerades as a rate limit
+   (`{"type":"rate_limit_error","message":"Error"}`) but no usage
+   ever counts and the dashboard shows zero pressure — making it
+   indistinguishable from a genuine cap until you read the
+   upstream issue. (Haiku reportedly still works on the OAuth path,
+   confirming this is a billing-flag bug, not a real rate limit.)
+
+The combination meant cluster-agent's "successful" digests since
+2026-05-26 must have all billed against the API key fallback inside
+`llm.py:154` (`os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or
+os.environ.get("ANTHROPIC_API_KEY")`) — the OAuth branch never reached
+the LLM. Operator confirmed (2026-05-27) Max-subscription usage
+metrics on claude.ai were always near zero, consistent with
+cluster-agent never actually consuming from that pool.
+
+Verified working under `LLM_AUTH_MODE=api_key` 2026-05-27 04:47 UTC
+via manual in-process dev digest fire (14 alert groups, 2 findings
+emitted, real LLM call billed at ~$0.20 against the API account).
+
+Cost on `api_key`: ~$0.25-0.50/day on Sonnet 4.6 = ~$10/month.
+Max subscription does not offset this (it can't — OAuth is blocked).
+
+**Do NOT flip back to oauth** until either (a) Anthropic fixes
+#45326 AND amends the TOS to allow direct API use, or (b) the
+agent is refactored to invoke the `claude` CLI as a subprocess
+(claude-agent-sdk pattern) — which IS within the TOS-allowed
+Claude Code usage path. The bare-REST shortcut in `llm.py` is
+incompatible with OAuth going forward.
 
 **Cron timing.** dev fires at `DAILY_DIGEST_HOUR:DAILY_DIGEST_MINUTE`,
 prd at `+1 minute` so the second call hits the first's prompt cache
