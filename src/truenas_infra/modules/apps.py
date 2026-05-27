@@ -100,6 +100,7 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "DAILY_DIGEST_MINUTE":           "DAILY_DIGEST_MINUTE",   # default "0"
         "DAILY_DIGEST_WINDOW_HOURS":     "DAILY_DIGEST_WINDOW_HOURS",   # default "24"
         "DAILY_DIGEST_BUDGET_USD":       "DAILY_DIGEST_BUDGET_USD",     # default "0.50"
+        "DIGEST_SUMMARY_ISSUE_ENABLED":  "DIGEST_SUMMARY_ISSUE_ENABLED", # default "false"
     },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token

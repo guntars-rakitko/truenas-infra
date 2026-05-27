@@ -162,6 +162,13 @@ services:
       # MODE_A_BUDGET_USD — legacy from 5-min model; kept for now in case
       # we revive on-demand per-alert triage. No longer read by daily_digest.
       - MODE_A_BUDGET_USD=${MODE_A_BUDGET_USD}
+      # DIGEST_SUMMARY_ISSUE_ENABLED — when "true", each digest run files
+      # one extra GH issue per cluster per day containing the full
+      # alert-group landscape (incl. chronic-but-known noise the LLM
+      # didn't promote to a Finding). Zero LLM cost — pure aggregation
+      # of data already in memory. Yesterday's summary auto-closes
+      # when today's is filed. See modes/summary_issue.py.
+      - DIGEST_SUMMARY_ISSUE_ENABLED=${DIGEST_SUMMARY_ISSUE_ENABLED}
     working_dir: /app
     command:
       - sh

@@ -170,3 +170,56 @@ def gh_pr_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     # PR comments and issue comments share the same GH API endpoint —
     # the URL doesn't care whether the number is a PR or an issue.
     return gh_issue_comment(repo, number, body)
+
+
+@audit(tool="gh_issue_list")
+def gh_issue_list(
+    repo: str,
+    *,
+    labels: list[str] | None = None,
+    state: str = "open",
+    per_page: int = 30,
+) -> list[dict[str, Any]]:
+    """List issues in a repo, optionally filtered by labels.
+
+    Used by the daily-digest summary-issue path to find yesterday's
+    summary so it can be auto-closed when today's is filed. Labels
+    are comma-joined as the API expects (AND-match across all given
+    labels). PRs are excluded — GH's /issues endpoint returns both
+    but each item carries a `pull_request` key only for PRs.
+
+    Returns the JSON list; caller filters further as needed.
+    """
+    params: dict[str, Any] = {"state": state, "per_page": per_page}
+    if labels:
+        params["labels"] = ",".join(labels)
+    r = httpx.get(
+        f"{_GH_API}/repos/{repo}/issues",
+        params=params,
+        headers=_gh_headers(),
+        timeout=15,
+    )
+    r.raise_for_status()
+    # Filter out PRs — the /issues endpoint mixes them in.
+    return [item for item in r.json() if "pull_request" not in item]
+
+
+@audit(tool="gh_issue_close")
+def gh_issue_close(
+    repo: str,
+    number: int,
+    *,
+    comment: str | None = None,
+) -> dict[str, Any]:
+    """Close an issue. If `comment` is given, post it first (so the
+    close action shows up below the comment in the issue timeline)."""
+    if comment:
+        gh_issue_comment(repo, number, comment)
+    r = httpx.patch(
+        f"{_GH_API}/repos/{repo}/issues/{number}",
+        json={"state": "closed"},
+        headers=_gh_headers(),
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()

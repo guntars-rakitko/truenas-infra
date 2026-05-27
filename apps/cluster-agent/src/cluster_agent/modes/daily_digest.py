@@ -153,14 +153,44 @@ async def run_async(*, cluster: str) -> DigestResult:
 
     # ── 7. Dispatch each Finding through the existing pipeline ──────
     emitted = 0
+    dispatch_refs: dict[str, str] = {}    # finding.id → "owner/repo#NN"
     for finding in report.findings:
         try:
             action = lookup(sdb, finding.dedup_key)
-            dispatch(finding, action, db=sdb)
+            result = dispatch(finding, action, db=sdb)
             emitted += 1
+            if result is not None and result.gh_issue_ref:
+                dispatch_refs[finding.id] = result.gh_issue_ref
         except Exception as e:
             log.warning("digest %s: dispatch of finding %s failed: %r",
                         cluster, finding.id, e)
+
+    # ── 7b. Optional daily-summary issue ────────────────────────────
+    # One markdown-table issue per cluster per day listing ALL alert
+    # groups (including chronic-but-known noise the LLM didn't escalate),
+    # so the operator can spot recurring self-healing patterns that
+    # might point at a real underlying issue. Zero LLM cost — pure
+    # in-memory aggregation of AlertGroup data we already have.
+    # Toggle via Doppler DIGEST_SUMMARY_ISSUE_ENABLED (default off
+    # until verified on first deploy day).
+    if os.environ.get("DIGEST_SUMMARY_ISSUE_ENABLED", "false").lower() in ("true", "1", "yes"):
+        try:
+            from .summary_issue import emit_summary_issue
+            repo = os.environ.get("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+            emit_summary_issue(
+                repo=repo,
+                cluster=cluster,
+                groups=groups,
+                log_patterns=log_patterns,
+                findings=report.findings,
+                dispatch_refs=dispatch_refs,
+                window_hours=window_hours,
+                model=model,
+                digest_summary=report.summary or "",
+            )
+        except Exception as e:
+            # Summary issue is best-effort — never break the digest.
+            log.warning("digest %s: summary-issue emit failed: %r", cluster, e)
 
     # ── 8. Audit + metrics ──────────────────────────────────────────
     duration = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
