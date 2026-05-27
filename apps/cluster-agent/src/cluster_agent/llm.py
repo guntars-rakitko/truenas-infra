@@ -451,7 +451,20 @@ async def triage_digest(
     # `rate_limits={}` headers + persistence across auth-mode flips +
     # documented behavior of Anthropic's not-shown-in-dashboard caps.
     # Token reservation wasn't the cause; restoring 8192.
-    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 8192})
+    #
+    # 2026-05-27: bumped timeout 60s → 180s. Default _sdk_query timeout
+    # is 60s; per-alert triage (small prompt, ~5K input tokens, <1K
+    # output) fits comfortably in that. Daily digest is a different
+    # beast — observed prd payload of 27 alert groups + log patterns
+    # → ~30K+ input tokens + up to 8192 output tokens, taking 90-150s
+    # to complete on Sonnet 4.6 even with warm prompt cache. ReadTimeout
+    # on prd two consecutive one-shots 2026-05-27 04:52 + 04:55 UTC
+    # under warm cache proved 60s was the bottleneck, not auth or
+    # rate-limiting. 180s gives 2x headroom; cost impact: zero (we pay
+    # for tokens emitted, not wall-clock time).
+    raw_response = await _sdk_query(
+        prompt_payload, {"model": model, "max_tokens": 8192, "timeout": 180.0}
+    )
 
     cache_read = 0
     cache_create = 0
