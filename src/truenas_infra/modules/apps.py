@@ -77,22 +77,24 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "GH_APP_INSTALLATION_ID":        "GH_APP_INSTALLATION_ID",
         "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
         "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
-        "KUBECONFIG_TEST_RESTORE_DEV":   "KUBECONFIG_TEST_RESTORE_DEV",
         # Loki/Prom/AM/Grafana all use apiserver proxy via kubeconfig SA
         # token — no separate annotation-auth keys needed. Grafana itself
         # is in auth.proxy mode + auto-creates the cluster-agent user
         # from X-WEBAUTH-USER. (Old GRAFANA_API_TOKEN_{DEV,PRD} entries
         # removed 2026-05-26 with cluster-agent PR #42.)
-        "MINIO_NAS_KEY_ID":              "MINIO_NAS_KEY_ID",
-        "MINIO_NAS_SECRET_KEY":          "MINIO_NAS_SECRET_KEY",
-        "B2_KEY_ID":                     "B2_KEY_ID",
-        "B2_APP_KEY":                    "B2_APP_KEY",
         "ENABLED":                       "ENABLED",
         "DISABLED_MODES":                "DISABLED_MODES",
-        # AUTOMERGE_DISABLED_REPOS (Mode J reservation) +
-        # MODE_A_BUDGET_USD (P1 5-min legacy) removed 2026-05-27 during
-        # post-P3 cleanup. Re-add if Mode J or on-demand per-alert
-        # triage is ever revived.
+        # Removed 2026-05-27 (post-P3 wrap):
+        #   - AUTOMERGE_DISABLED_REPOS  (Mode J reservation, never spec'd)
+        #   - MODE_A_BUDGET_USD          (P1 5-min legacy, replaced by
+        #                                 DAILY_DIGEST_BUDGET_USD)
+        #   - MINIO_NAS_KEY_ID/SECRET_KEY (Mode G reservation, paused)
+        #   - B2_KEY_ID/APP_KEY           (Mode G off-site, paused)
+        #   - KUBECONFIG_TEST_RESTORE_DEV (Mode G test-restore SA, paused)
+        # The cluster-agent `cluster-agent-tests` ns + Role on dev was
+        # also removed in kube-infra at the same time. Re-provision via
+        # P0 Task 2 + 4 + truenas-infra/scripts/setup-minio-users.sh
+        # if/when Mode G is revived.
         # Mode A (P2 daily-digest)
         "SANDBOX_REPO":                  "SANDBOX_REPO",
         "LLM_MODEL":                     "LLM_MODEL",
