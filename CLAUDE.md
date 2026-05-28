@@ -552,6 +552,80 @@ machine-readable copy):
   documented here, not stored in Doppler. The API key is in Doppler
   as `TRUENAS_API_KEY`.
 
+### SSH + sudo on NAS — what works without operator typing a password
+
+Verified 2026-05-28. Useful to know up-front so you don't waste cycles
+debugging "permission denied" responses:
+
+**SSH login** — `ssh truenas_admin@10.10.5.10` works via SSH
+**publickey** for any client whose key is in the user's authorized_keys.
+The operator's laptop key (`gunrak@mac-giks-migration-20260419`
+ED25519) is loaded. `BatchMode=yes` (which disables interactive
+password fallback) succeeds → publickey is the only method the server
+will accept for this user. Lands as `uid=950(truenas_admin)
+groups=950(truenas_admin),544(builtin_administrators)`. `whoami`,
+`hostname`, `id`, file reads in `/home/truenas_admin`, anything not
+needing root — all work non-interactively.
+
+**`sudo` from a non-interactive SSH session — REQUIRES password** by
+default. `truenas_admin` has TrueNAS UI **"Allowed sudo commands: ALL"**
+(broad sudoers entry) BUT **"Allowed Sudo Commands (No Password):"
+empty** by default. So any `ssh truenas_admin@... 'sudo …'` without a
+TTY (no `-t`) returns `sudo: a password is required`. Even `sudo -n`
+(non-interactive) fails. To run sudo from automation, the operator
+must add specific command paths to the "No Password" field via the
+TrueNAS UI → Credentials → Users → `truenas_admin` → Edit.
+
+**Granted NOPASSWD sudo commands** (in TrueNAS UI under "Allowed Sudo
+Commands (No Password)"):
+
+```
+/usr/bin/docker restart cluster-agent
+/usr/bin/docker exec cluster-agent *
+```
+
+This lets passwordless restart + exec into the cluster-agent container
+specifically (for code-change deployment + manual digest fires + health
+exec checks). Scope is intentionally tight — only restart + exec on
+**this one container**, nothing else. To extend (e.g. for a new app
+that needs the same pattern), add a new line per command — never blanket
+`/usr/bin/docker *` or wildcard everything.
+
+**What this enables from automation / future Claude sessions:**
+
+```sh
+# Restart cluster-agent (after merging code-only changes — bind-mounted
+# source is on disk but uvicorn caches the loaded module).
+ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
+
+# Manual digest fire (verify end-to-end pipeline + costs ~$0.20):
+ssh truenas_admin@10.10.5.10 \
+  'sudo docker exec cluster-agent /venv/bin/python -c "
+import asyncio
+from cluster_agent.modes.daily_digest import run_async
+print(asyncio.run(run_async(cluster=\"dev\")))
+  "'
+
+# Verify in-container code matches latest commit:
+ssh truenas_admin@10.10.5.10 \
+  'sudo docker exec cluster-agent grep -c "<expected-string>" /app/<file>'
+```
+
+**What is NOT granted** (still requires interactive password):
+
+- `sudo` for any other docker container (minio-prd, minio-dev, plex, etc.)
+- `sudo` for file ops outside docker (`vi`, `systemctl`, package install, etc.)
+- `sudo` for inspecting other apps' source/data
+
+For those, fall back to `ssh -t truenas_admin@... 'sudo …'` from the
+operator's terminal — TTY lets sudo prompt for password.
+
+**Future expansion pattern:** when adding a new app that needs
+automation-driven docker ops, add a corresponding NOPASSWD line for
+`/usr/bin/docker restart <app>` + `/usr/bin/docker exec <app> *`. Same
+principle as the per-app Doppler key separation: minimum scope, no
+wildcards.
+
 **Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
 
 - `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`
