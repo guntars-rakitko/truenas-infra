@@ -240,25 +240,50 @@ def enrich_with_annotations(
 # benchmarks. The 5 failing patterns (panic/fatal/cert_expired/x509/
 # evicted) all used regex with backtracking quantifiers — exactly the
 # anti-pattern Loki docs warn against.
+# Negative filter applied to EVERY tripwire query: kube-apiserver
+# audit events (`audit.k8s.io/v1` JSON records) contain crash-keyword
+# strings (OOMKilled, CrashLoopBackOff, panic, fatal, etc.) inside
+# their `requestURI` / `responseObject` fields — those are records of
+# API CALLS describing other pods' state, not actual component crashes.
+# A Prometheus Operator list/watch reconnection storm (e.g. after a
+# control-plane node disruption) routinely generates 15-50 such events
+# per minute, all of which trigger every keyword tripwire in lockstep
+# (identical 15× counts across panic/fatal/OOMKilled/etc. is the
+# smoking-gun signature). Filter at the Loki level so they never reach
+# the LLM. Hit on the 2026-05-27 incident (cluster-agent-sandbox
+# #39 + #44).
+_AUDIT_EXCLUDE = ' != "audit.k8s.io"'
+
 _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
-    ("panic",                '|= "panic" or "Panic" or "PANIC"'),
-    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"'),
-    ("OOMKilled",            '|= "OOMKilled"'),
-    ("CrashLoopBackOff",     '|= "CrashLoopBackOff"'),
-    ("ImagePullBackOff",     '|= "ImagePullBackOff"'),
+    ("panic",                '|= "panic" or "Panic" or "PANIC"' + _AUDIT_EXCLUDE),
+    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"' + _AUDIT_EXCLUDE),
+    ("OOMKilled",            '|= "OOMKilled"' + _AUDIT_EXCLUDE),
+    ("CrashLoopBackOff",     '|= "CrashLoopBackOff"' + _AUDIT_EXCLUDE),
+    ("ImagePullBackOff",     '|= "ImagePullBackOff"' + _AUDIT_EXCLUDE),
     # certificate/x509 expiry — two AND-chained substrings replace the
     # `.{0,30}` quantifier regex. Loki processes left-to-right, so
     # `certificate` filters down first, then `expired` on the survivors.
-    ("certificate_expired",  '|= "certificate" |= "expired"'),
-    ("x509_expired",         '|= "x509" |= "expired"'),
+    ("certificate_expired",  '|= "certificate" |= "expired"' + _AUDIT_EXCLUDE),
+    ("x509_expired",         '|= "x509" |= "expired"' + _AUDIT_EXCLUDE),
     # Simpler than the original — most "dial tcp ... connect: connection
     # refused" lines contain exactly this substring, no need for the
     # full structured match.
-    ("connection_refused",   '|= "connection refused"'),
-    ("permission_denied",    '|= "permission denied"'),
+    #
+    # ALSO filter Longhorn manager warnings against detached engines.
+    # RWO Job volumes (e.g. renovate-cache attached to the Renovate
+    # CronJob every 2h) cycle attached→detached with their Job's
+    # lifecycle. While detached, Longhorn's manager periodically polls
+    # the engine pod for clone-status / purge-status and gets connection
+    # refused because the engine pod doesn't exist. Not a real failure
+    # signal — expected lifecycle. Hit on 2026-05-28 (cluster-agent-
+    # sandbox #43, renovate-cache pvc-0ce5a477).
+    ("connection_refused",   '|= "connection refused"' + _AUDIT_EXCLUDE
+                             + ' != "Failed to get clone status"'
+                             + ' != "Failed to get purge status"'),
+    ("permission_denied",    '|= "permission denied"' + _AUDIT_EXCLUDE),
     # Kubelet emits `Evicted` in Pod event reasons (capital E); some
     # kubelet log paths use lowercase. Cover both.
-    ("evicted",              '|= "Evicted" or "evicted"'),
+    ("evicted",              '|= "Evicted" or "evicted"' + _AUDIT_EXCLUDE),
 ]
 
 # Secret-redaction regexes — applied to every log line before it's

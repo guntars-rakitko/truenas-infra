@@ -388,3 +388,36 @@ def test_aggregate_log_patterns_caps_at_max_patterns():
         max_patterns=5,
     )
     assert len(patterns) == 5
+
+
+def test_tripwire_logql_excludes_audit_k8s_io_events():
+    """Every tripwire query must contain `!= "audit.k8s.io"` so audit
+    log events (which contain crash-keyword strings in requestURI/Event
+    message fields but are NOT real component crashes) are filtered at
+    the Loki layer before reaching the LLM. Regression guard for
+    cluster-agent-sandbox #39 + #44 (2026-05-27 Prometheus Operator
+    list/watch reconnection storm generated 15× audit events matching
+    every tripwire in lockstep).
+    """
+    from cluster_agent.modes.digest_aggregator import _TRIPWIRE_PATTERNS
+
+    for label, logql in _TRIPWIRE_PATTERNS:
+        assert '!= "audit.k8s.io"' in logql, (
+            f"tripwire {label!r} missing audit.k8s.io exclusion — "
+            f"see #39/#44 incident postmortem"
+        )
+
+
+def test_connection_refused_tripwire_excludes_longhorn_detached_engine_noise():
+    """`connection_refused` tripwire must filter out Longhorn manager
+    warnings on detached engines. RWO Job volumes (e.g. renovate-cache
+    attached to the Renovate CronJob every 2h) cycle attached→detached
+    with their Job lifecycle; manager polling the absent engine pod is
+    expected lifecycle noise, not a real failure. Regression guard for
+    cluster-agent-sandbox #43 (2026-05-28).
+    """
+    from cluster_agent.modes.digest_aggregator import _TRIPWIRE_PATTERNS
+
+    cr_query = next(q for (label, q) in _TRIPWIRE_PATTERNS if label == "connection_refused")
+    assert '!= "Failed to get clone status"' in cr_query
+    assert '!= "Failed to get purge status"' in cr_query
