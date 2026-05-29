@@ -523,7 +523,8 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 **Per-script keys** (read by `manage.sh` top-level + Python config):
 
 - `TRUENAS_HOST`, `TRUENAS_API_KEY`, `TRUENAS_VERIFY_SSL`
-- `TRUENAS_NUT_MONPWD`
+- `TRUENAS_NUT_MONPWD` — NUT `upsmon` user password (monitoring + FSD trigger, used by K8s nodes' Talos nut-client extension; written into upsd.users by TrueNAS at service start). Role: **secondary** — read-only state queries + FSD trigger, **no SET/INSTCMD**.
+- `TRUENAS_NUT_ADMINPWD` — NUT `upsadmin` user password (operator-side, used for `upsrw` + `upscmd` writes). Role: **SET + INSTCMD ALL**, configured via TrueNAS UI → Services → UPS → Edit → **"Extra Users"** field (pasted from the doctrine block in `wiki/docs/runbooks/ups-operations.md`). Live since 2026-05-28. Apple Passwords mirror: `TrueNAS NUT upsadmin`. Add to **NOPASSWD allowlist** when extending NUT automation — see SSH section below.
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
 **Emergency / break-glass credentials** (operator-typed-only paths
@@ -582,13 +583,27 @@ Commands (No Password)"):
 ```
 /usr/bin/docker restart cluster-agent
 /usr/bin/docker exec cluster-agent *
+/usr/bin/midclt
+/usr/bin/upscmd
+/usr/bin/upsrw
 ```
 
-This lets passwordless restart + exec into the cluster-agent container
-specifically (for code-change deployment + manual digest fires + health
-exec checks). Scope is intentionally tight — only restart + exec on
-**this one container**, nothing else. To extend (e.g. for a new app
-that needs the same pattern), add a new line per command — never blanket
+This lets passwordless:
+- **Restart + exec into the cluster-agent container** (code-change
+  deployment, manual digest fires, health checks).
+- **midclt** — any TrueNAS API call from a non-TTY SSH session. Used
+  for `ups.config` reads, `service.control`, etc. Without this,
+  every API-driven check requires a TTY + password prompt.
+- **upscmd / upsrw** — NUT instcmd + variable-write operations
+  against the local UPS (e.g. `upscmd test.battery.start.quick`,
+  `upsrw -s ups.delay.shutdown=300`). Added 2026-05-28 alongside
+  the `upsadmin` NUT user — gives the operator's laptop end-to-end
+  ability to tune UPS HID thresholds via Doppler-driven scripts
+  without typing the upsadmin password each time.
+
+Scope is intentionally tight — only the specific binaries listed,
+nothing else. To extend (e.g. for a new app that needs the same
+pattern), add a new line per command — never blanket
 `/usr/bin/docker *` or wildcard everything.
 
 **What this enables from automation / future Claude sessions:**
@@ -650,6 +665,74 @@ doppler secrets set TRUENAS_API_KEY=newvalue --project infrastructure --config o
 (age-encrypted tarball in iCloud + MinIO `disaster-recovery` bucket)
 holds the same values. See [`kube-infra/docs/disaster-recovery.md`](https://github.com/guntars-rakitko/kube-infra/blob/main/docs/disaster-recovery.md).
 Migration tracking: kube-infra #92.
+
+---
+
+## UPS / NUT (canonical home for cluster-wide UPS state)
+
+**Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
+primary UPS (`apc1`) protects the NAS + all 6 K8s nodes + networking
+gear; the second UPS is reserved as a hot spare. Battery replaced
+**2026-05-28** (APC RBC7 pair, ~3-year expected lifespan; next due ~2029).
+
+**NUT topology:**
+
+```
+TrueNAS (this NAS, 10.10.5.10:3493)
+  ├─ runs NUT MASTER (upsd + driver `usbhid-ups` → /dev/uhid)
+  ├─ upsmon (master mode) — issues FSD + shutdown.return to UPS
+  └─ upsd.users:
+      upsmon (secondary perms)  → K8s nodes' Talos nut-client
+      upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
+
+K8s nodes (×6, secondaries)
+  └─ Talos nut-client extension
+     upsmon → MONITOR apc1@10.10.5.10 1 upsmon <pwd> secondary
+     SHUTDOWNCMD=/sbin/poweroff
+     POLLFREQ=5  POLLFREQALERT=5  HOSTSYNC=15  DEADTIME=15
+```
+
+**Two NUT users — role separation:**
+
+| User | Password key | Perms | Used by | Where defined |
+|---|---|---|---|---|
+| `upsmon` | `TRUENAS_NUT_MONPWD` | secondary (monitoring + FSD trigger only) | K8s nodes' Talos nut-client | TrueNAS UI → Services → UPS → Edit → **Monitor User/Password** fields (managed via `ups.config` API; appears in upsd.users at service start) |
+| `upsadmin` | `TRUENAS_NUT_ADMINPWD` | `actions = SET`, `instcmds = ALL` | Operator's `upsrw`/`upscmd` invocations | TrueNAS UI → Services → UPS → Edit → **Extra Users** field (`ups.config.extrausers`). Live since 2026-05-28. |
+
+Operator never uses `upsmon` for writes — `upsmon`'s purpose is K8s
+node fleet monitoring; the upsadmin user keeps that scope clean.
+
+**UPS HID thresholds (live on UPS firmware, not in NUT config):**
+
+These are stored INSIDE the UPS hardware. A UPS firmware reset or unit
+swap silently reverts to APC defaults. Codified in
+`config/services.yaml § nut.ups_thresholds` (and reconciled by
+`modules/nut.py:ensure_ups_hid_thresholds`):
+
+| Variable | Value | Unit | Why |
+|---|---|---|---|
+| `ups.delay.shutdown` | **300** | seconds (5 min) | Time UPS waits between `shutdown.return` and killing power. 5 min comfortably covers worst-case Talos node shutdown (~60-90s) plus NAS shutdown (~15s) plus margin. |
+| `ups.delay.start` | **60** | seconds (1 min) | Delay before UPS re-enables outputs after utility returns. 60s avoids the boot-shutdown-boot loop on flaky grids. |
+| `battery.runtime.low` | 660 (firmware-clamped) | seconds (11 min) | Triggers `LB` (Low Battery) when estimated runtime drops to this value. Attempted 600 (10 min) but APC firmware derives this from `battery.charge.low` and rejected the override. Current fresh-battery actual runtime ~1260s (21 min) → cluster gets ~10 min on battery before LB fires. |
+| `battery.charge.low` | 10 | percent | FSD safety net if runtime estimate becomes inaccurate as battery ages. Default. |
+| `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
+| TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence — without this, after the cluster shuts down the UPS keeps running until battery dies (uncleanly). |
+| TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
+| TrueNAS `shutdowntimer` | 60 | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. |
+
+**Battery health verification:**
+- Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.
+- Automatic test interval: APC firmware default (14 days). Attempted to override to monthly via `ups.test.interval` 2026-05-28 — firmware rejected, kept default.
+- Manual test command (zero-risk, ~30s):
+  ```sh
+  export ADMIN_PWD=$(doppler secrets get TRUENAS_NUT_ADMINPWD --project infrastructure --config ops --plain)
+  ssh truenas_admin@10.10.5.10 "sudo upscmd -u upsadmin -p '$ADMIN_PWD' apc1@localhost test.battery.start.quick"
+  sleep 35
+  ssh truenas_admin@10.10.5.10 "upsc apc1@localhost ups.test.result"
+  # Expect: "Done and passed"
+  ```
+
+**Full operations runbook:** [`wiki/docs/runbooks/ups-operations.md`](https://wiki.w1.lv/runbooks/ups-operations/) — covers all UPS reads/writes, battery replacement procedure, drill A (`shutdown.return`) and drill B (real utility-loss simulation).
 
 ---
 
