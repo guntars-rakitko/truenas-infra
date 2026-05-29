@@ -332,14 +332,33 @@ def check_ups_hid_thresholds(
 def _read_upsc(ssh_host: str, ups: str = "apc1") -> dict[str, str]:
     """SSH to NAS, run `upsc apc1@localhost`, parse to dict.
 
-    No auth needed for read — NUT exposes all vars to any local
-    upsd connection by design. Connection is via the operator's
-    SSH publickey (BatchMode=yes — fails fast if key missing).
+    No NUT auth needed for read — upsd exposes all vars to any local
+    connection by design. Connection is via the operator's SSH
+    publickey (BatchMode=yes — fails fast if key missing).
+
+    `ssh_host` is the value of `$TRUENAS_HOST` (e.g. `nas.w1.lv`). We
+    prepend `truenas_admin@` if no `@` is already present, to match
+    the doctrine in CLAUDE.md § SSH + sudo (TrueNAS's API-driven
+    automation account). Without this, SSH falls back to the local
+    shell user, which doesn't have an account on the NAS → "Host key
+    verification failed" silently → empty dict → false-positive drift.
     """
+    target = ssh_host if "@" in ssh_host else f"truenas_admin@{ssh_host}"
     try:
         result = subprocess.run(
-            ["ssh", "-oBatchMode=yes", ssh_host,
-             f"upsc {ups}@localhost"],
+            [
+                "ssh",
+                "-oBatchMode=yes",
+                # accept-new: trust on first use. The NAS lives on the trusted
+                # mgmt VLAN (10.10.5.0/24, no external routing); MITM risk is
+                # near-zero. Without this, a fresh laptop / first-time DNS
+                # resolution (e.g. TRUENAS_HOST=nas.w1.lv vs the IP cached in
+                # known_hosts as 10.10.5.10) fails with "Host key verification
+                # failed" — silently → empty dict → false-positive drift report.
+                "-oStrictHostKeyChecking=accept-new",
+                target,
+                f"upsc {ups}@localhost",
+            ],
             capture_output=True, text=True, check=True, timeout=15,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
