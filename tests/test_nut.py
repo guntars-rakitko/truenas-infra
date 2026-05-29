@@ -129,6 +129,7 @@ def test_ensure_ups_config_noop_when_match() -> None:
         "shutdowntimer": 60,
         "powerdown": True,
         "monuser": "upsmon",
+        "options": "",
     }
     cli = _mk_cli([live])
 
@@ -137,6 +138,7 @@ def test_ensure_ups_config_noop_when_match() -> None:
         driver="usbhid-ups$Smart-UPS (USB)", port="auto",
         mode="MASTER", remoteport=3493, rmonitor=True,
         shutdown="LOWBATT", shutdowntimer=60, powerdown=True, monuser="upsmon",
+        options="",
     )
     diff = ensure_ups_config(cli, spec=spec, apply=True)
     assert diff.changed is False
@@ -206,7 +208,7 @@ def test_run_applies_nut_config_and_starts_service(tmp_path: Path) -> None:
         "description": "", "mode": "MASTER",
         "remoteport": 3493, "rmonitor": False,
         "shutdown": "BATT", "shutdowntimer": 30, "powerdown": False,
-        "monuser": "upsmon", "extrausers": "",
+        "monuser": "upsmon", "options": "", "extrausers": "",
     }
     cli = _mk_cli([
         empty_live,                                                         # ups.config (for ensure_ups_config)
@@ -405,3 +407,81 @@ def test_check_ups_hid_thresholds_handles_unreadable_value() -> None:
     drifts = check_ups_hid_thresholds(spec, _upsc_reader=reader)
     assert len(drifts) == 1
     assert drifts[0].live is None
+
+
+# ─── options field (LB-decision overrides — drill follow-up 2026-05-29) ──────
+
+
+def test_load_options_field(tmp_path: Path) -> None:
+    """The `options` field is read verbatim (preserves multiline + whitespace)."""
+    from truenas_infra.modules.nut import load_nut_config
+
+    yaml_file = tmp_path / "services.yaml"
+    yaml_file.write_text(textwrap.dedent("""
+        nut:
+          enable: true
+          identifier: apc1
+          driver: "usbhid-ups$Smart-UPS (USB)"
+          port: auto
+          mode: MASTER
+          monuser: upsmon
+          options: |
+            ignorelb
+            override.battery.charge.low = 50
+            override.battery.runtime.low = 600
+    """).strip())
+
+    cfg = load_nut_config(yaml_file)
+    assert "ignorelb" in cfg.options
+    assert "override.battery.charge.low = 50" in cfg.options
+    assert "override.battery.runtime.low = 600" in cfg.options
+
+
+def test_load_options_default_empty(tmp_path: Path) -> None:
+    """Missing options field → empty string (no-op for ensure_ups_config)."""
+    from truenas_infra.modules.nut import load_nut_config
+
+    yaml_file = tmp_path / "services.yaml"
+    yaml_file.write_text(textwrap.dedent("""
+        nut:
+          enable: true
+          identifier: apc1
+          driver: "x$y"
+          port: auto
+          mode: MASTER
+          monuser: upsmon
+    """).strip())
+
+    cfg = load_nut_config(yaml_file)
+    assert cfg.options == ""
+
+
+def test_ensure_ups_config_diffs_options() -> None:
+    """When YAML declares options but live ups.config has different value → diff."""
+    from truenas_infra.modules.nut import NutSpec, ensure_ups_config
+
+    live = {
+        "id": 1, "driver": "x$y", "port": "auto", "identifier": "apc1",
+        "description": "", "mode": "MASTER",
+        "remoteport": 3493, "rmonitor": False,
+        "shutdown": "BATT", "shutdowntimer": 30, "powerdown": False,
+        "monuser": "upsmon",
+        "options": "",   # empty live
+    }
+    cli = _mk_cli([
+        live,
+        {**live, "options": "ignorelb"},   # ups.update return
+    ])
+
+    spec = NutSpec(
+        enable=True, identifier="apc1", driver="x$y", port="auto",
+        mode="MASTER", remoteport=3493,
+        shutdown="BATT", shutdowntimer=30, monuser="upsmon",
+        options="ignorelb",
+    )
+    diff = ensure_ups_config(cli, spec=spec, apply=True)
+    assert diff.changed is True
+    # The update payload contained "options"
+    update_call = next(c for c in cli.call.call_args_list
+                       if c.args[0] == "ups.update")
+    assert update_call.args[1]["options"] == "ignorelb"

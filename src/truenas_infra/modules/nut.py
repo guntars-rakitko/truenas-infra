@@ -87,6 +87,17 @@ class NutSpec:
                                  # See services.yaml § nut.powerdown for full rationale.
     monuser: str = "upsmon"
     monpwd: str = ""             # NOT from YAML — read from TRUENAS_NUT_MONPWD env
+    options: str = ""            # Free-form text appended to /etc/nut/ups.conf
+                                 # inside the [<identifier>] section. Used for
+                                 # NUT driver-side directives that don't have
+                                 # dedicated TrueNAS fields, notably:
+                                 #   - ignorelb (decouple LB decision from UPS
+                                 #     firmware's internal voltage cutoff)
+                                 #   - override.battery.charge.low = N
+                                 #   - override.battery.runtime.low = N
+                                 # See services.yaml § nut.options for the
+                                 # 2026-05-29 drill that motivated this field.
+                                 # Maps to TrueNAS `ups.config.options`.
     extra_users: tuple[ExtraUserSpec, ...] = ()
     ups_thresholds: UpsThresholdsSpec = field(default_factory=UpsThresholdsSpec)
 
@@ -137,6 +148,11 @@ def load_nut_config(path: Path) -> NutSpec:
         powerdown=bool(nut.get("powerdown", False)),
         monuser=nut.get("monuser", "upsmon"),
         monpwd=os.environ.get("TRUENAS_NUT_MONPWD", ""),
+        # Strip trailing newline: YAML `|` block scalar preserves the
+        # closing newline, but TrueNAS's midclt-stored value doesn't
+        # round-trip that — causes a spurious diff on every reconcile.
+        # `|-` in YAML would also work; rstrip here is more forgiving.
+        options=str(nut.get("options", "") or "").rstrip("\n"),
         extra_users=extra_users,
         ups_thresholds=ups_thresholds,
     )
@@ -148,7 +164,7 @@ def load_nut_config(path: Path) -> NutSpec:
 _MANAGED_UPS_FIELDS = (
     "identifier", "description", "driver", "port",
     "mode", "remoteport", "rmonitor", "shutdown", "shutdowntimer",
-    "powerdown", "monuser",
+    "powerdown", "monuser", "options",
 )
 
 
@@ -168,6 +184,7 @@ def ensure_ups_config(cli: Any, *, spec: NutSpec, apply: bool) -> Diff:
         "shutdowntimer": spec.shutdowntimer,
         "powerdown": spec.powerdown,
         "monuser": spec.monuser,
+        "options": spec.options,
     }
 
     changes: dict[str, Any] = {}

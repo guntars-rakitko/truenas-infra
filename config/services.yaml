@@ -51,6 +51,44 @@ nut:
   # value), so existing installs are untouched.
   monuser: upsmon
 
+  # Free-form text appended to /etc/nut/ups.conf inside the [apc1]
+  # section. Used for NUT driver-side directives that don't have a
+  # dedicated TrueNAS field. Currently carries the LB-decision overrides
+  # (Drill B follow-up, 2026-05-29):
+  #
+  #   ignorelb — Decouple the LB (Low Battery) decision from the UPS
+  #     firmware's internal voltage cutoff. APC Smart-UPS LCC firmware
+  #     has an internal voltage threshold that asserts LB independently
+  #     of the configurable battery.runtime.low / battery.charge.low
+  #     values, especially on a freshly-installed battery before the
+  #     firmware's coulomb counter has been calibrated. During the
+  #     2026-05-29 drill, the firmware asserted LB at battery.charge=62%
+  #     / runtime=845s, well above our configured 660s threshold —
+  #     because the internal voltage cutoff (NOT user-configurable)
+  #     fired first. With `ignorelb` set, NUT evaluates LB strictly
+  #     against the override.* values below, on every poll. Firmware's
+  #     voltage cutoff stays as a hardware safety floor (it'll still
+  #     yank power if voltage truly collapses) but it cannot prematurely
+  #     flip the LB status flag that upsmon clients watch.
+  #
+  #   override.battery.charge.low = 50 — Triggers LB when SOC drops
+  #     below 50%. Conservative: prefers giving the cluster maximum
+  #     drain-time-to-shutdown headroom over squeezing extra battery
+  #     minutes. With ~250W cluster load + 168Wh battery, 50% gives
+  #     us ~6 min from LB to dark.
+  #
+  #   override.battery.runtime.low = 600 — Secondary trigger. LB
+  #     also fires if estimated runtime drops below 10 min. Backup
+  #     in case charge% reading is unreliable.
+  #
+  # Both override.* trigger via OR; whichever fires first wins.
+  # Stored as a multi-line string; TrueNAS appends it verbatim to the
+  # rendered ups.conf inside the [<identifier>] section.
+  options: |
+    ignorelb
+    override.battery.charge.low = 50
+    override.battery.runtime.low = 600
+
   # Additional NUT users beyond the primary `monuser`. Codified here so
   # a fresh NAS install / TrueNAS factory-reset rebuilds `upsd.users`
   # with the same role-separated identities — without this, the
