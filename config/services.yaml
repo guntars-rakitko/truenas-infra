@@ -51,6 +51,63 @@ nut:
   # value), so existing installs are untouched.
   monuser: upsmon
 
+  # Additional NUT users beyond the primary `monuser`. Codified here so
+  # a fresh NAS install / TrueNAS factory-reset rebuilds `upsd.users`
+  # with the same role-separated identities — without this, the
+  # operator's manual paste into the TrueNAS UI "Extra Users" field
+  # is the only definition (fragile, no recovery path).
+  #
+  # Each entry maps to one `[user]` block in `/etc/nut/upsd.users` (via
+  # TrueNAS `ups.config.extrausers`). The password comes from an env var
+  # at apply time (Doppler-backed); never persisted in YAML.
+  #
+  # Doctrine: TWO ROLES, ZERO OVERLAP.
+  #   - upsmon (declared above as `monuser`) — read-only, FSD-trigger.
+  #     Used by K8s nodes' Talos nut-client (cluster fleet auth).
+  #   - upsadmin (this entry) — SET + INSTCMD ALL. Used by operator
+  #     scripts via the NOPASSWD sudo allowlist (see truenas-infra
+  #     CLAUDE.md § SSH + sudo). Never used by K8s clients.
+  #
+  # See `wiki/docs/runbooks/ups-operations.md` for the full doctrine
+  # + drill procedures.
+  extra_users:
+    - name: upsadmin
+      password_env: TRUENAS_NUT_ADMINPWD
+      actions: [SET]
+      instcmds: [ALL]
+
+  # UPS firmware HID thresholds — STORED IN THE UPS HARDWARE, not in
+  # any NUT config file. A UPS firmware reset / battery-disconnect-
+  # >24h / hot-spare swap silently reverts to APC factory defaults
+  # without surfacing any signal. `modules/nut.py:check_ups_hid_thresholds`
+  # diffs live values against this block on every `phase nut` run
+  # (read-only — does NOT auto-reconcile; operator runs `upsrw -s`
+  # manually if drift is reported). Drift detection only; enforcement
+  # stays manual so the operator stays in the loop for UPS firmware
+  # writes (which can brick a unit if the wrong value is set).
+  #
+  # See `wiki/docs/runbooks/ups-operations.md` § Threshold reference
+  # for unit/rationale per setting + the fix command.
+  ups_thresholds:
+    ups_delay_shutdown: 300      # seconds — UPS kills outputs N sec after `shutdown.return`
+    ups_delay_start: 60          # seconds — UPS re-enables outputs N sec after utility returns
+    # battery_runtime_low: 660   # seconds — firmware-clamped on Smart-UPS;
+                                 #   APC derives this from battery.charge.low (10%)
+                                 #   and rejects override attempts. Omitted from
+                                 #   reconcile to avoid spurious drift reports.
+    # ups_test_interval: 2419200 # seconds (28d) — firmware-rejected on our SMT750I
+                                 #   model. APC default (14d auto-test) is what
+                                 #   we get. Omitted from reconcile.
+  # Power-event recovery flow (REQUIRED for clean cluster shutdown chain):
+  # `powerdown: true` makes TrueNAS issue `upsdrvctl shutdown` → UPS
+  # `shutdown.return` instruction at the end of the NAS poweroff. Without
+  # this, after the cluster + NAS shut down, the UPS keeps running on
+  # battery (still passing power to dead loads) until battery dies — a
+  # second uncontrolled outage when utility eventually returns. Set 2026-05-28
+  # via midclt; codified here so a future `phase nut --apply` won't drift it
+  # back to TrueNAS's chart-default `false`.
+  powerdown: true
+
 tls:
   internal_ca:
     enable: true
