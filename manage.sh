@@ -60,6 +60,12 @@ _DOPPLER_KEYS=(
     TRUENAS_API_KEY
     TRUENAS_VERIFY_SSL
     TRUENAS_NUT_MONPWD
+    TRUENAS_NUT_ADMINPWD       # upsadmin NUT user (SET + INSTCMD), used by
+                               # modules/nut.py:ensure_extra_users to materialize
+                               # `[upsadmin]` block in upsd.users via ups.config.extrausers.
+                               # Operator-side identity for upsrw/upscmd writes.
+                               # Optional today (load_nut_config falls back to empty
+                               # string → ensure_extra_users skips with a warning).
     SHARED_CLOUDFLARE_API_TOKEN
 )
 
