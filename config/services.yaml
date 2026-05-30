@@ -140,13 +140,18 @@ nut:
   # See `wiki/docs/runbooks/ups-operations.md` § Threshold reference
   # for unit/rationale per setting + the fix command.
   ups_thresholds:
-    # Canonical target 300s. Live firmware read 2026-05-30 showed 360s
-    # (works fine — comfortably covers cluster+NAS poweroff once the
-    # power-off command is delivered up-front per the DR shutdown fix).
-    # To align to 300: `upsrw -s ups.delay.shutdown=300 -u upsadmin ...`
-    # in a maintenance window (firmware write — operator stays in loop).
-    ups_delay_shutdown: 300      # seconds — UPS kills outputs N sec after `shutdown.return`
-    ups_delay_start: 60          # seconds — UPS re-enables outputs N sec after utility returns (live: 60 ✓)
+    # ups.delay.shutdown is an ENUM on apcsmart (multiples of 90s). Set to
+    # 540 (9 min) live via upsrw on 2026-05-30 and verified stuck — gives
+    # the K8s nodes ~9 min to finish draining after the NAS issues
+    # shutdown.return at the start of its own poweroff.
+    ups_delay_shutdown: 540      # seconds (9 min) — UPS kills outputs N sec after `shutdown.return`. ENUM: multiples of 90.
+    ups_delay_start: 60          # seconds (1 min) — UPS re-enables outputs after utility returns. ENUM "060" (live ✓).
+    # battery.runtime.low (600s / 10 min) and battery.charge.low (50%) are
+    # READ-ONLY on this UPS firmware (upsrw → ERR READONLY, confirmed
+    # 2026-05-30). They are enforced instead via the driver-side
+    # `override.*` directives in `options:` above (ignorelb + overrides),
+    # which the live UPS already reports as 600 / 50. Do NOT add them here
+    # as firmware writes — they will always fail.
     # battery_runtime_low: 660   # seconds — firmware-clamped on Smart-UPS;
                                  #   APC derives this from battery.charge.low (10%)
                                  #   and rejects override attempts. Omitted from

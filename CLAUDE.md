@@ -714,10 +714,10 @@ swap silently reverts to APC defaults. Codified in
 
 | Variable | Value | Unit | Why |
 |---|---|---|---|
-| `ups.delay.shutdown` | **300** (target; live read 360 on 2026-05-30) | seconds (5 min) | Time UPS waits between `shutdown.return` and killing power. 5 min comfortably covers worst-case Talos node shutdown (~60-90s) plus NAS shutdown (~15s) plus margin. 360 also fine; align to 300 with `upsrw` in a window if desired. |
-| `ups.delay.start` | **60** | seconds (1 min) | Delay before UPS re-enables outputs after utility returns. 60s avoids the boot-shutdown-boot loop on flaky grids. |
-| `battery.runtime.low` | 660 (firmware-clamped) | seconds (11 min) | Triggers `LB` (Low Battery) when estimated runtime drops to this value. Attempted 600 (10 min) but APC firmware derives this from `battery.charge.low` and rejected the override. Current fresh-battery actual runtime ~1260s (21 min) → cluster gets ~10 min on battery before LB fires. |
-| `battery.charge.low` | 10 | percent | FSD safety net if runtime estimate becomes inaccurate as battery ages. Default. |
+| `ups.delay.shutdown` | **540** (9 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Set 2026-05-30 (was 360) to give the K8s nodes ~9 min to finish draining after the NAS issues `shutdown.return`. apcsmart ENUM — value must be a multiple of 90s. Writable (`upsrw` OK). |
+| `ups.delay.start` | **60** (1 min) | seconds | Delay before UPS re-enables outputs after utility returns. apcsmart ENUM — write the zero-padded `"060"` (bare `60` → `ERR INVALID-VALUE`). Avoids the boot-shutdown-boot loop on flaky grids. |
+| `battery.runtime.low` | **600** (10 min) | seconds | LB trigger. **READ-ONLY on firmware** (`upsrw` → `ERR READONLY`, 2026-05-30) — enforced via the driver `override.battery.runtime.low = 600` in `ups.config.options`. Live UPS reports 600. |
+| `battery.charge.low` | **50** | percent | LB trigger. **READ-ONLY on firmware** (`upsrw` → `ERR READONLY`, 2026-05-30) — enforced via the driver `override.battery.charge.low = 50` + `ignorelb` in `ups.config.options`. Live UPS reports 50. |
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
 | TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence. **NOTE:** with the USB-serial adapter this currently does NOT reach the UPS in time — see the DR shutdown bug below. |
 | TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
