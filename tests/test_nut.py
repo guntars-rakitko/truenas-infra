@@ -144,6 +144,73 @@ def test_ensure_ups_config_noop_when_match() -> None:
     assert diff.changed is False
 
 
+def test_load_nut_config_parses_shutdowncmd(tmp_path: Path) -> None:
+    from truenas_infra.modules.nut import load_nut_config
+
+    yaml_file = tmp_path / "services.yaml"
+    yaml_file.write_text(
+        textwrap.dedent(
+            """
+            nut:
+              identifier: apc1
+              shutdowncmd: /mnt/tank/system/nut/nas-ups-shutdown.sh
+            """
+        ).strip()
+    )
+    cfg = load_nut_config(yaml_file)
+    assert cfg.shutdowncmd == "/mnt/tank/system/nut/nas-ups-shutdown.sh"
+
+
+def test_ensure_ups_config_manages_shutdowncmd_when_set() -> None:
+    from truenas_infra.modules.nut import NutSpec, ensure_ups_config
+
+    live = {
+        "id": 1, "driver": "apcsmart$Smart-UPS", "port": "/dev/ttyUSB0",
+        "identifier": "apc1", "description": "APC", "mode": "MASTER",
+        "remoteport": 3493, "rmonitor": True, "shutdown": "LOWBATT",
+        "shutdowntimer": 60, "powerdown": True, "monuser": "upsmon",
+        "options": "", "shutdowncmd": None,
+    }
+    cli = _mk_cli([live, {**live, "shutdowncmd": "/mnt/tank/system/nut/nas-ups-shutdown.sh"}])
+
+    spec = NutSpec(
+        enable=True, identifier="apc1", description="APC",
+        driver="apcsmart$Smart-UPS", port="/dev/ttyUSB0",
+        mode="MASTER", remoteport=3493, rmonitor=True,
+        shutdown="LOWBATT", shutdowntimer=60, powerdown=True, monuser="upsmon",
+        options="", shutdowncmd="/mnt/tank/system/nut/nas-ups-shutdown.sh",
+    )
+    diff = ensure_ups_config(cli, spec=spec, apply=True)
+
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "ups.update")
+    assert update.args[1]["shutdowncmd"] == "/mnt/tank/system/nut/nas-ups-shutdown.sh"
+
+
+def test_ensure_ups_config_leaves_shutdowncmd_unmanaged_when_empty() -> None:
+    """Empty shutdowncmd must NOT diff against a live null/default."""
+    from truenas_infra.modules.nut import NutSpec, ensure_ups_config
+
+    live = {
+        "id": 1, "driver": "apcsmart$Smart-UPS", "port": "/dev/ttyUSB0",
+        "identifier": "apc1", "description": "APC", "mode": "MASTER",
+        "remoteport": 3493, "rmonitor": True, "shutdown": "LOWBATT",
+        "shutdowntimer": 60, "powerdown": True, "monuser": "upsmon",
+        "options": "", "shutdowncmd": None,
+    }
+    cli = _mk_cli([live])
+
+    spec = NutSpec(
+        enable=True, identifier="apc1", description="APC",
+        driver="apcsmart$Smart-UPS", port="/dev/ttyUSB0",
+        mode="MASTER", remoteport=3493, rmonitor=True,
+        shutdown="LOWBATT", shutdowntimer=60, powerdown=True, monuser="upsmon",
+        options="", shutdowncmd="",
+    )
+    diff = ensure_ups_config(cli, spec=spec, apply=True)
+    assert diff.changed is False
+
+
 # ─── ensure_ups_service ──────────────────────────────────────────────────────
 
 

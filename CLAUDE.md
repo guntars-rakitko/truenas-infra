@@ -740,17 +740,25 @@ as much as to usbhid-ups, because the transport is still USB.)
 `ups.delay.shutdown` / `delay.start` are NOT the problem — the UPS never
 gets the command that would start the countdown.
 
-Candidate fixes (validate one via **Drill A** in a maintenance window —
-`apc1` powers the WHOLE rack, so the drill affects prd too, not just dev):
-1. **Deliver the power-off up-front** — set TrueNAS `ups.config.shutdowncmd`
-   to a small script that issues the UPS shutdown while USB comms are still
-   alive, *then* halts the host. Leading candidate; needs a drill to confirm
-   the exact command + timing. (Keep any password out of the command line —
-   read it from a root-only file or use the local `upsdrvctl` path.)
-2. **Native RS-232** — eliminate the USB adapter. Cleanest, but the Beelink
-   has no native serial port, so this needs added hardware.
-3. **sdtype tweak** — only relevant if the command IS delivered but the UPS
-   ignores it; secondary hypothesis, test after #1.
+**Fix (implemented, not yet enabled live):** deliver `shutdown.return`
+up-front via upsmon's `SHUTDOWNCMD`, while USB comms are still alive — once
+the UPS has it, its own `ups.delay.shutdown` (540s) countdown is autonomous
+and fires after the teardown.
+- `scripts/nas-ups-shutdown.sh` — the hook (upscmd `shutdown.return` primary,
+  `upsdrvctl shutdown` fallback, then graceful `poweroff`).
+- `scripts/setup-ups-shutdown-hook.sh` — one-shot installer (uploads the hook
+  to `/mnt/tank/system/nut/`, writes the root-only upsadmin password file from
+  Doppler, sets `ups.config.shutdowncmd`).
+- `config/services.yaml § nut.shutdowncmd` — left **empty (unmanaged)** on
+  purpose; `modules/nut.py` only reconciles it when non-empty. Uncomment the
+  staged value AFTER Drill A validates the chain.
+
+Enable sequence: (1) run `setup-ups-shutdown-hook.sh` in a maintenance
+window, (2) validate via **Drill A** (`apc1` powers the WHOLE rack — affects
+prd too), (3) only then uncomment `shutdowncmd:` in services.yaml.
+
+Alternatives if it proves unreliable: native RS-232 (no USB to tear down —
+needs hardware the Beelink lacks), or tuning the apcsmart `sdtype` option.
 
 **Battery health verification:**
 - Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.

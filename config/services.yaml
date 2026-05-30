@@ -169,6 +169,28 @@ nut:
   # back to TrueNAS's chart-default `false`.
   powerdown: true
 
+  # ── DR shutdown fix (#57) — pre-halt UPS power-off hook ──────────────────
+  # The UPS reaches the NAS over a DB-9 → RS-232 → USB adapter (/dev/ttyUSB0),
+  # so `powerdown`'s killpower runs too late: the kernel tears down the USB
+  # device before `shutdown.return` is sent, and the UPS keeps draining on a
+  # real outage. The fix is to arm `shutdown.return` UP-FRONT, via upsmon's
+  # SHUTDOWNCMD, while USB comms are still alive — once received, the UPS's own
+  # ups.delay.shutdown (540s) countdown is autonomous and fires post-teardown.
+  #
+  # `shutdowncmd` points upsmon at scripts/nas-ups-shutdown.sh, which must
+  # FIRST be deployed to the NAS by scripts/setup-ups-shutdown-hook.sh
+  # (uploads the script to /mnt/tank/system/nut/, writes the root-only
+  # upsadmin password file, sets this field via midclt).
+  #
+  # LEFT EMPTY (unmanaged) ON PURPOSE until validated: an empty value means
+  # `phase nut` does NOT touch TrueNAS's default. Pointing upsmon at a script
+  # that isn't on the NAS yet would be WORSE than today. Sequence to enable:
+  #   1. run scripts/setup-ups-shutdown-hook.sh  (deploys script + pw file)
+  #   2. validate end-to-end with Drill A (whole-rack maintenance window)
+  #   3. THEN uncomment the line below so `phase nut` keeps it from drifting:
+  # shutdowncmd: /mnt/tank/system/nut/nas-ups-shutdown.sh
+  shutdowncmd: ""
+
 tls:
   internal_ca:
     enable: true
