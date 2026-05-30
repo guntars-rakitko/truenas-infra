@@ -752,22 +752,28 @@ fails "Can't claim USB device" while the driver still holds the port; and
 TrueNAS's read-only `/usr/lib/systemd/system-shutdown/` blocks the standard
 `nutshutdown` hook.
 
-**Attempt 2 (current, not yet validated):** a TrueNAS **Init/Shutdown Script**
-(when=SHUTDOWN) that ARMS the UPS during poweroff; `shutdowncmd` stays cleared
-so TrueNAS keeps owning the host poweroff.
+**Attempt 2 (current — VALIDATED 2026-05-31):** a TrueNAS **Init/Shutdown
+Script** (when=SHUTDOWN) that ARMS the UPS during poweroff; `shutdowncmd` stays
+cleared so TrueNAS keeps owning the host poweroff. A `upsmon -c fsd` drill
+confirmed the UPS cuts power + power-cycles the rack.
 - `scripts/nas-ups-shutdown.sh` — arm-only hook: `upscmd shutdown.return`
   (works while upsd is up — driver relays it), fallback `upsdrvctl stop` +
   `upsdrvctl shutdown` (driver released → can claim USB). Logs to
   `/mnt/tank/system/nut/last-shutdown.log` (world-readable — diagnosable
   without journal access, which truenas_admin lacks). Does NOT poweroff.
+  **POWERDOWNFLAG guard:** `when=SHUTDOWN` scripts run on EVERY shutdown+reboot,
+  so the hook first runs `upsmon -K` and only arms the UPS when the flag is set
+  (genuine FSD/low-battery shutdown). A routine reboot/poweroff → flag unset →
+  it logs and exits, so it does NOT power-cycle the rack on normal maintenance.
 - `scripts/setup-ups-shutdown-hook.sh` — installer (API-based: clears
   shutdowncmd + restarts ups, uploads hook + root-only pw file, registers the
   SHUTDOWN init/shutdown script). Init/shutdown scripts persist in the config
   DB across reboots + updates.
 - `config/services.yaml § nut.shutdowncmd` — **keep empty**.
 
-Validate with the LIGHT drill (no battery drain): `sudo upsmon -c fsd` →
-read `last-shutdown.log` to see which arm path fired and whether the UPS cut.
+Re-validate after changes with the LIGHT drill: `sudo upsmon -c fsd` (sets the
+flag → arms) → read `last-shutdown.log`. A plain `reboot` must NOT arm it
+(flag unset) — that's the guard's job.
 
 **Severity reality check:** data is NEVER at risk — the graceful shutdown
 chain works. Bug #57 only means the battery fully drains + no clean
