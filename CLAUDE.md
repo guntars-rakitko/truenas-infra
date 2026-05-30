@@ -679,7 +679,10 @@ gear; the second UPS is reserved as a hot spare. Battery replaced
 
 ```
 TrueNAS (this NAS, 10.10.5.10:3493)
-  ├─ runs NUT MASTER (upsd + driver `usbhid-ups` → /dev/uhid)
+  ├─ runs NUT MASTER (upsd + driver `apcsmart` → /dev/ttyUSB0)
+  │    apcsmart over the UPS DB-9 (LCC) via a USB→RS-232 adapter; gives
+  │    the rich telemetry the dashboard needs (output.current, input
+  │    min/max, frequency, temperature). Migrated from usbhid-ups/$/dev/uhid.
   ├─ upsmon (master mode) — issues FSD + shutdown.return to UPS
   └─ upsd.users:
       upsmon (secondary perms)  → K8s nodes' Talos nut-client
@@ -711,14 +714,43 @@ swap silently reverts to APC defaults. Codified in
 
 | Variable | Value | Unit | Why |
 |---|---|---|---|
-| `ups.delay.shutdown` | **300** | seconds (5 min) | Time UPS waits between `shutdown.return` and killing power. 5 min comfortably covers worst-case Talos node shutdown (~60-90s) plus NAS shutdown (~15s) plus margin. |
+| `ups.delay.shutdown` | **300** (target; live read 360 on 2026-05-30) | seconds (5 min) | Time UPS waits between `shutdown.return` and killing power. 5 min comfortably covers worst-case Talos node shutdown (~60-90s) plus NAS shutdown (~15s) plus margin. 360 also fine; align to 300 with `upsrw` in a window if desired. |
 | `ups.delay.start` | **60** | seconds (1 min) | Delay before UPS re-enables outputs after utility returns. 60s avoids the boot-shutdown-boot loop on flaky grids. |
 | `battery.runtime.low` | 660 (firmware-clamped) | seconds (11 min) | Triggers `LB` (Low Battery) when estimated runtime drops to this value. Attempted 600 (10 min) but APC firmware derives this from `battery.charge.low` and rejected the override. Current fresh-battery actual runtime ~1260s (21 min) → cluster gets ~10 min on battery before LB fires. |
 | `battery.charge.low` | 10 | percent | FSD safety net if runtime estimate becomes inaccurate as battery ages. Default. |
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
-| TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence — without this, after the cluster shuts down the UPS keeps running until battery dies (uncleanly). |
+| TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence. **NOTE:** with the USB-serial adapter this currently does NOT reach the UPS in time — see the DR shutdown bug below. |
 | TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
 | TrueNAS `shutdowntimer` | 60 | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. |
+
+**DR shutdown bug (#57) — UPS keeps draining after a real outage:**
+
+Symptom (operator-confirmed 2026-05-30): on a power-loss DR, the cluster
++ NAS shut down on Low-Battery as designed, but the **UPS never cuts its
+own outputs** — it keeps powering the dead load until the battery is flat,
+then delivers a second uncontrolled outage when utility returns.
+
+Root cause: the apcsmart driver reaches the UPS over `/dev/ttyUSB0`, a
+**USB→RS-232 adapter**. During NAS poweroff the kernel removes the USB
+device *before* TrueNAS's `powerdown` killpower step runs, so the
+`shutdown.return` command is never delivered. (This is the long-standing
+"USB teardown" failure mode — it applies to apcsmart-over-USB-serial just
+as much as to usbhid-ups, because the transport is still USB.)
+
+`ups.delay.shutdown` / `delay.start` are NOT the problem — the UPS never
+gets the command that would start the countdown.
+
+Candidate fixes (validate one via **Drill A** in a maintenance window —
+`apc1` powers the WHOLE rack, so the drill affects prd too, not just dev):
+1. **Deliver the power-off up-front** — set TrueNAS `ups.config.shutdowncmd`
+   to a small script that issues the UPS shutdown while USB comms are still
+   alive, *then* halts the host. Leading candidate; needs a drill to confirm
+   the exact command + timing. (Keep any password out of the command line —
+   read it from a root-only file or use the local `upsdrvctl` path.)
+2. **Native RS-232** — eliminate the USB adapter. Cleanest, but the Beelink
+   has no native serial port, so this needs added hardware.
+3. **sdtype tweak** — only relevant if the command IS delivered but the UPS
+   ignores it; secondary hypothesis, test after #1.
 
 **Battery health verification:**
 - Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.

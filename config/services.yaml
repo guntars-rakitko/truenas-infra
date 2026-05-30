@@ -8,14 +8,27 @@ nut:
   identifier: apc1
   description: "APC Smart-UPS (primary)"
   # Driver string format is "<driver>$<model>" (see ups.driver_choices).
-  # For generic APC Smart-UPS over USB:
-  driver: "usbhid-ups$Smart-UPS (USB)"
-  port: /dev/uhid                   # APC Smart-UPS USB. `auto` worked on
-                                    # the old tempnas but on the Beelink +
-                                    # TrueNAS 25.10.3.1 the NUT auto-detect
-                                    # failed silently — explicit /dev/uhid
-                                    # (visible in ups.port_choices) was the
-                                    # path that started cleanly (2026-05-15).
+  # LIVE driver since the UPS-observability work: apcsmart, reaching the
+  # UPS's DB-9 (APC "Legacy Communication Card") through a USB→RS-232
+  # adapter on the Beelink (the mini-PC has no native serial port).
+  # Migrated from usbhid-ups/$/dev/uhid because apcsmart surfaces far more
+  # telemetry (output.current, input.voltage.min/max, input.frequency,
+  # ups.temperature, …) that the HID path never exposed — this is what
+  # feeds the kube-infra UPS Grafana dashboard. Verified live 2026-05-30:
+  #   driver = apcsmart$Smart-UPS, port = /dev/ttyUSB0, driver.version 2.8.0.
+  #
+  # ⚠️ USB-TEARDOWN CAVEAT (root cause of the DR shutdown bug, #57):
+  # /dev/ttyUSB0 is a USB-backed tty. During NAS poweroff the kernel
+  # removes the USB-serial adapter BEFORE TrueNAS's `powerdown` killpower
+  # step runs, so `shutdown.return` never reaches the UPS — on a real
+  # outage the UPS keeps powering the (already-dead) load until the battery
+  # is flat, then a second uncontrolled outage when utility returns. apcsmart
+  # over a *native* RS-232 port would not have this problem, but the
+  # hardware has none; the working fix is to deliver the UPS power-off
+  # command up-front, while USB comms are still alive — see the wiki runbook
+  # `ups-operations.md` § "DR shutdown fix" (validate via Drill A).
+  driver: "apcsmart$Smart-UPS"
+  port: /dev/ttyUSB0
   mode: MASTER                      # this NAS runs the NUT server
   # Service-level bindip isn't a field on ups.config in 25.10 — NUT listens
   # on the port globally and we rely on mikrotik-infra firewall + the fact
@@ -127,8 +140,13 @@ nut:
   # See `wiki/docs/runbooks/ups-operations.md` § Threshold reference
   # for unit/rationale per setting + the fix command.
   ups_thresholds:
+    # Canonical target 300s. Live firmware read 2026-05-30 showed 360s
+    # (works fine — comfortably covers cluster+NAS poweroff once the
+    # power-off command is delivered up-front per the DR shutdown fix).
+    # To align to 300: `upsrw -s ups.delay.shutdown=300 -u upsadmin ...`
+    # in a maintenance window (firmware write — operator stays in loop).
     ups_delay_shutdown: 300      # seconds — UPS kills outputs N sec after `shutdown.return`
-    ups_delay_start: 60          # seconds — UPS re-enables outputs N sec after utility returns
+    ups_delay_start: 60          # seconds — UPS re-enables outputs N sec after utility returns (live: 60 ✓)
     # battery_runtime_low: 660   # seconds — firmware-clamped on Smart-UPS;
                                  #   APC derives this from battery.charge.low (10%)
                                  #   and rejects override attempts. Omitted from
