@@ -721,7 +721,7 @@ swap silently reverts to APC defaults. Codified in
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
 | TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence. **NOTE:** with the USB-serial adapter this currently does NOT reach the UPS in time — see the DR shutdown bug below. |
 | TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
-| TrueNAS `shutdowntimer` | 60 | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. |
+| TrueNAS `shutdowntimer` | 30 (was 60) | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. Set 30 on 2026-05-30 to match the DR flow. NB: LOWBATT mode may shut down on the LB signal regardless of this timer — confirm in Drill A. |
 
 **DR shutdown bug (#57) — UPS keeps draining after a real outage:**
 

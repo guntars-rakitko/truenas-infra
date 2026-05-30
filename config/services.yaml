@@ -50,9 +50,13 @@ nut:
   # signals "battery low" — gives the cluster the full runtime envelope
   # and only kills services when power genuinely won't return in time.
   # shutdowntimer still applies as a grace before init 0 once the trigger
-  # fires; 60s is enough for in-flight requests + filesystem sync.
+  # fires. Set to 30s (was 60) 2026-05-30 to match the intended DR flow
+  # ("~30s after LB the NAS shuts itself down + arms the UPS power-off").
+  # NB: in LOWBATT mode TrueNAS may shut down on the LB signal regardless of
+  # this timer — confirm the actual grace during Drill A. Apply live with:
+  #   sudo midclt call ups.update '{"shutdowntimer": 30}'   (then RESTART ups)
   shutdown: LOWBATT
-  shutdowntimer: 60                 # grace seconds after shutdown trigger fires
+  shutdowntimer: 30                 # grace seconds after shutdown trigger fires
   # monuser/monpwd for NUT clients (K8s nodes connect as these).
   # monuser: declared here.
   # monpwd: NOT in YAML — read from Doppler `TRUENAS_NUT_MONPWD` by
