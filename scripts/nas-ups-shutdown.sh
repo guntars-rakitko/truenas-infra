@@ -38,7 +38,19 @@ log() {
     logger -t nas-ups-shutdown "$*" 2>/dev/null || true
 }
 
-log "=== shutdown hook start: arming UPS power-off (bug #57) ==="
+log "=== shutdown hook start ==="
+
+# GUARD: only arm the UPS on a genuine power-fail shutdown. upsmon sets the
+# POWERDOWNFLAG file ONLY during an FSD/low-battery shutdown; a routine reboot
+# or admin poweroff leaves it unset. `upsmon -K` exits 0 iff the flag is set.
+# Without this guard a normal reboot would arm the UPS and cut the WHOLE rack
+# ~ups.delay.shutdown later — mid-operation after the NAS already came back.
+if ! /usr/sbin/upsmon -K >/dev/null 2>&1; then
+    log "POWERDOWNFLAG not set — routine reboot/shutdown, NOT arming UPS. exit."
+    chmod 644 "$LOG" 2>/dev/null || true
+    exit 0
+fi
+log "POWERDOWNFLAG set — power-fail shutdown; arming UPS power-off (bug #57)"
 armed=0
 
 # Path 1 (preferred): instcmd via the running upsd/driver — no device-claim race.
