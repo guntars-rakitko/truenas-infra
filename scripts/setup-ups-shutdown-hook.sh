@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
-# setup-ups-shutdown-hook.sh — install the NAS pre-halt UPS power-off hook.
-# Idempotent: re-running re-uploads the script + refreshes the password file
-# + re-asserts the shutdowncmd field. Run from the operator's laptop.
+# setup-ups-shutdown-hook.sh — install the NAS UPS power-off hook (bug #57).
+# Idempotent. Run from the operator's laptop.
 #
-# Why this exists (bug #57): the UPS reaches the NAS over a DB-9 → RS-232 →
-# USB adapter (/dev/ttyUSB0). TrueNAS's default `powerdown` killpower runs too
-# late — after the kernel tears down the USB device — so `shutdown.return`
-# never reaches the UPS and it keeps draining on a real outage. This installs
-# scripts/nas-ups-shutdown.sh as upsmon's SHUTDOWNCMD so the power-off is
-# armed up-front, while USB comms are still alive.
+# APPROACH (revised 2026-05-31 after the upsmon-SHUTDOWNCMD attempt failed):
+# register the hook as a TrueNAS **Init/Shutdown Script** (when=SHUTDOWN) and
+# CLEAR `ups.config.shutdowncmd` back to TrueNAS's default host-poweroff. The
+# init/shutdown script runs during poweroff and only ARMS the UPS
+# (`shutdown.return`); TrueNAS still owns the host shutdown. Community basis:
+# NUT issue #2587 + the systemd `nutshutdown` hook — kill-power belongs at a
+# shutdown-time hook, not at FSD/SHUTDOWNCMD time.
 #
-# FILE PLACEMENT GOES THROUGH THE TrueNAS API (filesystem.put), NOT ssh+sudo:
-# the NOPASSWD sudo allowlist only covers midclt/upscmd/upsrw/docker — `sudo
-# tee`/`mkdir`/`chmod` would prompt for a password and fail non-interactively.
-# The middleware API runs as root, so files land root-owned with the right mode.
+# All file placement + config goes through the TrueNAS API (filesystem.put,
+# ups.update, initshutdownscript.*), NOT ssh+sudo — the NOPASSWD allowlist only
+# covers midclt/upscmd/upsrw/docker, and the middleware API runs as root.
 #
-# Prereqs (all from Doppler infrastructure/ops; manage.sh exports them):
-#   - TRUENAS_HOST         e.g. nas.w1.lv (or 10.10.5.10)
-#   - TRUENAS_API_KEY      long-lived key
-#   - TRUENAS_NUT_ADMINPWD upsadmin NUT password (baked into the root-only
-#                          pw file the hook reads when Doppler is unreachable)
+# Prereqs (Doppler infrastructure/ops; manage.sh exports the first two):
+#   TRUENAS_HOST          e.g. nas.w1.lv (or 10.10.5.10)
+#   TRUENAS_API_KEY       long-lived key
+#   TRUENAS_NUT_ADMINPWD  upsadmin NUT password (baked into the root-only pw file)
 #
-# ⚠️  This wires the live shutdown path. VALIDATE with Drill A immediately
-#     after (whole-rack maintenance window) — see
-#     wiki/docs/runbooks/ups-operations.md § Drill A. Until validated, leave
-#     `powerdown: true` as the (failing-but-harmless) backup.
+# ⚠️  Wires a live shutdown path. VALIDATE with the LIGHT drill afterwards:
+#     `ssh truenas_admin@HOST 'sudo upsmon -c fsd'` (no battery drain), then
+#     read /mnt/tank/system/nut/last-shutdown.log. See
+#     wiki/docs/runbooks/ups-operations.md § Drill A.
 set -euo pipefail
 
 : "${TRUENAS_HOST:?set TRUENAS_HOST (e.g. nas.w1.lv)}"
@@ -42,8 +40,6 @@ HOOK_LOCAL="$HOOK_LOCAL" \
 REPO="$REPO" \
 "$PY" - <<'PY'
 import os, sys, time, tempfile, pathlib
-# truenas_infra is editable-installed in this repo's venv; add src as a
-# safe fallback in case the venv was built without the editable install.
 _repo = os.environ.get("REPO")
 if _repo:
     sys.path.insert(0, str(pathlib.Path(_repo) / "src"))
@@ -56,59 +52,90 @@ VSSL = os.environ.get("TRUENAS_VERIFY_SSL", "false").lower() in ("1", "true", "y
 DIR  = "/mnt/tank/system/nut"
 HOOK = f"{DIR}/nas-ups-shutdown.sh"
 PWF  = f"{DIR}/.upsadmin-pw"
+COMMENT = "UPS pre-halt power-off (bug #57)"
 hook_local = pathlib.Path(os.environ["HOOK_LOCAL"])
 
 
 def ensure_dir(cli, path):
     try:
-        cli.call("filesystem.stat", path)
-        return "exists"
+        cli.call("filesystem.stat", path); return "exists"
     except Exception:
         pass
     last = None
     for arg in ({"path": path}, path):
         try:
-            cli.call("filesystem.mkdir", arg)
-            return "created"
+            cli.call("filesystem.mkdir", arg); return "created"
         except Exception as e:  # noqa: BLE001
             last = e
     raise last
 
 
+def restart_ups(cli):
+    # RESTART can leave the service STOPPED on TrueNAS 25.10 — STOP+START+verify.
+    try:
+        cli.call("service.control", "STOP", "ups")
+    except Exception:  # noqa: BLE001
+        pass
+    time.sleep(2)
+    cli.call("service.control", "START", "ups")
+    time.sleep(5)
+    return cli.call("service.query", [["service", "=", "ups"]])[0]["state"]
+
+
 print(f"==> connecting to {HOST}")
 with connected(HOST, KEY, verify_ssl=VSSL) as cli:
-    print(f"==> [1/4] {DIR}: {ensure_dir(cli, DIR)}")
+    # 1. Retire the failed upsmon-SHUTDOWNCMD approach FIRST so upsmon goes back
+    #    to TrueNAS's own host-poweroff before we change the script file.
+    cfg = cli.call("ups.config")
+    if cfg.get("shutdowncmd"):
+        cli.call("ups.update", {"shutdowncmd": ""})
+        state = restart_ups(cli)
+        print(f"==> [1/5] cleared ups.config.shutdowncmd (ups service: {state})")
+        if state != "RUNNING":
+            print("ERROR: ups service not RUNNING after clear+restart", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("==> [1/5] ups.config.shutdowncmd already empty")
+
+    # 2. Place the hook + root-only password file (as root, via the API).
+    print(f"==> [2/5] {DIR}: {ensure_dir(cli, DIR)}")
     upload_file(cli, host=HOST, api_key=KEY, local_path=hook_local,
                 remote_path=HOOK, mode=0o700, verify_ssl=VSSL)
-    print(f"==> [2/4] uploaded hook -> {HOOK} (mode 700, root)")
-    tf = tempfile.NamedTemporaryFile("w", delete=False)
-    tf.write(PW)
-    tf.close()
+    print(f"==> [3/5] uploaded hook -> {HOOK} (mode 700, root)")
+    tf = tempfile.NamedTemporaryFile("w", delete=False); tf.write(PW); tf.close()
     try:
         os.chmod(tf.name, 0o600)
         upload_file(cli, host=HOST, api_key=KEY, local_path=pathlib.Path(tf.name),
                     remote_path=PWF, mode=0o600, verify_ssl=VSSL)
-        print(f"==> [3/4] uploaded password file -> {PWF} (mode 600, root)")
+        print(f"==> [4/5] uploaded password file -> {PWF} (mode 600, root)")
     finally:
         os.unlink(tf.name)
-    cli.call("ups.update", {"shutdowncmd": HOOK})
-    # RESTART can leave the ups service STOPPED on TrueNAS 25.10 — STOP+START+verify.
-    try:
-        cli.call("service.control", "STOP", "ups")
-    except Exception as e:  # noqa: BLE001
-        print("    (stop note:", e, ")")
-    time.sleep(2)
-    cli.call("service.control", "START", "ups")
-    time.sleep(5)
+
+    # 3. Register (or update) the SHUTDOWN init/shutdown script — persists in
+    #    the config DB across reboots + TrueNAS updates.
+    desired = {"type": "SCRIPT", "script": HOOK, "when": "SHUTDOWN",
+               "enabled": True, "timeout": 20, "comment": COMMENT}
+    existing = [s for s in cli.call("initshutdownscript.query")
+                if s.get("comment") == COMMENT or s.get("script") == HOOK]
+    if existing:
+        cli.call("initshutdownscript.update", existing[0]["id"], desired)
+        action = f"updated id={existing[0]['id']}"
+    else:
+        new = cli.call("initshutdownscript.create", desired)
+        action = f"created id={new['id']}"
+    print(f"==> [5/5] SHUTDOWN init/shutdown script {action}")
+
+    # Verify
     cfg = cli.call("ups.config")
-    svc = cli.call("service.query", [["service", "=", "ups"]])[0]
-    print(f"==> [4/4] shutdowncmd = {cfg['shutdowncmd']!r}")
-    print(f"    ups service state = {svc['state']} (enable={svc['enable']})")
-    if svc["state"] != "RUNNING":
-        print("ERROR: ups service not RUNNING — START it and check 'upsc apc1@localhost'", file=sys.stderr)
-        sys.exit(1)
+    scripts = [s for s in cli.call("initshutdownscript.query")
+               if s.get("script") == HOOK and s.get("when") == "SHUTDOWN"]
+    print()
+    print(f"VERIFY ups.config.shutdowncmd = {cfg['shutdowncmd']!r} (should be '')")
+    print(f"VERIFY SHUTDOWN script registered = {bool(scripts)} "
+          f"(enabled={scripts[0]['enabled'] if scripts else 'n/a'})")
 
 print()
-print("✓ Installed. NEXT: validate end-to-end with Drill A (whole-rack window).")
-print("  Until validated, the default powerdown killpower stays as backup.")
+print("✓ Installed. NEXT: light validation drill (no battery drain):")
+print("    ssh truenas_admin@HOST 'sudo upsmon -c fsd'")
+print("  then read /mnt/tank/system/nut/last-shutdown.log to see what fired.")
 PY

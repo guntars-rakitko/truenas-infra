@@ -740,25 +740,41 @@ as much as to usbhid-ups, because the transport is still USB.)
 `ups.delay.shutdown` / `delay.start` are NOT the problem — the UPS never
 gets the command that would start the countdown.
 
-**Fix (implemented, not yet enabled live):** deliver `shutdown.return`
-up-front via upsmon's `SHUTDOWNCMD`, while USB comms are still alive — once
-the UPS has it, its own `ups.delay.shutdown` (540s) countdown is autonomous
-and fires after the teardown.
-- `scripts/nas-ups-shutdown.sh` — the hook (upscmd `shutdown.return` primary,
-  `upsdrvctl shutdown` fallback, then graceful `poweroff`).
-- `scripts/setup-ups-shutdown-hook.sh` — one-shot installer (uploads the hook
-  to `/mnt/tank/system/nut/`, writes the root-only upsadmin password file from
-  Doppler, sets `ups.config.shutdowncmd`).
-- `config/services.yaml § nut.shutdowncmd` — left **empty (unmanaged)** on
-  purpose; `modules/nut.py` only reconciles it when non-empty. Uncomment the
-  staged value AFTER Drill A validates the chain.
+**Attempt 1 (FAILED, 2026-05-30):** arm `shutdown.return` from upsmon's
+`SHUTDOWNCMD` via `ups.config.shutdowncmd`. Live drill on dev: nodes + NAS
+shut down gracefully, but the **UPS was never armed and drained flat** —
+exact bug #57. Retired this approach.
 
-Enable sequence: (1) run `setup-ups-shutdown-hook.sh` in a maintenance
-window, (2) validate via **Drill A** (`apc1` powers the WHOLE rack — affects
-prd too), (3) only then uncomment `shutdowncmd:` in services.yaml.
+**Why it failed + the right mechanism (NUT issue #2587, systemd `nutshutdown`
+hook):** kill-power must run as a *shutdown-time* hook once the NUT driver has
+released the USB device — not at FSD/SHUTDOWNCMD time. `upsdrvctl shutdown`
+fails "Can't claim USB device" while the driver still holds the port; and
+TrueNAS's read-only `/usr/lib/systemd/system-shutdown/` blocks the standard
+`nutshutdown` hook.
 
-Alternatives if it proves unreliable: native RS-232 (no USB to tear down —
-needs hardware the Beelink lacks), or tuning the apcsmart `sdtype` option.
+**Attempt 2 (current, not yet validated):** a TrueNAS **Init/Shutdown Script**
+(when=SHUTDOWN) that ARMS the UPS during poweroff; `shutdowncmd` stays cleared
+so TrueNAS keeps owning the host poweroff.
+- `scripts/nas-ups-shutdown.sh` — arm-only hook: `upscmd shutdown.return`
+  (works while upsd is up — driver relays it), fallback `upsdrvctl stop` +
+  `upsdrvctl shutdown` (driver released → can claim USB). Logs to
+  `/mnt/tank/system/nut/last-shutdown.log` (world-readable — diagnosable
+  without journal access, which truenas_admin lacks). Does NOT poweroff.
+- `scripts/setup-ups-shutdown-hook.sh` — installer (API-based: clears
+  shutdowncmd + restarts ups, uploads hook + root-only pw file, registers the
+  SHUTDOWN init/shutdown script). Init/shutdown scripts persist in the config
+  DB across reboots + updates.
+- `config/services.yaml § nut.shutdowncmd` — **keep empty**.
+
+Validate with the LIGHT drill (no battery drain): `sudo upsmon -c fsd` →
+read `last-shutdown.log` to see which arm path fired and whether the UPS cut.
+
+**Severity reality check:** data is NEVER at risk — the graceful shutdown
+chain works. Bug #57 only means the battery fully drains + no clean
+auto-recovery if mains returns mid-drain. So "accept + document" is a valid
+fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
+needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
+rich Grafana telemetry for the standard kill-power path).
 
 **Service-restart gotcha:** `midclt call service.control RESTART ups` can
 leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a

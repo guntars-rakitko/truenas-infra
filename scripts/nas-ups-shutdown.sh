@@ -1,67 +1,73 @@
 #!/bin/sh
-# nas-ups-shutdown.sh — NAS pre-halt UPS power-off hook.
+# nas-ups-shutdown.sh — arm the UPS power-off during NAS shutdown (bug #57).
 #
-# Wired as TrueNAS `ups.config.shutdowncmd` → NUT upsmon SHUTDOWNCMD. upsmon
-# runs this the instant the master decides to power down (on LB/FSD when
-# `shutdown=LOWBATT`), while the system AND the USB-serial link are STILL UP.
+# Registered as a TrueNAS **Init/Shutdown Script** (type=SCRIPT, when=SHUTDOWN)
+# by scripts/setup-ups-shutdown-hook.sh — NOT as upsmon's SHUTDOWNCMD. The
+# first attempt (upsmon SHUTDOWNCMD) failed live on 2026-05-30: the UPS was
+# never armed and drained flat. Community evidence (NUT issue #2587, the
+# systemd `nutshutdown` hook) shows the kill-power must run as a shutdown-time
+# hook, and that `upsdrvctl shutdown` only works once the driver has released
+# the USB device.
 #
-# WHY THIS EXISTS (bug #57): the UPS reaches the NAS over a DB-9 → RS-232 →
-# USB adapter (/dev/ttyUSB0). TrueNAS's default `powerdown` killpower runs at
-# the very END of halt, AFTER the kernel removes the USB device — so
-# `shutdown.return` never reaches the UPS and it keeps draining the dead load
-# on a real outage (then a second uncontrolled outage when utility returns).
-# We send the power-off command HERE instead, up-front: once the UPS receives
-# `shutdown.return`, its own `ups.delay.shutdown` (540 s / 9 min) countdown is
-# AUTONOMOUS and fires even after USB is gone.
+# This runs DURING TrueNAS poweroff while the box can still reach the UPS.
+# It ONLY arms the UPS (TrueNAS already handles the host poweroff) so the UPS
+# cuts power after `ups.delay.shutdown` (540s) and re-powers when mains returns.
 #
-# shutdown.return semantics: "cut the load after ups.delay.shutdown, then
-# re-power when mains is back (after ups.delay.start)". On battery (DR) this is
-# a clean delayed cut + automatic recovery on utility return — the intended flow.
+# Why bug #57 exists: the UPS is on a DB-9 -> RS-232 -> USB adapter
+# (/dev/ttyUSB0). TrueNAS's built-in `powerdown` kill-power runs only after the
+# USB device is torn down, so `shutdown.return` never reaches the UPS and it
+# drains the dead load flat. We arm it earlier, here.
 #
-# Deployed to /mnt/tank/system/nut/ by scripts/setup-ups-shutdown-hook.sh
-# (a ZFS dataset path, so it survives reboots + TrueNAS updates).
+# Robust to either ordering (NUT still up, or already stopped):
+#   1. `upscmd shutdown.return` — works while upsd+driver are up; the running
+#      driver relays it over the already-open USB link (no device-claim race).
+#   2. `upsdrvctl stop` then `upsdrvctl shutdown` — fallback if upsd is gone;
+#      stopping the driver frees /dev/ttyUSB0 so upsdrvctl can claim it,
+#      avoiding the "Can't claim USB device" error (NUT issue #2587).
 #
-# VALIDATE VIA DRILL A before trusting it — see
-# wiki/docs/runbooks/ups-operations.md § Drill A.
+# Diagnosable WITHOUT journal access: appends a timestamped trace to LOG
+# (world-readable) so we can confirm what fired after a drill.
 set -u
-
 UPS="apc1@localhost"
-PWFILE="/mnt/tank/system/nut/.upsadmin-pw"
-L="logger -t nas-ups-shutdown"
+DIR="/mnt/tank/system/nut"
+PWFILE="$DIR/.upsadmin-pw"
+LOG="$DIR/last-shutdown.log"
 
-$L "pre-halt: arming UPS power-off (shutdown.return) before USB teardown"
+log() {
+    echo "[$(date '+%F %T')] $*" >> "$LOG" 2>/dev/null
+    logger -t nas-ups-shutdown "$*" 2>/dev/null || true
+}
+
+log "=== shutdown hook start: arming UPS power-off (bug #57) ==="
 armed=0
 
-# Primary path: explicit instcmd via upsd. Uses ups.delay.shutdown exactly and
-# is the command Drill A documents. Needs the upsadmin password from a
-# root-only file (Doppler is unreachable during shutdown — no network).
+# Path 1 (preferred): instcmd via the running upsd/driver — no device-claim race.
 if [ -r "$PWFILE" ]; then
     PW=$(cat "$PWFILE")
-    if /usr/bin/upscmd -u upsadmin -p "$PW" "$UPS" shutdown.return >/dev/null 2>&1; then
-        $L "upscmd shutdown.return OK — UPS cuts power after ups.delay.shutdown"
+    if /usr/bin/upscmd -u upsadmin -p "$PW" "$UPS" shutdown.return >> "$LOG" 2>&1; then
+        log "OK: upscmd shutdown.return accepted (UPS cuts after ups.delay.shutdown)"
         armed=1
     else
-        $L "upscmd shutdown.return FAILED — trying upsdrvctl fallback"
+        log "MISS: upscmd shutdown.return failed (upsd down / auth?) — trying upsdrvctl"
     fi
     unset PW
 else
-    $L "$PWFILE unreadable — trying upsdrvctl fallback (no auth needed)"
+    log "MISS: $PWFILE unreadable — trying upsdrvctl"
 fi
 
-# Fallback path: local driver control, no password. Behavior depends on the
-# apcsmart shutdown command (sdtype); use only if the primary path is unusable.
+# Path 2 (fallback): release the driver, then kill-power via upsdrvctl.
 if [ "$armed" != 1 ]; then
-    if /usr/sbin/upsdrvctl shutdown apc1 >/dev/null 2>&1; then
-        $L "upsdrvctl shutdown OK (fallback)"
+    /usr/sbin/upsdrvctl stop apc1 >> "$LOG" 2>&1 || true
+    sleep 1
+    if /usr/sbin/upsdrvctl shutdown apc1 >> "$LOG" 2>&1; then
+        log "OK: upsdrvctl shutdown issued (fallback path)"
         armed=1
+    else
+        log "FAIL: upsdrvctl shutdown failed — UPS NOT armed, it will drain flat"
     fi
 fi
 
-[ "$armed" = 1 ] || $L "WARNING: UPS power-off NOT armed — UPS may keep draining after halt"
-
-# Let the command land over the still-alive USB link before we tear it down.
-sleep 3
-
-# Graceful systemd poweroff (stops all services in order, exports ZFS, halts).
-$L "halting NAS now"
-exec /usr/sbin/poweroff
+log "=== shutdown hook end (armed=$armed) ==="
+chmod 644 "$LOG" 2>/dev/null || true
+# Never block the shutdown, regardless of outcome.
+exit 0
