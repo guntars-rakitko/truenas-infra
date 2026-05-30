@@ -57,3 +57,19 @@ If you need to rebuild the OS (eMMC failure, bad upgrade, etc.):
 5. Re-run `bootstrap/01-bootstrap-notes.md` (API key is lost; mint a new one).
 6. Re-run all phases in order; idempotency ensures they re-apply cleanly
    without destroying the re-imported pool.
+7. **Re-arm the UPS pre-halt shutdown hook (bug #57).** `phase nut` restores
+   the `ups.config` fields but does **not** deploy the shutdown hook script or
+   set `shutdowncmd` — that lives in a separate one-shot installer. The hook
+   files survive on the re-imported `tank` pool, but the fresh config DB loses
+   `shutdowncmd`, so re-run the installer (idempotent — re-uploads the hook +
+   password file to `/mnt/tank/system/nut` and re-sets `ups.config.shutdowncmd`):
+   ```bash
+   # TRUENAS_HOST + TRUENAS_API_KEY come from manage.sh / Doppler infrastructure/ops
+   export TRUENAS_NUT_ADMINPWD=$(doppler secrets get TRUENAS_NUT_ADMINPWD \
+       --project infrastructure --config ops --plain)
+   ~/github/truenas-infra/scripts/setup-ups-shutdown-hook.sh
+   ```
+   Then re-validate the shutdown chain with **Drill A** (see
+   `wiki/docs/runbooks/ups-operations.md`). Until validated, `powerdown: true`
+   remains the (failing-but-harmless) backup. Without this step the UPS will
+   not power off on a real outage — it keeps draining until the battery is flat.
