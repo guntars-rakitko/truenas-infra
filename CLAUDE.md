@@ -760,6 +760,13 @@ prd too), (3) only then uncomment `shutdowncmd:` in services.yaml.
 Alternatives if it proves unreliable: native RS-232 (no USB to tear down —
 needs hardware the Beelink lacks), or tuning the apcsmart `sdtype` option.
 
+**Service-restart gotcha:** `midclt call service.control RESTART ups` can
+leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a
+`shutdowntimer` update) — silently losing UPS monitoring. Use STOP + START +
+verify instead (`service.query … state == RUNNING`, then `upsc apc1@localhost
+ups.status` should answer `OL`, not "stale"). The battery-swap runbook and
+`scripts/setup-ups-shutdown-hook.sh` both follow this pattern.
+
 **Battery health verification:**
 - Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.
 - Automatic test interval: APC firmware default (14 days). Attempted to override to monthly via `ups.test.interval` 2026-05-28 — firmware rejected, kept default.

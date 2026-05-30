@@ -50,7 +50,15 @@ printf '%s' "$TRUENAS_NUT_ADMINPWD" | \
 
 echo "==> [4/4] Pointing TrueNAS upsmon SHUTDOWNCMD at the hook"
 ssh "$SSH_TARGET" "sudo midclt call ups.update '{\"shutdowncmd\": \"$DEST_SCRIPT\"}' >/dev/null"
-ssh "$SSH_TARGET" "sudo midclt call service.control RESTART ups >/dev/null"
+# NB: `service.control RESTART ups` can leave the service STOPPED on TrueNAS
+# 25.10 (observed 2026-05-30) — losing UPS monitoring. Use STOP+START and
+# verify it actually came back RUNNING (matches the battery-swap runbook).
+ssh "$SSH_TARGET" "sudo midclt call service.control STOP ups >/dev/null 2>&1 || true; sleep 2; sudo midclt call service.control START ups >/dev/null; sleep 4"
+STATE=$(ssh "$SSH_TARGET" "midclt call service.query '[[\"service\",\"=\",\"ups\"]]' | python3 -c 'import sys,json;print(json.load(sys.stdin)[0][\"state\"])'")
+if [[ "$STATE" != "RUNNING" ]]; then
+    echo "ERROR: ups service is $STATE after restart — run 'sudo midclt call service.control START ups' and check 'upsc apc1@localhost'." >&2
+    exit 1
+fi
 
 echo
 echo "✓ Installed. Live shutdowncmd:"
