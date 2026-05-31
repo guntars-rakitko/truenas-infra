@@ -85,8 +85,28 @@ class NutSpec:
                                  # own poweroff. Required for clean cluster shutdown chain
                                  # so UPS actually cuts power after cluster is off.
                                  # See services.yaml § nut.powerdown for full rationale.
+    shutdowncmd: str = ""        # Command upsmon runs (SHUTDOWNCMD) when the master decides
+                                 # to power down. Empty = leave TrueNAS's default (field is
+                                 # then UNMANAGED — not reconciled). Set to the pre-halt UPS
+                                 # power-off hook (scripts/nas-ups-shutdown.sh, deployed by
+                                 # scripts/setup-ups-shutdown-hook.sh) to fix the DB-9→USB
+                                 # teardown shutdown bug (#57): the hook arms `shutdown.return`
+                                 # up-front, while USB comms are alive, instead of relying on
+                                 # the default late killpower that the USB teardown defeats.
+                                 # Maps to TrueNAS `ups.config.shutdowncmd`.
     monuser: str = "upsmon"
     monpwd: str = ""             # NOT from YAML — read from TRUENAS_NUT_MONPWD env
+    options: str = ""            # Free-form text appended to /etc/nut/ups.conf
+                                 # inside the [<identifier>] section. Used for
+                                 # NUT driver-side directives that don't have
+                                 # dedicated TrueNAS fields, notably:
+                                 #   - ignorelb (decouple LB decision from UPS
+                                 #     firmware's internal voltage cutoff)
+                                 #   - override.battery.charge.low = N
+                                 #   - override.battery.runtime.low = N
+                                 # See services.yaml § nut.options for the
+                                 # 2026-05-29 drill that motivated this field.
+                                 # Maps to TrueNAS `ups.config.options`.
     extra_users: tuple[ExtraUserSpec, ...] = ()
     ups_thresholds: UpsThresholdsSpec = field(default_factory=UpsThresholdsSpec)
 
@@ -135,8 +155,14 @@ def load_nut_config(path: Path) -> NutSpec:
         shutdown=str(nut.get("shutdown", "BATT")).upper(),
         shutdowntimer=int(nut.get("shutdowntimer", 30)),
         powerdown=bool(nut.get("powerdown", False)),
+        shutdowncmd=str(nut.get("shutdowncmd", "") or "").strip(),
         monuser=nut.get("monuser", "upsmon"),
         monpwd=os.environ.get("TRUENAS_NUT_MONPWD", ""),
+        # Strip trailing newline: YAML `|` block scalar preserves the
+        # closing newline, but TrueNAS's midclt-stored value doesn't
+        # round-trip that — causes a spurious diff on every reconcile.
+        # `|-` in YAML would also work; rstrip here is more forgiving.
+        options=str(nut.get("options", "") or "").rstrip("\n"),
         extra_users=extra_users,
         ups_thresholds=ups_thresholds,
     )
@@ -148,7 +174,8 @@ def load_nut_config(path: Path) -> NutSpec:
 _MANAGED_UPS_FIELDS = (
     "identifier", "description", "driver", "port",
     "mode", "remoteport", "rmonitor", "shutdown", "shutdowntimer",
-    "powerdown", "monuser",
+    "powerdown", "monuser", "options",
+    # "shutdowncmd" is managed only when non-empty in YAML — see ensure_ups_config.
 )
 
 
@@ -168,7 +195,15 @@ def ensure_ups_config(cli: Any, *, spec: NutSpec, apply: bool) -> Diff:
         "shutdowntimer": spec.shutdowntimer,
         "powerdown": spec.powerdown,
         "monuser": spec.monuser,
+        "options": spec.options,
     }
+
+    # shutdowncmd is managed ONLY when explicitly set in YAML. An empty spec
+    # means "leave TrueNAS's default untouched" — including it unconditionally
+    # would diff a live `null` against `""` and clobber the default on every
+    # reconcile. When set (the pre-halt UPS hook), it reconciles like any field.
+    if spec.shutdowncmd:
+        desired["shutdowncmd"] = spec.shutdowncmd
 
     changes: dict[str, Any] = {}
     for k, v in desired.items():

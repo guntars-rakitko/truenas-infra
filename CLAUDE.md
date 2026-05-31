@@ -679,7 +679,10 @@ gear; the second UPS is reserved as a hot spare. Battery replaced
 
 ```
 TrueNAS (this NAS, 10.10.5.10:3493)
-  ├─ runs NUT MASTER (upsd + driver `usbhid-ups` → /dev/uhid)
+  ├─ runs NUT MASTER (upsd + driver `apcsmart` → /dev/ttyUSB0)
+  │    apcsmart over the UPS DB-9 (LCC) via a USB→RS-232 adapter; gives
+  │    the rich telemetry the dashboard needs (output.current, input
+  │    min/max, frequency, temperature). Migrated from usbhid-ups/$/dev/uhid.
   ├─ upsmon (master mode) — issues FSD + shutdown.return to UPS
   └─ upsd.users:
       upsmon (secondary perms)  → K8s nodes' Talos nut-client
@@ -711,14 +714,132 @@ swap silently reverts to APC defaults. Codified in
 
 | Variable | Value | Unit | Why |
 |---|---|---|---|
-| `ups.delay.shutdown` | **300** | seconds (5 min) | Time UPS waits between `shutdown.return` and killing power. 5 min comfortably covers worst-case Talos node shutdown (~60-90s) plus NAS shutdown (~15s) plus margin. |
-| `ups.delay.start` | **60** | seconds (1 min) | Delay before UPS re-enables outputs after utility returns. 60s avoids the boot-shutdown-boot loop on flaky grids. |
-| `battery.runtime.low` | 660 (firmware-clamped) | seconds (11 min) | Triggers `LB` (Low Battery) when estimated runtime drops to this value. Attempted 600 (10 min) but APC firmware derives this from `battery.charge.low` and rejected the override. Current fresh-battery actual runtime ~1260s (21 min) → cluster gets ~10 min on battery before LB fires. |
-| `battery.charge.low` | 10 | percent | FSD safety net if runtime estimate becomes inaccurate as battery ages. Default. |
+| `ups.delay.shutdown` | **450** (7.5 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Trimmed 630→450 on 2026-05-31 once Talos nodes started powering off in ~3.2 min via `/sbin/poweroff --force` (kube-infra #611) instead of the ~6-8 min drain path; 450s still leaves wide margin. ENUM valid: 090/180/270/360/450/540/630/000. Writable (`upsrw`). Ratchet lower (360/270) as real outages confirm timing. |
+| `ups.delay.start` | **60** (1 min) | seconds | Delay before UPS re-enables outputs after utility returns. apcsmart ENUM — write the zero-padded `"060"` (bare `60` → `ERR INVALID-VALUE`). Avoids the boot-shutdown-boot loop on flaky grids. |
+| `battery.runtime.low` | **840** (14 min) | seconds | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.runtime.low = 840` in `ups.config.options`. Raised 600→840 on 2026-05-31 for shutdown reserve. |
+| `battery.charge.low` | **75** | percent | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.charge.low = 75` + `ignorelb` in `ups.config.options`. Raised 50→75 on 2026-05-31 after the full drill (battery hit ~5% at the cut); 75% leaves ~14 min reserve when shutdown starts. Trade-off: less ride-through. |
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
-| TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence — without this, after the cluster shuts down the UPS keeps running until battery dies (uncleanly). |
+| TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence. **NOTE:** with the USB-serial adapter this currently does NOT reach the UPS in time — see the DR shutdown bug below. |
 | TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
-| TrueNAS `shutdowntimer` | 60 | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. |
+| TrueNAS `shutdowntimer` | 30 (was 60) | seconds | Grace after LB fires before TrueNAS calls SHUTDOWNCMD on itself. Set 30 on 2026-05-30 to match the DR flow. NB: LOWBATT mode may shut down on the LB signal regardless of this timer — confirm in Drill A. |
+
+**DR shutdown bug (#57) — UPS keeps draining after a real outage:**
+
+Symptom (operator-confirmed 2026-05-30): on a power-loss DR, the cluster
++ NAS shut down on Low-Battery as designed, but the **UPS never cuts its
+own outputs** — it keeps powering the dead load until the battery is flat,
+then delivers a second uncontrolled outage when utility returns.
+
+Root cause: the apcsmart driver reaches the UPS over `/dev/ttyUSB0`, a
+**USB→RS-232 adapter**. During NAS poweroff the kernel removes the USB
+device *before* TrueNAS's `powerdown` killpower step runs, so the
+`shutdown.return` command is never delivered. (This is the long-standing
+"USB teardown" failure mode — it applies to apcsmart-over-USB-serial just
+as much as to usbhid-ups, because the transport is still USB.)
+
+`ups.delay.shutdown` / `delay.start` are NOT the problem — the UPS never
+gets the command that would start the countdown.
+
+**Attempt 1 (FAILED, 2026-05-30):** arm `shutdown.return` from upsmon's
+`SHUTDOWNCMD` via `ups.config.shutdowncmd`. Live drill on dev: nodes + NAS
+shut down gracefully, but the **UPS was never armed and drained flat** —
+exact bug #57. Retired this approach.
+
+**Why it failed + the right mechanism (NUT issue #2587, systemd `nutshutdown`
+hook):** kill-power must run as a *shutdown-time* hook once the NUT driver has
+released the USB device — not at FSD/SHUTDOWNCMD time. `upsdrvctl shutdown`
+fails "Can't claim USB device" while the driver still holds the port; and
+TrueNAS's read-only `/usr/lib/systemd/system-shutdown/` blocks the standard
+`nutshutdown` hook.
+
+**Attempt 2 (current — VALIDATED 2026-05-31):** a TrueNAS **Init/Shutdown
+Script** (when=SHUTDOWN) that ARMS the UPS during poweroff; `shutdowncmd` stays
+cleared so TrueNAS keeps owning the host poweroff. A `upsmon -c fsd` drill
+confirmed the UPS cuts power + power-cycles the rack.
+- `scripts/nas-ups-shutdown.sh` — arm-only hook: `upscmd shutdown.return`
+  (works while upsd is up — driver relays it), fallback `upsdrvctl stop` +
+  `upsdrvctl shutdown` (driver released → can claim USB). Logs to
+  `/mnt/tank/system/nut/last-shutdown.log` (world-readable — diagnosable
+  without journal access, which truenas_admin lacks). Does NOT poweroff.
+  **POWERDOWNFLAG guard:** `when=SHUTDOWN` scripts run on EVERY shutdown+reboot,
+  so the hook first runs `upsmon -K` and only arms the UPS when the flag is set
+  (genuine FSD/low-battery shutdown). A routine reboot/poweroff → flag unset →
+  it logs and exits, so it does NOT power-cycle the rack on normal maintenance.
+- `scripts/setup-ups-shutdown-hook.sh` — installer (API-based: clears
+  shutdowncmd + restarts ups, uploads hook + root-only pw file, registers the
+  SHUTDOWN init/shutdown script). Init/shutdown scripts persist in the config
+  DB across reboots + updates.
+- `config/services.yaml § nut.shutdowncmd` — **keep empty**.
+
+Re-validate after changes with the LIGHT drill: `sudo upsmon -c fsd` (sets the
+flag → arms) → read `last-shutdown.log`. A plain `reboot` must NOT arm it
+(flag unset) — that's the guard's job.
+
+**Severity reality check:** data is NEVER at risk — the graceful shutdown
+chain works. Bug #57 only means the battery fully drains + no clean
+auto-recovery if mains returns mid-drain. So "accept + document" is a valid
+fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
+needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
+rich Grafana telemetry for the standard kill-power path).
+
+**Thresholds (2026-05-31):** LB `override.battery.charge.low` 50→**75** and
+`override.battery.runtime.low` 600→**840** (shutdown starts with ~14 min
+reserve, after the drill left the battery at ~5%). `ups.delay.shutdown` was
+raised 540→630 then **trimmed to 450** (7.5 min) once node shutdown was fixed
+(see below) — it no longer needs slow-node margin. LB triggers (75% / 840s)
+left aggressive for reserve. Trade-off: LB at 75% gives up short-outage
+ride-through sooner (a ~4-5 min outage triggers shutdown; still rides routine
+~90s blips).
+
+**✅ RESOLVED 2026-05-31 — slow Talos node shutdown (kube-infra #611).** Root
+cause: Talos's shutdown sequence ran an API-dependent pod *drain*
+(`CordonAndDrainNode`) that burned a hardcoded 5-min `DrainTimeout` once etcd
+quorum was lost (all 3 CP nodes powering off together) — the ~6-8 min "stuck
+loop" that drained the battery. Fix: the nodes' NUT `SHUTDOWNCMD` is now
+`/sbin/poweroff --force`, which skips ONLY that drain (StopAllPods graceful
+SIGTERM + fs sync still run, so it stays clean). Whole-rack node poweroff
+dropped to **~3.2 min** with **0 faulted** Longhorn volumes on recovery
+(validated on dev+prd). With shutdown fast, `ups.delay.shutdown` was trimmed
+630→450. The LB threshold COULD now be lowered back toward 50% for more
+ride-through, but is left at 75% (operator preference); the recharge alert
+noise was solved at the alert-class layer (see "UPS alert notifications"
+below), not by moving thresholds. Config: `kube-infra/talos-os/patches/general.yaml`.
+
+**Future option — controlled talosctl-orchestrated shutdown (NOT built).**
+Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
+orchestrator could `talosctl shutdown` the nodes in order, confirm each is down
+(AMT/ping), then halt the NAS + arm the UPS — with a full per-step log. Better
+control + observability, BUT: (a) puts a Talos cluster-control credential on
+the NAS (blast-radius increase; Talos roles are coarse — os:reader/operator/
+admin — no "shutdown-only" scope, so the cred can at least DoS the cluster),
+(b) real new infra + maintenance (talosctl binary, config rotation, AMT
+integration, more drills), (c) against the "no new infra" wrap-up doctrine.
+Defer; revisit post-rebuild only if the controlled process + logging is wanted.
+
+**Service-restart gotcha:** `midclt call service.control RESTART ups` can
+leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a
+`shutdowntimer` update) — silently losing UPS monitoring. Use STOP + START +
+verify instead (`service.query … state == RUNNING`, then `upsc apc1@localhost
+ups.status` should answer `OL`, not "stale"). The battery-swap runbook and
+`scripts/setup-ups-shutdown-hook.sh` both follow this pattern.
+
+**UPS alert notifications (kube-infra #611, 2026-05-31).** TrueNAS UPS event
+emails run through its alert framework (NOT NUT `NOTIFYFLAG`): each event is an
+alert class with a level + policy, and the **E-Mail alert service emits at
+WARNING and above**. Tuned classes (declared in `config/services.yaml §
+nut.alertclasses`, applied via `midclt call alertclasses.update` — NOT
+auto-reconciled, re-apply after a NAS rebuild):
+
+| Class | Level | Policy | Why |
+|---|---|---|---|
+| `UPSOnBattery` | CRITICAL (default) | IMMEDIATELY | power lost → emails. Kept. |
+| `UPSOnline` | INFO→**WARNING** | IMMEDIATELY | power restored. Was INFO (silent — below the email threshold) → bumped so "power back" notifies. |
+| `UPSBatteryLow` | ALERT | IMMEDIATELY→**HOURLY** | flapped per threshold-crossing during post-outage recharge (email spam) → throttled to ≤1/hr; still signals a genuine low battery. |
+
+Other UPS* classes (Commbad/Commok/Replbatt) kept at defaults. The recharge
+flapping is a side-effect of the aggressive 75%/840s LB triggers — the battery
+dwells in the LB zone for a while while recharging — so HOURLY caps the email
+spam without moving the (deliberately aggressive) thresholds.
 
 **Battery health verification:**
 - Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.
