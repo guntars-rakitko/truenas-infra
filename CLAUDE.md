@@ -714,7 +714,7 @@ swap silently reverts to APC defaults. Codified in
 
 | Variable | Value | Unit | Why |
 |---|---|---|---|
-| `ups.delay.shutdown` | **630** (10.5 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Raised 540→630 on 2026-05-31 (the **ENUM max** — valid: 090/180/270/360/450/540/630/000; 720 rejected) for more slow-node margin. Writable (`upsrw`). |
+| `ups.delay.shutdown` | **450** (7.5 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Trimmed 630→450 on 2026-05-31 once Talos nodes started powering off in ~3.2 min via `/sbin/poweroff --force` (kube-infra #611) instead of the ~6-8 min drain path; 450s still leaves wide margin. ENUM valid: 090/180/270/360/450/540/630/000. Writable (`upsrw`). Ratchet lower (360/270) as real outages confirm timing. |
 | `ups.delay.start` | **60** (1 min) | seconds | Delay before UPS re-enables outputs after utility returns. apcsmart ENUM — write the zero-padded `"060"` (bare `60` → `ERR INVALID-VALUE`). Avoids the boot-shutdown-boot loop on flaky grids. |
 | `battery.runtime.low` | **840** (14 min) | seconds | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.runtime.low = 840` in `ups.config.options`. Raised 600→840 on 2026-05-31 for shutdown reserve. |
 | `battery.charge.low` | **75** | percent | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.charge.low = 75` + `ignorelb` in `ups.config.options`. Raised 50→75 on 2026-05-31 after the full drill (battery hit ~5% at the cut); 75% leaves ~14 min reserve when shutdown starts. Trade-off: less ride-through. |

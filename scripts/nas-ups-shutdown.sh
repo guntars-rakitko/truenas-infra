@@ -11,7 +11,7 @@
 #
 # This runs DURING TrueNAS poweroff while the box can still reach the UPS.
 # It ONLY arms the UPS (TrueNAS already handles the host poweroff) so the UPS
-# cuts power after `ups.delay.shutdown` (540s) and re-powers when mains returns.
+# cuts power after `ups.delay.shutdown` (450s) and re-powers when mains returns.
 #
 # Why bug #57 exists: the UPS is on a DB-9 -> RS-232 -> USB adapter
 # (/dev/ttyUSB0). TrueNAS's built-in `powerdown` kill-power runs only after the
