@@ -172,6 +172,28 @@ nut:
     # ups_test_interval: 2419200 # seconds (28d) — firmware-rejected on our SMT750I
                                  #   model. APC default (14d auto-test) is what
                                  #   we get. Omitted from reconcile.
+
+  # UPS alert-class tuning (kube-infra #611, 2026-05-31). TrueNAS UPS
+  # notifications run through its alert framework (NOT NUT NOTIFYFLAG): each
+  # event is an alert class with a level + policy, and the E-Mail alert
+  # service emits at WARNING and above. NOT auto-reconciled — like the HID
+  # thresholds above this lives in the TrueNAS config DB; declared here +
+  # applied by hand (a NAS rebuild reverts to defaults, so re-apply after):
+  #   ssh truenas_admin@10.10.5.10 "sudo midclt call alertclasses.update \
+  #     '{\"classes\": {\"UPSBatteryLow\": {\"level\": \"ALERT\", \"policy\": \"HOURLY\"}, \
+  #       \"UPSOnline\": {\"level\": \"WARNING\", \"policy\": \"IMMEDIATELY\"}}}'"
+  # Rationale:
+  #   - UPSOnBattery (CRITICAL, default) → emails on power loss. Kept as-is.
+  #   - UPSOnline was INFO (below the WARNING email threshold, so "power back"
+  #     never emailed) → bumped to WARNING so utility-restored notifies.
+  #   - UPSBatteryLow flapped per threshold-crossing during post-outage
+  #     recharge (per-event email spam) → throttled to HOURLY; still signals a
+  #     genuine low battery during a real outage, just not 20×.
+  #   - Other UPS* classes (Commbad/Commok/Replbatt/OnBattery) kept at default.
+  alertclasses:
+    UPSBatteryLow: { level: ALERT, policy: HOURLY }
+    UPSOnline:     { level: WARNING, policy: IMMEDIATELY }
+
   # Power-event recovery flow (REQUIRED for clean cluster shutdown chain):
   # `powerdown: true` makes TrueNAS issue `upsdrvctl shutdown` → UPS
   # `shutdown.return` instruction at the end of the NAS poweroff. Without

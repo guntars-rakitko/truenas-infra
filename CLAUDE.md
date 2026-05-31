@@ -782,22 +782,28 @@ fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
 needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
 rich Grafana telemetry for the standard kill-power path).
 
-**Thresholds RAISED 2026-05-31 (post-drill) for reserve + node margin:**
-LB `override.battery.charge.low` 50→**75** and `override.battery.runtime.low`
-600→**840** (shutdown now starts with ~14 min reserve, after the drill left
-the battery at ~5%); `ups.delay.shutdown` 540→**630** (the ENUM max; 720 was
-the intent but unavailable). All applied live + codified. Trade-off: LB at 75%
-gives up short-outage ride-through sooner (a ~4-5 min outage now triggers
-shutdown; still rides routine ~90s blips).
+**Thresholds (2026-05-31):** LB `override.battery.charge.low` 50→**75** and
+`override.battery.runtime.low` 600→**840** (shutdown starts with ~14 min
+reserve, after the drill left the battery at ~5%). `ups.delay.shutdown` was
+raised 540→630 then **trimmed to 450** (7.5 min) once node shutdown was fixed
+(see below) — it no longer needs slow-node margin. LB triggers (75% / 840s)
+left aggressive for reserve. Trade-off: LB at 75% gives up short-outage
+ride-through sooner (a ~4-5 min outage triggers shutdown; still rides routine
+~90s blips).
 
-**⚠️ STILL OPEN — the real root cause: slow Talos node shutdown.** Nodes sat
-cordoned-Ready ~6:00–8:20 before powering off (the "stuck loop"). That long
-under-load window is what drained the battery; the threshold bumps are
-compensation, not a cure. **Highest-value follow-up: investigate/fix why the
-nut-client secondary shutdown is so slow** — if fixed, the LB threshold could
-be lowered back toward 50% (restoring ride-through). Re-drill on a FULLY
-charged battery to confirm the new margins (today's 5% was partly cumulative
-same-day drain).
+**✅ RESOLVED 2026-05-31 — slow Talos node shutdown (kube-infra #611).** Root
+cause: Talos's shutdown sequence ran an API-dependent pod *drain*
+(`CordonAndDrainNode`) that burned a hardcoded 5-min `DrainTimeout` once etcd
+quorum was lost (all 3 CP nodes powering off together) — the ~6-8 min "stuck
+loop" that drained the battery. Fix: the nodes' NUT `SHUTDOWNCMD` is now
+`/sbin/poweroff --force`, which skips ONLY that drain (StopAllPods graceful
+SIGTERM + fs sync still run, so it stays clean). Whole-rack node poweroff
+dropped to **~3.2 min** with **0 faulted** Longhorn volumes on recovery
+(validated on dev+prd). With shutdown fast, `ups.delay.shutdown` was trimmed
+630→450. The LB threshold COULD now be lowered back toward 50% for more
+ride-through, but is left at 75% (operator preference); the recharge alert
+noise was solved at the alert-class layer (see "UPS alert notifications"
+below), not by moving thresholds. Config: `kube-infra/talos-os/patches/general.yaml`.
 
 **Future option — controlled talosctl-orchestrated shutdown (NOT built).**
 Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
@@ -816,6 +822,24 @@ leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a
 verify instead (`service.query … state == RUNNING`, then `upsc apc1@localhost
 ups.status` should answer `OL`, not "stale"). The battery-swap runbook and
 `scripts/setup-ups-shutdown-hook.sh` both follow this pattern.
+
+**UPS alert notifications (kube-infra #611, 2026-05-31).** TrueNAS UPS event
+emails run through its alert framework (NOT NUT `NOTIFYFLAG`): each event is an
+alert class with a level + policy, and the **E-Mail alert service emits at
+WARNING and above**. Tuned classes (declared in `config/services.yaml §
+nut.alertclasses`, applied via `midclt call alertclasses.update` — NOT
+auto-reconciled, re-apply after a NAS rebuild):
+
+| Class | Level | Policy | Why |
+|---|---|---|---|
+| `UPSOnBattery` | CRITICAL (default) | IMMEDIATELY | power lost → emails. Kept. |
+| `UPSOnline` | INFO→**WARNING** | IMMEDIATELY | power restored. Was INFO (silent — below the email threshold) → bumped so "power back" notifies. |
+| `UPSBatteryLow` | ALERT | IMMEDIATELY→**HOURLY** | flapped per threshold-crossing during post-outage recharge (email spam) → throttled to ≤1/hr; still signals a genuine low battery. |
+
+Other UPS* classes (Commbad/Commok/Replbatt) kept at defaults. The recharge
+flapping is a side-effect of the aggressive 75%/840s LB triggers — the battery
+dwells in the LB zone for a while while recharging — so HOURLY caps the email
+spam without moving the (deliberately aggressive) thresholds.
 
 **Battery health verification:**
 - Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.
