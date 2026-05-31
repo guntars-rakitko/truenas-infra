@@ -88,23 +88,27 @@ nut:
   #     yank power if voltage truly collapses) but it cannot prematurely
   #     flip the LB status flag that upsmon clients watch.
   #
-  #   override.battery.charge.low = 50 — Triggers LB when SOC drops
-  #     below 50%. Conservative: prefers giving the cluster maximum
-  #     drain-time-to-shutdown headroom over squeezing extra battery
-  #     minutes. With ~250W cluster load + 168Wh battery, 50% gives
-  #     us ~6 min from LB to dark.
+  #   override.battery.charge.low = 75 — Triggers LB when SOC drops
+  #     below 75%. RAISED from 50 on 2026-05-31 after the full drill:
+  #     at 50% the battery hit ~5% (nearly dead) by the controlled UPS
+  #     cut, because the slow Talos node shutdown (~6-8 min) + delay
+  #     drained most of the reserve. 75% leaves ~14 min runtime in
+  #     reserve when shutdown STARTS. Trade-off: gives up ride-through
+  #     sooner (a ~4-5 min outage now triggers shutdown) — still rides
+  #     out the routine ~90s grid blips. Revisit downward once the slow
+  #     node shutdown is fixed.
   #
-  #   override.battery.runtime.low = 600 — Secondary trigger. LB
-  #     also fires if estimated runtime drops below 10 min. Backup
-  #     in case charge% reading is unreliable.
+  #   override.battery.runtime.low = 840 — Secondary trigger. LB also
+  #     fires if estimated runtime drops below 14 min (~75% on the
+  #     current ~18-19 min full-charge runtime). Raised from 600.
   #
   # Both override.* trigger via OR; whichever fires first wins.
   # Stored as a multi-line string; TrueNAS appends it verbatim to the
   # rendered ups.conf inside the [<identifier>] section.
   options: |
     ignorelb
-    override.battery.charge.low = 50
-    override.battery.runtime.low = 600
+    override.battery.charge.low = 75
+    override.battery.runtime.low = 840
 
   # Additional NUT users beyond the primary `monuser`. Codified here so
   # a fresh NAS install / TrueNAS factory-reset rebuilds `upsd.users`
@@ -144,11 +148,13 @@ nut:
   # See `wiki/docs/runbooks/ups-operations.md` § Threshold reference
   # for unit/rationale per setting + the fix command.
   ups_thresholds:
-    # ups.delay.shutdown is an ENUM on apcsmart (multiples of 90s). Set to
-    # 540 (9 min) live via upsrw on 2026-05-30 and verified stuck — gives
-    # the K8s nodes ~9 min to finish draining after the NAS issues
-    # shutdown.return at the start of its own poweroff.
-    ups_delay_shutdown: 540      # seconds (9 min) — UPS kills outputs N sec after `shutdown.return`. ENUM: multiples of 90.
+    # ups.delay.shutdown is an ENUM on apcsmart; valid values cap at 630
+    # (090/180/270/360/450/540/630/000). Raised 540→630 (9→10.5 min) on
+    # 2026-05-31 — the max — after the full drill: gives slow Talos nodes
+    # (~6-8 min) more margin before the cut. 12 min was the intent but the
+    # UPS doesn't offer it. Safe to lengthen now that LB is 75% (more
+    # reserve); the extra minutes are post-node-shutdown (near-zero load).
+    ups_delay_shutdown: 630      # seconds (10.5 min, ENUM max) — UPS kills outputs N sec after `shutdown.return`.
     ups_delay_start: 60          # seconds (1 min) — UPS re-enables outputs after utility returns. ENUM "060" (live ✓).
     # battery.runtime.low (600s / 10 min) and battery.charge.low (50%) are
     # READ-ONLY on this UPS firmware (upsrw → ERR READONLY, confirmed

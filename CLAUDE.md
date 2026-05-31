@@ -714,10 +714,10 @@ swap silently reverts to APC defaults. Codified in
 
 | Variable | Value | Unit | Why |
 |---|---|---|---|
-| `ups.delay.shutdown` | **540** (9 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Set 2026-05-30 (was 360) to give the K8s nodes ~9 min to finish draining after the NAS issues `shutdown.return`. apcsmart ENUM — value must be a multiple of 90s. Writable (`upsrw` OK). |
+| `ups.delay.shutdown` | **630** (10.5 min) | seconds | Time UPS waits between `shutdown.return` and killing power. Raised 540→630 on 2026-05-31 (the **ENUM max** — valid: 090/180/270/360/450/540/630/000; 720 rejected) for more slow-node margin. Writable (`upsrw`). |
 | `ups.delay.start` | **60** (1 min) | seconds | Delay before UPS re-enables outputs after utility returns. apcsmart ENUM — write the zero-padded `"060"` (bare `60` → `ERR INVALID-VALUE`). Avoids the boot-shutdown-boot loop on flaky grids. |
-| `battery.runtime.low` | **600** (10 min) | seconds | LB trigger. **READ-ONLY on firmware** (`upsrw` → `ERR READONLY`, 2026-05-30) — enforced via the driver `override.battery.runtime.low = 600` in `ups.config.options`. Live UPS reports 600. |
-| `battery.charge.low` | **50** | percent | LB trigger. **READ-ONLY on firmware** (`upsrw` → `ERR READONLY`, 2026-05-30) — enforced via the driver `override.battery.charge.low = 50` + `ignorelb` in `ups.config.options`. Live UPS reports 50. |
+| `battery.runtime.low` | **840** (14 min) | seconds | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.runtime.low = 840` in `ups.config.options`. Raised 600→840 on 2026-05-31 for shutdown reserve. |
+| `battery.charge.low` | **75** | percent | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.charge.low = 75` + `ignorelb` in `ups.config.options`. Raised 50→75 on 2026-05-31 after the full drill (battery hit ~5% at the cut); 75% leaves ~14 min reserve when shutdown starts. Trade-off: less ride-through. |
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
 | TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. Tells the master to issue `shutdown.return` to the UPS during its own poweroff sequence. **NOTE:** with the USB-serial adapter this currently does NOT reach the UPS in time — see the DR shutdown bug below. |
 | TrueNAS `shutdown` | `LOWBATT` | enum (BATT/LOWBATT) | Use LB as the shutdown trigger, not raw OB. Gives the cluster the full battery runtime envelope before initiating shutdown. |
@@ -782,25 +782,22 @@ fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
 needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
 rich Grafana telemetry for the standard kill-power path).
 
-**⚠️ TUNING TODO — margin is TIGHT, and BATTERY is the binding constraint
-(full drill 2026-05-31).** Nodes took ~6:00–8:20 to power off; UPS cut
-(`ups.delay.shutdown`=540s) ~40s after the last node. **Critically, the
-battery was at ~5% when the UPS came back** (Grafana, 07:41) — it nearly died
-*before* the controlled cut. Caveats: (a) the battery started this drill only
-partially charged (3 drain cycles same-day, limited recharge between) — a real
-outage from 100% has more headroom; (b) still too close for comfort.
-- **Do NOT just raise `ups.delay.shutdown`** — a longer delay holds the load on
-  battery *longer*, draining MORE; the battery, not node-timing, is the limit.
-  Keep it ~matched to node-shutdown-time (just enough for the slowest node).
-- **Primary lever: speed up the slow Talos nut-client secondary shutdown**
-  (nodes sit cordoned-Ready several minutes before powering off — the
-  "stuck loop"). Less time under load = far less drain. Highest value, lowest
-  risk; fixing this likely makes the current thresholds comfortable.
-- **Secondary lever: raise the LB threshold** (`override.battery.charge.low`
-  50→~65 / `override.battery.runtime.low`) so shutdown STARTS with more
-  reserve. Trade-off: less ride-through of short outages (gives up sooner).
-- Always let the battery fully recharge (~4–6h) before re-drilling — today's
-  5% is partly cumulative same-day drain, not the steady-state margin.
+**Thresholds RAISED 2026-05-31 (post-drill) for reserve + node margin:**
+LB `override.battery.charge.low` 50→**75** and `override.battery.runtime.low`
+600→**840** (shutdown now starts with ~14 min reserve, after the drill left
+the battery at ~5%); `ups.delay.shutdown` 540→**630** (the ENUM max; 720 was
+the intent but unavailable). All applied live + codified. Trade-off: LB at 75%
+gives up short-outage ride-through sooner (a ~4-5 min outage now triggers
+shutdown; still rides routine ~90s blips).
+
+**⚠️ STILL OPEN — the real root cause: slow Talos node shutdown.** Nodes sat
+cordoned-Ready ~6:00–8:20 before powering off (the "stuck loop"). That long
+under-load window is what drained the battery; the threshold bumps are
+compensation, not a cure. **Highest-value follow-up: investigate/fix why the
+nut-client secondary shutdown is so slow** — if fixed, the LB threshold could
+be lowered back toward 50% (restoring ride-through). Re-drill on a FULLY
+charged battery to confirm the new margins (today's 5% was partly cumulative
+same-day drain).
 
 **Future option — controlled talosctl-orchestrated shutdown (NOT built).**
 Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
