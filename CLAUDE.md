@@ -782,16 +782,25 @@ fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
 needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
 rich Grafana telemetry for the standard kill-power path).
 
-**⚠️ TUNING TODO — timing margin is TIGHT (full drill 2026-05-31).** On the
-real-outage drill the Talos nodes took ~6:00–8:20 to fully power off after FSD;
-the UPS cut power (`ups.delay.shutdown`=540s) only ~40s after the LAST node
-went down. A slower node (more load, a hang) could be hard-cut. Battery was
-also low by then. **If we keep this NUT-secondary shutdown design, raise the
-margins:** bump `ups.delay.shutdown` (e.g. 540→720/810s — apcsmart ENUM, ×90)
-and/or raise the LB threshold for more battery headroom. Root irritant: the
-Talos nut-client secondary shutdown is slow/loopy (nodes sit cordoned-Ready
-several minutes before powering off) — fixing *that* would relieve the
-tightness without bigger delays.
+**⚠️ TUNING TODO — margin is TIGHT, and BATTERY is the binding constraint
+(full drill 2026-05-31).** Nodes took ~6:00–8:20 to power off; UPS cut
+(`ups.delay.shutdown`=540s) ~40s after the last node. **Critically, the
+battery was at ~5% when the UPS came back** (Grafana, 07:41) — it nearly died
+*before* the controlled cut. Caveats: (a) the battery started this drill only
+partially charged (3 drain cycles same-day, limited recharge between) — a real
+outage from 100% has more headroom; (b) still too close for comfort.
+- **Do NOT just raise `ups.delay.shutdown`** — a longer delay holds the load on
+  battery *longer*, draining MORE; the battery, not node-timing, is the limit.
+  Keep it ~matched to node-shutdown-time (just enough for the slowest node).
+- **Primary lever: speed up the slow Talos nut-client secondary shutdown**
+  (nodes sit cordoned-Ready several minutes before powering off — the
+  "stuck loop"). Less time under load = far less drain. Highest value, lowest
+  risk; fixing this likely makes the current thresholds comfortable.
+- **Secondary lever: raise the LB threshold** (`override.battery.charge.low`
+  50→~65 / `override.battery.runtime.low`) so shutdown STARTS with more
+  reserve. Trade-off: less ride-through of short outages (gives up sooner).
+- Always let the battery fully recharge (~4–6h) before re-drilling — today's
+  5% is partly cumulative same-day drain, not the steady-state margin.
 
 **Future option — controlled talosctl-orchestrated shutdown (NOT built).**
 Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
