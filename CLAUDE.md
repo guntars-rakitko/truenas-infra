@@ -782,6 +782,28 @@ fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
 needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
 rich Grafana telemetry for the standard kill-power path).
 
+**⚠️ TUNING TODO — timing margin is TIGHT (full drill 2026-05-31).** On the
+real-outage drill the Talos nodes took ~6:00–8:20 to fully power off after FSD;
+the UPS cut power (`ups.delay.shutdown`=540s) only ~40s after the LAST node
+went down. A slower node (more load, a hang) could be hard-cut. Battery was
+also low by then. **If we keep this NUT-secondary shutdown design, raise the
+margins:** bump `ups.delay.shutdown` (e.g. 540→720/810s — apcsmart ENUM, ×90)
+and/or raise the LB threshold for more battery headroom. Root irritant: the
+Talos nut-client secondary shutdown is slow/loopy (nodes sit cordoned-Ready
+several minutes before powering off) — fixing *that* would relieve the
+tightness without bigger delays.
+
+**Future option — controlled talosctl-orchestrated shutdown (NOT built).**
+Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
+orchestrator could `talosctl shutdown` the nodes in order, confirm each is down
+(AMT/ping), then halt the NAS + arm the UPS — with a full per-step log. Better
+control + observability, BUT: (a) puts a Talos cluster-control credential on
+the NAS (blast-radius increase; Talos roles are coarse — os:reader/operator/
+admin — no "shutdown-only" scope, so the cred can at least DoS the cluster),
+(b) real new infra + maintenance (talosctl binary, config rotation, AMT
+integration, more drills), (c) against the "no new infra" wrap-up doctrine.
+Defer; revisit post-rebuild only if the controlled process + logging is wanted.
+
 **Service-restart gotcha:** `midclt call service.control RESTART ups` can
 leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a
 `shutdowntimer` update) — silently losing UPS monitoring. Use STOP + START +
