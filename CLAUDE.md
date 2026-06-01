@@ -670,6 +670,20 @@ Migration tracking: kube-infra #92.
 
 ## UPS / NUT (canonical home for cluster-wide UPS state)
 
+> ⚠️ **IN-FLIGHT (Path B, kube-infra #611) — this section describes the PRE-Path-B
+> state and is being superseded. Canonical work doc + drill log:
+> `kube-infra/docs/superpowers/plans/2026-06-01-ups-shutdown-orchestrator.md`.**
+> Already LIVE on the NAS + codified in `config/services.yaml` (not yet reflected
+> in the prose below): (1) `ups.config.shutdowncmd` = the NAS-side
+> `nas-ups-orchestrator.sh` (fires `talosctl shutdown --force` at all 6 nodes via
+> a least-privilege `os:operator` cred, polls them down, then halts the NAS LAST);
+> (2) `ups.delay.shutdown` 450→**90**; (3) `sdtype = 5` in the apcsmart driver
+> options — hard hibernate (`@`) ALWAYS, so the UPS kill-power **cuts +
+> power-cycles even on mains** (validated 2026-06-02; closes the mains-mid-drain
+> gap that the default `S`/`shutdown.return` no-op'd). Node-side nut-client
+> extension NOT yet stripped (still a working fallback). Full prose update +
+> #57-hook polish are tomorrow's task — until then, trust the plan doc + services.yaml.
+
 **Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
 primary UPS (`apc1`) protects the NAS + all 6 K8s nodes + networking
 gear; the second UPS is reserved as a hot spare. Battery replaced
