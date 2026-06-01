@@ -98,17 +98,40 @@ nut:
   #     out the routine ~90s grid blips. Revisit downward once the slow
   #     node shutdown is fixed.
   #
-  #   override.battery.runtime.low = 840 — Secondary trigger. LB also
-  #     fires if estimated runtime drops below 14 min (~75% on the
-  #     current ~18-19 min full-charge runtime). Raised from 600.
+  #   override.battery.runtime.low = 600 — Secondary trigger (LB if estimated
+  #     runtime drops below 10 min). LOWERED 840→600 (kube-infra #611):
+  #     840 sat inside the apcsmart runtime-estimate jitter band (read
+  #     900-1260s at the SAME 99% charge), which (a) flapped false "battery
+  #     low" alerts at full charge, and (b) let the on-battery transfer
+  #     transient instantly trip LB → the master shut down in ~20s and
+  #     orphaned the nodes. 600 sits clear of the jitter.
+  #
+  #   override.battery.charge.low = 60 — Primary trigger. LOWERED 75→60:
+  #     node shutdown is now ~3.2 min (poweroff --force, #611), so 60%
+  #     leaves ample reserve AND restores more short-outage ride-through.
   #
   # Both override.* trigger via OR; whichever fires first wins.
   # Stored as a multi-line string; TrueNAS appends it verbatim to the
   # rendered ups.conf inside the [<identifier>] section.
   options: |
     ignorelb
-    override.battery.charge.low = 75
-    override.battery.runtime.low = 840
+    override.battery.charge.low = 60
+    override.battery.runtime.low = 600
+
+  # HOSTSYNC (kube-infra #611, 2026-05-31): on FSD the master upsmon waits
+  # up to this many seconds for the secondaries (6 K8s nodes) to disconnect
+  # (= power off) BEFORE it shuts itself down — i.e. the NAS shuts down LAST.
+  # Raised 15→300 so the nodes' ~3.2 min `poweroff --force` completes while
+  # the NAS stays reachable to hold FSD; the master then proceeds the instant
+  # the last node disconnects (it does NOT idle the full 300s). At the old 15s
+  # the master gave up + powered off before the nodes finished → orphaned
+  # them (the real-outage failure). NB: the nut-client extension thrashes on
+  # FSD (siderolabs/extensions#1084), but --force makes machined complete the
+  # poweroff in ~3.2 min regardless of the thrash.
+  # NOTE: not yet wired into modules/nut.py reconcile — applied live via
+  # `midclt call ups.update '{"hostsync":300}'`; codified here + follow-up to
+  # add it to the reconciler so a NAS rebuild restores it.
+  hostsync: 300
 
   # Additional NUT users beyond the primary `monuser`. Codified here so
   # a fresh NAS install / TrueNAS factory-reset rebuilds `upsd.users`
