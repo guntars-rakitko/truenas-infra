@@ -234,9 +234,11 @@ nut:
   # secondaries (which connect/poll a few seconds later) can read the FSD flag.
   # They get orphaned and never shut down (root cause confirmed from the NAS
   # journal + truenas/middleware + NUT upsmon.c, real-outage 2026-06-01,
-  # kube-infra #611). The `sleep 90` holds upsd + networking up ~90s after FSD
-  # so the secondaries latch FSD and begin `poweroff --force` (autonomous after
-  # that), THEN the NAS halts last.
+  # kube-infra #611). The `sleep 300` holds upsd + networking up ~5 min after
+  # FSD so the secondaries latch FSD and begin `poweroff --force` (autonomous
+  # after that), THEN the NAS halts last. (Started at 90s; widened to 300s for
+  # a generous latch window — on battery this extra time is post-node-shutdown,
+  # i.e. near-zero load, so the cost is negligible.)
   #
   # Why delaying SHUTDOWNCMD is sufficient + safe: TrueNAS's
   # `ups.upssched_event SHUTDOWN` only runs `upsmon -c fsd` — it does NOT power
@@ -253,7 +255,7 @@ nut:
   # drops their LOGIN (upsmon.c sync_secondaries counts only live logins), so
   # the sleep is the reconnect-tolerant safety net. Avoid restarting `ups`
   # right before a real outage.
-  shutdowncmd: "sleep 90; /sbin/shutdown -P now"
+  shutdowncmd: "sleep 300; /sbin/shutdown -P now"
 
 tls:
   internal_ca:
