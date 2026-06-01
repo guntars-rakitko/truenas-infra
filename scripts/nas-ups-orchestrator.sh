@@ -46,7 +46,9 @@ DEV_NODES="10.10.5.14,10.10.5.15,10.10.5.16"
 PRD_NODES="10.10.5.11,10.10.5.12,10.10.5.13"
 ALL_NODES="10.10.5.14 10.10.5.15 10.10.5.16 10.10.5.11 10.10.5.12 10.10.5.13"
 
-TIMEOUT=210   # ~3.5 min backstop so the NAS never hangs forever
+TIMEOUT=300   # 5 min poll backstop so the NAS never hangs forever. Real drill
+              # 2026-06-01: talosctl --force returned in 187s with nodes already
+              # down (poll then needed only 8s), so this is pure cushion.
 POLL=10       # seconds between apid liveness sweeps
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }

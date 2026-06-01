@@ -180,7 +180,12 @@ nut:
     # outages confirm timing. LB triggers (charge.low 75 / runtime.low 840)
     # deliberately left aggressive for battery reserve — only this delay
     # is being trimmed for now.
-    ups_delay_shutdown: 450      # seconds (7.5 min) — UPS kills outputs N sec after `shutdown.return`.
+    ups_delay_shutdown: 90       # seconds — UPS kills outputs N sec after `shutdown.return`. Trimmed
+                                 # 450→90 on 2026-06-01: the Path B orchestrator (NAS SHUTDOWNCMD)
+                                 # confirms ALL nodes are down (poll 0/6) BEFORE the NAS halts+arms the
+                                 # UPS — verified live (drill 2026-06-01: nodes down 187s, NAS last,
+                                 # orchestrator "all nodes down at 8s" then halt). So this delay only has
+                                 # to cover the NAS's own final poweroff. ENUM "090" SELECTED (live ✓).
     ups_delay_start: 60          # seconds (1 min) — UPS re-enables outputs after utility returns. ENUM "060" (live ✓).
     # battery.runtime.low (600s / 10 min) and battery.charge.low (50%) are
     # READ-ONLY on this UPS firmware (upsrw → ERR READONLY, confirmed
@@ -227,26 +232,33 @@ nut:
   # back to TrueNAS's chart-default `false`.
   powerdown: true
 
-  # ── shutdowncmd: KEEP EMPTY → TrueNAS default `/sbin/shutdown -P now` ──────
-  # The #57 SHUTDOWN Init/Shutdown hook (scripts/setup-ups-shutdown-hook.sh)
-  # arms the UPS during the halt — that's separate from this field.
+  # ── shutdowncmd: Path B orchestrator (kube-infra #611) ────────────────────
+  # The NAS NUT SHUTDOWNCMD is the SOLE host-poweroff path on TrueNAS
+  # (ups.upssched_event SHUTDOWN only runs `upsmon -c fsd`). Path B points it at
+  # the NAS-side orchestrator: on FSD/LB it fires `talosctl shutdown --force` at
+  # all 6 nodes (least-privilege os:operator cred staged at
+  # /mnt/tank/system/talos/), polls apid until 0/6, THEN runs `/sbin/shutdown -P
+  # now` so the NAS halts LAST and the #57 Init/Shutdown hook arms the UPS.
   #
-  # DO NOT put a `sleep ...; shutdown` delay here. We tried `sleep 90`/`sleep
-  # 300` (kube-infra #611, 2026-06-01) to hold the NAS up so the Talos NUT
-  # secondaries could receive FSD before the NAS tore down. It FAILED and was
-  # DANGEROUS: across multiple real-outage drills the secondaries NEVER acted on
-  # the master's FSD at all — not a timing issue, confirmed with upsd held up +
-  # FSD set + all 6 secondaries connected for a full 5 min and they still didn't
-  # shut down. Worse, holding the NAS up kept the orphaned nodes drawing, so the
-  # whole rack drained to 0%. Root cause is secondary-side: the
-  # siderolabs/nut-client extension does not consume the master's FSD
-  # (siderolabs/extensions#1084). Reverted to empty so a real outage at least
-  # powers the NAS down promptly (least battery drain).
+  # VALIDATED live (drill 2026-06-01, `upsmon -c fsd`): orchestrator fired
+  # instantly (0 secondaries → no HOSTSYNC wait), all 6 nodes down in 187s
+  # (~3.1 min via --force, the fast no-drain path), orchestrator logged "all
+  # nodes down at 8s" then halted the NAS last. (#57 hook armed via the
+  # `upsdrvctl` fallback; the UPS does NOT physically cut on MAINS — that's
+  # expected APC on-line behaviour, so the kill-power itself still needs a real
+  # on-battery AC-pull to confirm.)
   #
-  # CONCLUSION: native NUT FSD→Talos-secondary is a dead end. Automatic node
-  # shutdown on power loss requires a NAS-side `talosctl shutdown --force`
-  # orchestrator (Path B) or stays manual. Full diagnosis + decision in #611.
-  shutdowncmd: ""
+  # ⚠ STEADY-STATE PREREQUISITE: for the orchestrator to be the FAST path, the
+  # nodes must NOT be NUT secondaries — otherwise the master waits HOSTSYNC for
+  # them to self-shutdown (slow extension path) before running this. The drill
+  # stopped `ext-nut-client` on all 6 (reversible); they restart it on reboot,
+  # so the nut-client ExtensionServiceConfig must be persistently removed from
+  # talos-os/patches/general.yaml + applied for the fast path to hold. Until
+  # then this is wired but gated behind HOSTSYNC on a real outage. See #611.
+  #
+  # History: `sleep 90/300` here was tried + reverted (dangerous — drained the
+  # rack); empty was the slow-but-safe baseline. Path B supersedes both.
+  shutdowncmd: /mnt/tank/system/talos/nas-ups-orchestrator.sh
 
 tls:
   internal_ca:
