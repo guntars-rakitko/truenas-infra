@@ -227,35 +227,26 @@ nut:
   # back to TrueNAS's chart-default `false`.
   powerdown: true
 
-  # ── shutdowncmd: delay the NAS poweroff so secondaries receive FSD (#611) ──
-  # `sleep 90; /sbin/shutdown -P now`. When the master upsmon goes critical it
-  # sets FSD, then runs SHUTDOWNCMD. TrueNAS's default `/sbin/shutdown -P now`
-  # runs IMMEDIATELY and kills upsd ~16s after FSD — before the 6 Talos
-  # secondaries (which connect/poll a few seconds later) can read the FSD flag.
-  # They get orphaned and never shut down (root cause confirmed from the NAS
-  # journal + truenas/middleware + NUT upsmon.c, real-outage 2026-06-01,
-  # kube-infra #611). The `sleep 300` holds upsd + networking up ~5 min after
-  # FSD so the secondaries latch FSD and begin `poweroff --force` (autonomous
-  # after that), THEN the NAS halts last. (Started at 90s; widened to 300s for
-  # a generous latch window — on battery this extra time is post-node-shutdown,
-  # i.e. near-zero load, so the cost is negligible.)
+  # ── shutdowncmd: KEEP EMPTY → TrueNAS default `/sbin/shutdown -P now` ──────
+  # The #57 SHUTDOWN Init/Shutdown hook (scripts/setup-ups-shutdown-hook.sh)
+  # arms the UPS during the halt — that's separate from this field.
   #
-  # Why delaying SHUTDOWNCMD is sufficient + safe: TrueNAS's
-  # `ups.upssched_event SHUTDOWN` only runs `upsmon -c fsd` — it does NOT power
-  # the host off itself, so SHUTDOWNCMD is the ONLY host-poweroff path (verified
-  # in middleware source). No racing shutdown.
+  # DO NOT put a `sleep ...; shutdown` delay here. We tried `sleep 90`/`sleep
+  # 300` (kube-infra #611, 2026-06-01) to hold the NAS up so the Talos NUT
+  # secondaries could receive FSD before the NAS tore down. It FAILED and was
+  # DANGEROUS: across multiple real-outage drills the secondaries NEVER acted on
+  # the master's FSD at all — not a timing issue, confirmed with upsd held up +
+  # FSD set + all 6 secondaries connected for a full 5 min and they still didn't
+  # shut down. Worse, holding the NAS up kept the orphaned nodes drawing, so the
+  # whole rack drained to 0%. Root cause is secondary-side: the
+  # siderolabs/nut-client extension does not consume the master's FSD
+  # (siderolabs/extensions#1084). Reverted to empty so a real outage at least
+  # powers the NAS down promptly (least battery drain).
   #
-  # #57 STILL HANDLED — this does NOT arm the UPS (the failed 2026-05-30 attempt
-  # tried that and couldn't, upsd was down). Arming stays in the SHUTDOWN
-  # Init/Shutdown script (scripts/setup-ups-shutdown-hook.sh), which fires on
-  # the `/sbin/shutdown -P now` AFTER the sleep. Delay + #57 arming coexist.
-  #
-  # Belt-and-suspenders: HOSTSYNC=300 also holds the master, but only if the
-  # secondaries are LOGGED IN at FSD time — and every `ups` service restart
-  # drops their LOGIN (upsmon.c sync_secondaries counts only live logins), so
-  # the sleep is the reconnect-tolerant safety net. Avoid restarting `ups`
-  # right before a real outage.
-  shutdowncmd: "sleep 300; /sbin/shutdown -P now"
+  # CONCLUSION: native NUT FSD→Talos-secondary is a dead end. Automatic node
+  # shutdown on power loss requires a NAS-side `talosctl shutdown --force`
+  # orchestrator (Path B) or stays manual. Full diagnosis + decision in #611.
+  shutdowncmd: ""
 
 tls:
   internal_ca:
