@@ -227,22 +227,33 @@ nut:
   # back to TrueNAS's chart-default `false`.
   powerdown: true
 
-  # ── DR shutdown fix (#57) — do NOT use shutdowncmd ──────────────────────
-  # KEEP THIS EMPTY. The UPS reaches the NAS over a DB-9 → RS-232 → USB
-  # adapter (/dev/ttyUSB0), so `powerdown`'s kill-power runs too late (after
-  # the USB device is torn down) and the UPS drains flat on a real outage.
+  # ── shutdowncmd: delay the NAS poweroff so secondaries receive FSD (#611) ──
+  # `sleep 90; /sbin/shutdown -P now`. When the master upsmon goes critical it
+  # sets FSD, then runs SHUTDOWNCMD. TrueNAS's default `/sbin/shutdown -P now`
+  # runs IMMEDIATELY and kills upsd ~16s after FSD — before the 6 Talos
+  # secondaries (which connect/poll a few seconds later) can read the FSD flag.
+  # They get orphaned and never shut down (root cause confirmed from the NAS
+  # journal + truenas/middleware + NUT upsmon.c, real-outage 2026-06-01,
+  # kube-infra #611). The `sleep 90` holds upsd + networking up ~90s after FSD
+  # so the secondaries latch FSD and begin `poweroff --force` (autonomous after
+  # that), THEN the NAS halts last.
   #
-  # The first fix attempt — arming `shutdown.return` from upsmon's SHUTDOWNCMD
-  # via this `shutdowncmd` field — FAILED live on 2026-05-30 (UPS never armed,
-  # drained flat; verified). Per NUT issue #2587 + the systemd `nutshutdown`
-  # hook, kill-power belongs at a SHUTDOWN-time hook, not at FSD/SHUTDOWNCMD.
+  # Why delaying SHUTDOWNCMD is sufficient + safe: TrueNAS's
+  # `ups.upssched_event SHUTDOWN` only runs `upsmon -c fsd` — it does NOT power
+  # the host off itself, so SHUTDOWNCMD is the ONLY host-poweroff path (verified
+  # in middleware source). No racing shutdown.
   #
-  # The working mechanism is now a TrueNAS **Init/Shutdown Script**
-  # (when=SHUTDOWN) that ARMS the UPS during poweroff, registered by
-  # scripts/setup-ups-shutdown-hook.sh. `shutdowncmd` stays cleared so TrueNAS
-  # keeps owning the host poweroff. (If shutdowncmd pointed at the new
-  # arm-only hook, the host would fail to power off — so leave it empty.)
-  shutdowncmd: ""
+  # #57 STILL HANDLED — this does NOT arm the UPS (the failed 2026-05-30 attempt
+  # tried that and couldn't, upsd was down). Arming stays in the SHUTDOWN
+  # Init/Shutdown script (scripts/setup-ups-shutdown-hook.sh), which fires on
+  # the `/sbin/shutdown -P now` AFTER the sleep. Delay + #57 arming coexist.
+  #
+  # Belt-and-suspenders: HOSTSYNC=300 also holds the master, but only if the
+  # secondaries are LOGGED IN at FSD time — and every `ups` service restart
+  # drops their LOGIN (upsmon.c sync_secondaries counts only live logins), so
+  # the sleep is the reconnect-tolerant safety net. Avoid restarting `ups`
+  # right before a real outage.
+  shutdowncmd: "sleep 90; /sbin/shutdown -P now"
 
 tls:
   internal_ca:
