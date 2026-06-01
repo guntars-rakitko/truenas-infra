@@ -111,12 +111,27 @@ nut:
   #     leaves ample reserve AND restores more short-outage ride-through.
   #
   # Both override.* trigger via OR; whichever fires first wins.
+  #
+  #   sdtype = 5 (kube-infra #611, 2026-06-02) — apcsmart kill-power method:
+  #     hard hibernate (`@`) ALWAYS, regardless of line state. The default
+  #     (sdtype 0) is status-dependent: soft hibernate (`S`) on battery, `@`
+  #     on mains — but `S` no-ops on mains, AND the #57 shutdown hook runs
+  #     `upsdrvctl shutdown` as a transient instance that can't read status
+  #     ("assuming LB+OB") so it wrongly picked `S` → the UPS armed=1 but
+  #     never cut (drill 2026-06-01, on mains). sdtype=5 forces `@`
+  #     unconditionally → the UPS cuts + auto-returns when power is present
+  #     even on MAINS. VALIDATED live 2026-06-02: kill-power on mains →
+  #     UPS counted down, cut, and power-cycled the rack back after
+  #     delay.start (60s). Closes the "mains returns mid-drain → no
+  #     auto-recovery" gap. `shutdown.return` (the INSTCMD) is a no-op on
+  #     mains by design and is NOT the lever — the driver sdtype/`@` is.
   # Stored as a multi-line string; TrueNAS appends it verbatim to the
   # rendered ups.conf inside the [<identifier>] section.
   options: |
     ignorelb
     override.battery.charge.low = 60
     override.battery.runtime.low = 600
+    sdtype = 5
 
   # HOSTSYNC (kube-infra #611, 2026-05-31): on FSD the master upsmon waits
   # up to this many seconds for the secondaries (6 K8s nodes) to disconnect
