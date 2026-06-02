@@ -2,13 +2,18 @@
 # setup-ups-shutdown-hook.sh — install the NAS UPS power-off hook (bug #57).
 # Idempotent. Run from the operator's laptop.
 #
-# APPROACH (revised 2026-05-31 after the upsmon-SHUTDOWNCMD attempt failed):
-# register the hook as a TrueNAS **Init/Shutdown Script** (when=SHUTDOWN) and
-# CLEAR `ups.config.shutdowncmd` back to TrueNAS's default host-poweroff. The
-# init/shutdown script runs during poweroff and only ARMS the UPS
-# (`shutdown.return`); TrueNAS still owns the host shutdown. Community basis:
-# NUT issue #2587 + the systemd `nutshutdown` hook — kill-power belongs at a
-# shutdown-time hook, not at FSD/SHUTDOWNCMD time.
+# APPROACH: register the hook as a TrueNAS **Init/Shutdown Script**
+# (when=SHUTDOWN). The hook runs during poweroff and ARMS the UPS kill-power
+# via `upsdrvctl shutdown` (sdtype=5 → hard hibernate `@`, cuts + power-cycles
+# regardless of line state). Community basis: NUT issue #2587 + the systemd
+# `nutshutdown` hook — kill-power belongs at a shutdown-time hook.
+#
+# NOTE (Path B, #611): this installer does NOT touch ups.config.shutdowncmd.
+# That is the NAS-side orchestrator (nas-ups-orchestrator.sh), owned by
+# config/services.yaml (nut.shutdowncmd). The earlier version cleared it back
+# to empty — that's WRONG under Path B and would break the orchestrator. The
+# pw file is now vestigial (the hook no longer uses upscmd) but is still
+# uploaded; harmless, can be dropped in a later cleanup.
 #
 # All file placement + config goes through the TrueNAS API (filesystem.put,
 # ups.update, initshutdownscript.*), NOT ssh+sudo — the NOPASSWD allowlist only
@@ -84,18 +89,13 @@ def restart_ups(cli):
 
 print(f"==> connecting to {HOST}")
 with connected(HOST, KEY, verify_ssl=VSSL) as cli:
-    # 1. Retire the failed upsmon-SHUTDOWNCMD approach FIRST so upsmon goes back
-    #    to TrueNAS's own host-poweroff before we change the script file.
+    # 1. Do NOT touch ups.config.shutdowncmd. Under Path B (kube-infra #611) the
+    #    SHUTDOWNCMD is the NAS-side orchestrator (nas-ups-orchestrator.sh),
+    #    managed via config/services.yaml (nut.shutdowncmd). This installer only
+    #    (re)installs the SHUTDOWN Init/Shutdown hook + its files; clobbering
+    #    shutdowncmd here would break the orchestrator wiring. Just report it.
     cfg = cli.call("ups.config")
-    if cfg.get("shutdowncmd"):
-        cli.call("ups.update", {"shutdowncmd": ""})
-        state = restart_ups(cli)
-        print(f"==> [1/5] cleared ups.config.shutdowncmd (ups service: {state})")
-        if state != "RUNNING":
-            print("ERROR: ups service not RUNNING after clear+restart", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print("==> [1/5] ups.config.shutdowncmd already empty")
+    print(f"==> [1/5] ups.config.shutdowncmd = {cfg.get('shutdowncmd')!r} (left as-is — Path B owns it)")
 
     # 2. Place the hook + root-only password file (as root, via the API).
     print(f"==> [2/5] {DIR}: {ensure_dir(cli, DIR)}")
@@ -130,7 +130,7 @@ with connected(HOST, KEY, verify_ssl=VSSL) as cli:
     scripts = [s for s in cli.call("initshutdownscript.query")
                if s.get("script") == HOOK and s.get("when") == "SHUTDOWN"]
     print()
-    print(f"VERIFY ups.config.shutdowncmd = {cfg['shutdowncmd']!r} (should be '')")
+    print(f"VERIFY ups.config.shutdowncmd = {cfg['shutdowncmd']!r} (Path B: should be the orchestrator path)")
     print(f"VERIFY SHUTDOWN script registered = {bool(scripts)} "
           f"(enabled={scripts[0]['enabled'] if scripts else 'n/a'})")
 

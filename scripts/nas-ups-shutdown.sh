@@ -2,35 +2,34 @@
 # nas-ups-shutdown.sh — arm the UPS power-off during NAS shutdown (bug #57).
 #
 # Registered as a TrueNAS **Init/Shutdown Script** (type=SCRIPT, when=SHUTDOWN)
-# by scripts/setup-ups-shutdown-hook.sh — NOT as upsmon's SHUTDOWNCMD. The
-# first attempt (upsmon SHUTDOWNCMD) failed live on 2026-05-30: the UPS was
-# never armed and drained flat. Community evidence (NUT issue #2587, the
-# systemd `nutshutdown` hook) shows the kill-power must run as a shutdown-time
-# hook, and that `upsdrvctl shutdown` only works once the driver has released
-# the USB device.
+# by scripts/setup-ups-shutdown-hook.sh — NOT as upsmon's SHUTDOWNCMD. It runs
+# DURING TrueNAS poweroff while the box can still reach the UPS, and ONLY arms
+# the UPS kill-power (TrueNAS / the Path-B orchestrator already handle the host
+# poweroff). The UPS then cuts power after `ups.delay.shutdown` (90s) and
+# re-energizes its outputs when mains is present (`ups.delay.start`, 60s).
 #
-# This runs DURING TrueNAS poweroff while the box can still reach the UPS.
-# It ONLY arms the UPS (TrueNAS already handles the host poweroff) so the UPS
-# cuts power after `ups.delay.shutdown` (450s) and re-powers when mains returns.
+# KILL-POWER MECHANISM (revised 2026-06-02, kube-infra #611):
+#   The lever is the apcsmart DRIVER kill-power: `upsdrvctl shutdown`, which
+#   issues the method selected by `sdtype` in ups.conf. We set **sdtype=5**
+#   (hard hibernate `@`) so the UPS cuts + auto-returns REGARDLESS of line
+#   state — including ON MAINS (validated live 2026-06-02). The driver must
+#   release the USB serial device first, so we `upsdrvctl stop` then
+#   `upsdrvctl shutdown` (the transient instance re-claims /dev/ttyUSB0 and
+#   sends the `@`). NUT issue #2587.
 #
-# Why bug #57 exists: the UPS is on a DB-9 -> RS-232 -> USB adapter
-# (/dev/ttyUSB0). TrueNAS's built-in `powerdown` kill-power runs only after the
-# USB device is torn down, so `shutdown.return` never reaches the UPS and it
-# drains the dead load flat. We arm it earlier, here.
-#
-# Robust to either ordering (NUT still up, or already stopped):
-#   1. `upscmd shutdown.return` — works while upsd+driver are up; the running
-#      driver relays it over the already-open USB link (no device-claim race).
-#   2. `upsdrvctl stop` then `upsdrvctl shutdown` — fallback if upsd is gone;
-#      stopping the driver frees /dev/ttyUSB0 so upsdrvctl can claim it,
-#      avoiding the "Can't claim USB device" error (NUT issue #2587).
+#   ⚠ We deliberately do NOT use `upscmd shutdown.return` here. That INSTCMD
+#   is a documented no-op when the UPS is on mains (and was observed to no-op
+#   on battery too on this unit) — yet it returns rc=0 ("accepted"), which
+#   previously made this hook log a FALSE `armed=1` and skip the real
+#   kill-power. The driver/sdtype `@` path is the only validated lever.
 #
 # Diagnosable WITHOUT journal access: appends a timestamped trace to LOG
-# (world-readable) so we can confirm what fired after a drill.
+# (world-readable) so we can confirm what fired after a drill. NOTE: an
+# `issued` result means the command was SENT, not that the UPS will cut — the
+# driver is released by then so the cut is not verifiable from here; confirm
+# the cut/power-cycle via a drill (see wiki ups-operations.md).
 set -u
-UPS="apc1@localhost"
 DIR="/mnt/tank/system/nut"
-PWFILE="$DIR/.upsadmin-pw"
 LOG="$DIR/last-shutdown.log"
 
 log() {
@@ -50,36 +49,22 @@ if ! /usr/sbin/upsmon -K >/dev/null 2>&1; then
     chmod 644 "$LOG" 2>/dev/null || true
     exit 0
 fi
-log "POWERDOWNFLAG set — power-fail shutdown; arming UPS power-off (bug #57)"
-armed=0
+log "POWERDOWNFLAG set — power-fail shutdown; arming UPS kill-power (sdtype=5 @)"
+issued=0
 
-# Path 1 (preferred): instcmd via the running upsd/driver — no device-claim race.
-if [ -r "$PWFILE" ]; then
-    PW=$(cat "$PWFILE")
-    if /usr/bin/upscmd -u upsadmin -p "$PW" "$UPS" shutdown.return >> "$LOG" 2>&1; then
-        log "OK: upscmd shutdown.return accepted (UPS cuts after ups.delay.shutdown)"
-        armed=1
-    else
-        log "MISS: upscmd shutdown.return failed (upsd down / auth?) — trying upsdrvctl"
-    fi
-    unset PW
+# Release the driver so the transient upsdrvctl instance can claim the USB
+# serial device, then issue the sdtype-driven kill-power (hard hibernate @).
+/usr/sbin/upsdrvctl stop apc1 >> "$LOG" 2>&1 || true
+sleep 1
+if /usr/sbin/upsdrvctl shutdown apc1 >> "$LOG" 2>&1; then
+    issued=1
+    log "OK: upsdrvctl shutdown ISSUED (sdtype=5 @). UPS should cut after ups.delay.shutdown"
+    log "    then re-energize when mains present. NOTE: cut not verifiable from here (driver released)."
 else
-    log "MISS: $PWFILE unreadable — trying upsdrvctl"
+    log "FAIL: upsdrvctl shutdown did NOT issue — UPS NOT armed, it will drain flat. Investigate."
 fi
 
-# Path 2 (fallback): release the driver, then kill-power via upsdrvctl.
-if [ "$armed" != 1 ]; then
-    /usr/sbin/upsdrvctl stop apc1 >> "$LOG" 2>&1 || true
-    sleep 1
-    if /usr/sbin/upsdrvctl shutdown apc1 >> "$LOG" 2>&1; then
-        log "OK: upsdrvctl shutdown issued (fallback path)"
-        armed=1
-    else
-        log "FAIL: upsdrvctl shutdown failed — UPS NOT armed, it will drain flat"
-    fi
-fi
-
-log "=== shutdown hook end (armed=$armed) ==="
+log "=== shutdown hook end (kill-power issued=$issued) ==="
 chmod 644 "$LOG" 2>/dev/null || true
 # Never block the shutdown, regardless of outcome.
 exit 0
