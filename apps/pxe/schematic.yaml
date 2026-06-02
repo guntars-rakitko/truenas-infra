@@ -70,10 +70,10 @@ customization:
     officialExtensions:
       # Intel microcode updates — the ASUS Q170S1 nodes are all Intel
       - siderolabs/intel-ucode
-      # NUT client — graceful shutdown on UPS events. Server is the NAS
-      # (NUT master at 10.10.5.10:3493, UPS name `apc1`, monuser `upsmon`).
-      # ExtensionServiceConfig is provided via the machine config patches.
-      - siderolabs/nut-client
+      # NUT client REMOVED 2026-06-02 (kube-infra #611, Path B) — kept in
+      # lockstep with kube-infra/talos-os/schematic.yaml. Node-side NUT-secondary
+      # shutdown is superseded by the NAS-side orchestrator (talosctl shutdown
+      # --force). New SID: daef782b… (was d778c856…).
       # iscsi-tools — required by Longhorn (open-iscsi client for
       # attaching Longhorn volumes as block devices via iSCSI)
       - siderolabs/iscsi-tools
