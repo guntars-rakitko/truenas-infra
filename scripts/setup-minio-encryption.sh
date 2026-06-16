@@ -44,6 +44,7 @@ BUCKETS=(
     loki-chunks
     longhorn
     mssql-backups
+    postgres-backups
     pocket-id-litestream
     velero
 )

@@ -30,6 +30,7 @@ BUCKETS=(
     loki-chunks          # Loki — log chunks (compressed log streams + index)
     longhorn             # Longhorn — volume + system backups
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets
+    postgres-backups     # CloudNativePG — Barman Cloud Plugin WAL + base backups
     pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
     velero               # Velero — K8s manifest backups
 )

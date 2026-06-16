@@ -252,6 +252,7 @@ Creates the four canonical backup buckets on each MinIO instance:
 | `velero` | Velero — K8s manifest backups |
 | `longhorn` | Longhorn — volume + system backups |
 | `mssql-backups` | SQL Server — `BACKUP DATABASE TO URL` targets |
+| `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups (PG migration Phase 5) |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 
 #### setup-minio-users.sh
@@ -285,6 +286,7 @@ Current ILM rules:
 | Bucket | Expiration | Why |
 |---|---|---|
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
+| `postgres-backups` (both clusters) | 90 days | Coarse backstop for orphaned Barman objects. The CNPG ObjectStore `retentionPolicy: 30d` is the real PITR-window pruner; the 90d ILM only sweeps objects Barman's own retention misses (e.g. after a cluster delete). |
 
 Velero / Longhorn / etcd-snapshot buckets are intentionally not in
 this script — Velero and Longhorn manage their own retention via
