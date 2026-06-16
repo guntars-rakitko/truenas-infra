@@ -28,7 +28,7 @@ set -euo pipefail
 RULES=(
     "nas-dev/cluster-agent 30"
     "nas-dev/mssql-backups 90"
-    "nas-dev/postgres-backups 90"
+    "nas-dev/postgres-backups 14"
     "nas-prd/cluster-agent 30"
     "nas-prd/mssql-backups 90"
     "nas-prd/postgres-backups 90"
