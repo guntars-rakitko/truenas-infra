@@ -2,10 +2,12 @@
 name = "truenas-infra"
 version = "0.1.0"
 description = "API-driven TrueNAS Community Edition 25.10 configuration for the homelab NAS"
-# Code uses `from __future__ import annotations`, so `X | None` syntax works
-# on 3.9+. TrueNAS 25.10 itself ships with 3.11+. Keep 3.9 floor so macOS
-# system Python runs this without a separate install.
-requires-python = ">=3.9"
+# Floor is 3.10: the `truenas-api-client` dependency requires >=3.10, so a 3.9
+# floor can't resolve (`uv sync` errors). The old ">=3.9 for macOS system
+# Python" rationale never actually worked once that dep was added — macOS
+# system Python is 3.9, which the client rejects anyway. Use any 3.10+ (the
+# operator venv runs 3.14; `uv venv --python 3.12`+ all fine).
+requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }
 
