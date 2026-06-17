@@ -138,7 +138,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "apscheduler", specifier = ">=3.10" },
+    { name = "apscheduler", specifier = ">=3.11.2" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "httpx", specifier = ">=0.28" },
