@@ -1,6 +1,6 @@
 services:
   meshcentral:
-    image: ghcr.io/ylianst/meshcentral:latest
+    image: ghcr.io/ylianst/meshcentral:latest@sha256:a71797675ea29fa55d2c1bd6e1fbb94758f1521b64665a2dd8620d9bbb321c2a
     container_name: meshcentral
     restart: unless-stopped
     network_mode: bridge

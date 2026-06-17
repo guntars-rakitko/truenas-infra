@@ -56,7 +56,7 @@
 # scraping node → direct L2 → no masquerade question.
 services:
   cluster-agent:
-    image: python:3.13-alpine
+    image: python:3.13-alpine@sha256:585f88f854292ed2e4c84b96f7f5a21a20a13cb84efdde7a67639aae93f46206
     container_name: cluster-agent
     restart: unless-stopped
     ports:

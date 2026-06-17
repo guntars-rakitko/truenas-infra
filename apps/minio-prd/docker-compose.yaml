@@ -17,7 +17,7 @@ services:
     # license file (see configs: block above) — it gates S3 data-plane
     # operations. Naming stays minio-* / MINIO_*: AIStor IS MinIO —
     # same binary, same env vars, same `mc` client.
-    image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z
+    image: quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z@sha256:9510e5f116c2e507a042f328b77992c651dcdd04ab79e676bb85f13e2aa8363a
     container_name: minio-prd
     restart: unless-stopped
     network_mode: bridge
