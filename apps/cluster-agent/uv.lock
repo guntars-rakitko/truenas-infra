@@ -142,7 +142,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "jinja2", specifier = ">=3.1" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "prometheus-client", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10" },
