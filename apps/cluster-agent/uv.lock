@@ -140,7 +140,7 @@ dev = [
 requires-dist = [
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.5" },
+    { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.5.5" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "prometheus-client", specifier = ">=0.21" },

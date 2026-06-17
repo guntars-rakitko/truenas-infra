@@ -33,7 +33,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=6.0",
     "respx>=0.22",       # httpx mocking for HTTP-client tools
-    "freezegun>=1.5",    # time mocking for dedup / state-window tests
+    "freezegun>=1.5.5",    # time mocking for dedup / state-window tests
 ]
 
 [build-system]
