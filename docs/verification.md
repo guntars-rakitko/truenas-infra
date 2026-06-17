@@ -37,8 +37,8 @@ serving everything it should, and nothing it shouldn't.
 
 | What | Command | Expected |
 |---|---|---|
-| netboot.xyz HTTP | `curl http://10.10.5.10:8080/` | HTML, title `netboot.xyz` |
-| TFTP | `tftp 10.10.5.10 -c get netboot.xyz.kpxe /tmp/x && ls -la /tmp/x` | non-zero size |
+| Homelab PXE HTTP (nginx) | `curl -sI http://10.10.5.10:8080/` | `Server: nginx` header (HTTP assets up) |
+| TFTP | `tftp 10.10.5.10 -c get ipxe.efi /tmp/x && ls -la /tmp/x` | non-zero size (iPXE binary served) |
 | MinIO prd | `mc alias set prd https://10.10.10.10:9000 … && mc ls prd` | no error |
 | MinIO dev | `mc alias set dev https://10.10.15.10:9000 … && mc ls dev` | no error |
 | MinIO VLAN-20 isolated | `curl --connect-timeout 3 http://10.10.20.10:9000` | refused/timeout |

@@ -8,19 +8,20 @@ A daily job that:
    `factory.talos.dev` and caches the schematic ID.
 2. Polls `github.com/siderolabs/talos` for the latest stable release tag.
 3. Downloads `vmlinuz` + `initramfs` for that version into
-   `/mnt/tank/system/pxe/assets/talos/<version>/`.
-4. Renders an iPXE menu entry at
-   `/mnt/tank/system/pxe/config/menus/remote/talos.ipxe`
+   `/mnt/tank/system/pxe/http/talos/<version>/`.
+4. Renders a standalone Talos version-picker menu at
+   `/mnt/tank/system/pxe/http/talos-menu.ipxe`
    that points Talos PXE boot at the latest images.
 
-The netboot.xyz container (on VLAN 5, `10.10.5.10`) serves those assets
-over HTTP on `:8080` and includes the `talos.ipxe` menu entry in its boot
-menu tree.
+The `homelab-pxe` container (`apps/pxe`, on VLAN 5, `10.10.5.10`) serves
+those assets over HTTP on `:8080` (via `nginx`); the main `menu.ipxe`
+Talos entry chains the rendered `talos-menu.ipxe` via its `:chain-menu`
+item.
 
 ## Why this is manual (for now)
 
 The updater logic was originally designed as a sidecar container inside
-the netboot.xyz compose stack. That turned out fragile — the inline shell
+the PXE app's compose stack. That turned out fragile — the inline shell
 script in the compose `command:` heredoc couldn't reliably see the
 `${VAR}` environment it depended on, and the sidecar failed with
 `mkdir: can't create directory ''` in live tests.
@@ -37,16 +38,16 @@ repo and reproducible:
 
 | Artifact | Path |
 |---|---|
-| Reference script | `apps/netboot-xyz/talos-updater.sh` |
-| Schematic | `apps/netboot-xyz/schematic.yaml` |
+| Reference script | `apps/pxe/talos-updater.sh` |
+| Schematic | `apps/pxe/schematic.yaml` |
 | Dataset | `tank/system/apps-config/talos-updater` (created by `phase datasets`) |
-| Asset output dir | `tank/system/pxe/assets/talos/` (created by `phase datasets`) |
-| Menu output dir | `tank/system/pxe/config/menus/remote/` (created by netboot.xyz) |
+| Asset output dir | `tank/system/pxe/http/talos/` (created by `phase datasets`) |
+| Menu output file | `tank/system/pxe/http/talos-menu.ipxe` (rendered by the updater itself) |
 
 ## Setup — one-time
 
 Prereq: `phase datasets` and `phase apps` have already run successfully;
-`netboot-xyz` is in state `RUNNING`.
+the `pxe` app (`homelab-pxe`) is in state `RUNNING`.
 
 ### 1. Drop the script and schematic on the NAS
 
@@ -55,9 +56,9 @@ repo to the host:
 
 ```sh
 sudo mkdir -p /mnt/tank/system/apps-config/talos-updater
-sudo install -m 0755 /path/to/truenas-infra/apps/netboot-xyz/talos-updater.sh \
+sudo install -m 0755 /path/to/truenas-infra/apps/pxe/talos-updater.sh \
     /mnt/tank/system/apps-config/talos-updater/talos-updater.sh
-sudo install -m 0644 /path/to/truenas-infra/apps/netboot-xyz/schematic.yaml \
+sudo install -m 0644 /path/to/truenas-infra/apps/pxe/schematic.yaml \
     /mnt/tank/system/apps-config/talos-updater/schematic.yaml
 ```
 
@@ -68,8 +69,7 @@ TrueNAS upgrades.
 
 ```sh
 sudo SCHEMATIC_FILE=/mnt/tank/system/apps-config/talos-updater/schematic.yaml \
-     ASSETS_DIR=/mnt/tank/system/pxe/assets/talos \
-     MENU_DIR=/mnt/tank/system/pxe/config/menus/remote \
+     ASSETS_DIR=/mnt/tank/system/pxe/http/talos \
      STATE_FILE=/mnt/tank/system/apps-config/talos-updater/state \
      UPDATE_INTERVAL=1 \
      /mnt/tank/system/apps-config/talos-updater/talos-updater.sh
@@ -82,13 +82,13 @@ you see `Update cycle complete for Talos vX.Y.Z`.)
 Verify assets landed:
 
 ```sh
-ls /mnt/tank/system/pxe/assets/talos/
+ls /mnt/tank/system/pxe/http/talos/
 # → v1.8.3/  (or whatever the latest tag is)
 
-ls /mnt/tank/system/pxe/assets/talos/v1.8.3/
+ls /mnt/tank/system/pxe/http/talos/v1.8.3/
 # → vmlinuz-amd64  initramfs-amd64.xz
 
-cat /mnt/tank/system/pxe/config/menus/remote/talos.ipxe
+cat /mnt/tank/system/pxe/http/talos-menu.ipxe
 # → #!ipxe ... kernel http://10.10.5.10:8080/talos/v1.8.3/vmlinuz-amd64 ...
 ```
 
@@ -135,15 +135,16 @@ detect the existing entry and leave it alone.
   this repo — keep them in sync), delete the `state` file, run the
   script. A new schematic ID will be issued.
 - **PXE client URL:** Talos clients iPXE-chain to
-  `http://10.10.5.10:8080/menus/remote/talos.ipxe`. This path is fixed
-  by netboot.xyz's remote-menu convention.
+  `http://10.10.5.10:8080/talos-menu.ipxe` (the standalone version-picker
+  the updater renders). The top-level `menu.ipxe` Talos entry reaches it
+  via its `:chain-menu` item.
 
 ## TODO — automate in-code
 
 Short backlog item on `modules/apps.py`:
 
 1. `filesystem.put` — write `talos-updater.sh` + `schematic.yaml` from
-   `apps/netboot-xyz/` into `/mnt/tank/system/apps-config/talos-updater/`
+   `apps/pxe/` into `/mnt/tank/system/apps-config/talos-updater/`
    via the API. Diff on SHA-256 of file contents for idempotency.
 2. `cronjob.create` with a short `command` that just invokes the
    on-disk script. Already implemented as `ensure_talos_updater_cronjob`
