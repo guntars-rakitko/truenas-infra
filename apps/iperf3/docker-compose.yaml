@@ -40,7 +40,7 @@ services:
 
   # ─── Mgmt VLAN (I219-LM clients, VLAN 5, 10.10.5.0/24) ───────────────
   iperf3-mgmt-01:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-01
     restart: unless-stopped
     network_mode: bridge
@@ -50,7 +50,7 @@ services:
     command: ["-s", "-V", "-p", "5201"]
 
   iperf3-mgmt-02:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-02
     restart: unless-stopped
     network_mode: bridge
@@ -60,7 +60,7 @@ services:
     command: ["-s", "-V", "-p", "5202"]
 
   iperf3-mgmt-03:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-03
     restart: unless-stopped
     network_mode: bridge
@@ -70,7 +70,7 @@ services:
     command: ["-s", "-V", "-p", "5203"]
 
   iperf3-mgmt-04:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-04
     restart: unless-stopped
     network_mode: bridge
@@ -80,7 +80,7 @@ services:
     command: ["-s", "-V", "-p", "5204"]
 
   iperf3-mgmt-05:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-05
     restart: unless-stopped
     network_mode: bridge
@@ -90,7 +90,7 @@ services:
     command: ["-s", "-V", "-p", "5205"]
 
   iperf3-mgmt-06:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-mgmt-06
     restart: unless-stopped
     network_mode: bridge
@@ -103,7 +103,7 @@ services:
   # Bound on the NAS prd-VLAN IP only — dev nodes can't reach
   # 10.10.10.0/24 by L2 and shouldn't be routed inter-VLAN for this.
   iperf3-data-01:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-01
     restart: unless-stopped
     network_mode: bridge
@@ -113,7 +113,7 @@ services:
     command: ["-s", "-V", "-p", "5211"]
 
   iperf3-data-02:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-02
     restart: unless-stopped
     network_mode: bridge
@@ -123,7 +123,7 @@ services:
     command: ["-s", "-V", "-p", "5212"]
 
   iperf3-data-03:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-03
     restart: unless-stopped
     network_mode: bridge
@@ -134,7 +134,7 @@ services:
 
   # ─── Data VLAN 15 dev (I226-V clients, VLAN 15, 10.10.15.0/24) ───────
   iperf3-data-04:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-04
     restart: unless-stopped
     network_mode: bridge
@@ -144,7 +144,7 @@ services:
     command: ["-s", "-V", "-p", "5214"]
 
   iperf3-data-05:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-05
     restart: unless-stopped
     network_mode: bridge
@@ -154,7 +154,7 @@ services:
     command: ["-s", "-V", "-p", "5215"]
 
   iperf3-data-06:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:latest@sha256:07dcca91c0e47d82d83d91de8c3d46b840eef4180499456b4fa8d6dadb46b6c8
     container_name: iperf3-data-06
     restart: unless-stopped
     network_mode: bridge

@@ -16,7 +16,7 @@
 # so we can iterate without rebuilding or touching the container image.
 services:
   amtctl:
-    image: python:3.14-alpine
+    image: python:3.14-alpine@sha256:94457973ea8a27a799f0b8ea1fe3e3147fcbebaed63497a8af63b28195a08108
     container_name: amtctl
     restart: unless-stopped
     ports:

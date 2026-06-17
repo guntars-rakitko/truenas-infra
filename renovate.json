@@ -5,6 +5,15 @@
   "timezone": "Europe/Riga",
   "labels": ["renovate"],
   "rangeStrategy": "bump",
+  "pinDigests": true,
   "prHourlyLimit": 4,
-  "prConcurrentLimit": 8
+  "prConcurrentLimit": 8,
+  "packageRules": [
+    {
+      "description": "MinIO AIStor uses non-semver RELEASE.<ISO8601> tags. Map year->major, month->minor, day->patch and the time as build so newer releases sort higher and Renovate proposes upgrades (free-tier license covers them; deploy minio-dev first, then minio-prd — brief S3 blip). pinDigests keeps the @sha256 in sync.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["quay.io/minio/aistor/minio"],
+      "versioning": "regex:^RELEASE\\.(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})T(?<build>\\d{2}-\\d{2}-\\d{2})Z$"
+    }
+  ]
 }
