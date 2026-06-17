@@ -723,8 +723,8 @@ def _stat_missing_chown_ok(method, *args, **kwargs):
 
 def test_ensure_pxe_menu_files_uploads_full_menu_tree(tmp_path: Path) -> None:
     """phase apps uploads the Homelab PXE menu tree — boot.cfg, menu.ipxe
-    (overriding the upstream 2.0.89 extracted one), and every *.ipxe file
-    under apps/pxe/menus/ — all flat under /pxe/tftp/ (TFTP root).
+    (our hand-written menu, not an upstream-extracted one), and every
+    *.ipxe file under apps/pxe/menus/ — all flat under /pxe/tftp/ (TFTP root).
 
     After each upload it chowns the file to uid/gid 1000 (nbxyz) so the
     container's dnsmasq --tftp-secure can serve it. No custom.ipxe upload

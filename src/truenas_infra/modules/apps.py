@@ -784,7 +784,7 @@ PXE_SCRIPTS_REMOTE_DIR   = "/mnt/tank/system/apps-config/pxe"
 # bios-config PXE bios-apply image — built in the sibling `bios-config`
 # repo by `./tools/build-bios-apply-img.sh`; uploaded here so
 # `sanboot http://10.10.5.10:8080/bios-config/bios-apply.img` from
-# custom.ipxe (the bios-apply menu entry) serves a valid image.
+# menus/bios.ipxe (the bios-apply menu entry) serves a valid image.
 #
 # Operator flow:
 #   1. cd ~/github/bios-config && ./tools/build-bios-apply-img.sh

@@ -2,11 +2,11 @@
 
 ## What this is
 
-A menu entry in the homelab netboot.xyz custom menu that applies
-canonical ASUS Q170S1 BIOS settings to a node over the network. The
-operator picks "Apply canonical BIOS config" from
-`https://pxe.w1.lv/` (or the netboot.xyz menu after hitting
-`amtctl.w1.lv` → Reset → PXE), the node `sanboot`s a small FAT disk
+A menu entry in the Homelab PXE menu (`apps/pxe/menus/bios.ipxe`) that
+applies canonical ASUS Q170S1 BIOS settings to a node over the network.
+The operator picks "Apply canonical BIOS config" from the PXE boot menu
+(reached after hitting `amtctl.w1.lv` → Reset → PXE), the node
+`sanboot`s a small FAT disk
 image served by this NAS, the UEFI Shell inside the image runs
 `setup_var.efi` with a committed `settings.txt`, and the node
 reboots with the canonical BIOS applied.
@@ -14,7 +14,7 @@ reboots with the canonical BIOS applied.
 The BIOS settings, image builder, and startup.nsh live in the
 sibling [`bios-config`](https://github.com/guntars-rakitko/bios-config)
 repo. This document covers **the NAS side only** — how the built
-`.img` gets served and how the `custom.ipxe` menu entry is wired.
+`.img` gets served and how the `menus/bios.ipxe` menu entry is wired.
 
 Full architecture: `bios-config/docs/pxe-architecture.md`.
 
@@ -31,29 +31,32 @@ deferred until the MVP flow validates end-to-end on real hardware
 For MVP, the image is built on the operator's laptop and scp'd to the
 NAS once per BIOS-settings change. That's roughly every few weeks —
 acceptable manual cadence. `phase apps` already handles the
-`custom.ipxe` menu wiring automatically on every apply run.
+`menus/bios.ipxe` menu wiring automatically on every apply run.
 
 ## Layout on the NAS
 
 ```
 /mnt/tank/system/pxe/
-├── assets/                    ← served at http://10.10.5.10:8080/
+├── http/                      ← served at http://10.10.5.10:8080/ (nginx)
 │   ├── bios-config/
-│   │   └── bios-apply.img     ← manually scp'd (this doc)
-│   ├── custom.ipxe            ← uploaded by phase apps
+│   │   └── bios-apply.img     ← uploaded by phase apps (this doc)
 │   ├── talos/<version>/       ← managed by talos-updater cronjob
 │   └── talos-menu.ipxe        ← managed by talos-updater cronjob
-└── config/
+└── tftp/                      ← TFTP menu tree (uploaded by phase apps)
+    ├── menu.ipxe              ← Homelab top-level menu
+    ├── boot.cfg               ← runtime vars (site_name, cache_url)
     └── menus/
-        └── boot.cfg           ← uploaded by phase apps
+        └── bios.ipxe          ← the bios-apply menu entry
 ```
 
-HTTP-served root is `/assets/`. The `custom.ipxe` menu chains to the
+HTTP-served root is `/http/`. The `menus/bios.ipxe` entry chains to the
 bios-apply flow via:
 
 ```ipxe
-sanboot --keep http://10.10.5.10:8080/bios-config/bios-apply.img
+sanboot --keep ${cache_url}/bios-config/bios-apply.img
 ```
+
+(`cache_url` is `http://10.10.5.10:8080`, set in `boot.cfg`.)
 
 ## Setup — one-time, per bios-config release
 
@@ -95,11 +98,12 @@ cd ~/github/truenas-infra
 ```
 
 `phase apps` does three things for this flow (see
-`src/truenas_infra/modules/apps.py::_ensure_netboot_menu_files_via_ctx`):
+`src/truenas_infra/modules/apps.py::_ensure_pxe_menu_files_via_ctx`):
 
-1. Re-uploads `apps/netboot-xyz/custom.ipxe` — keeps the menu entry in sync.
+1. Re-uploads the menu tree — `apps/pxe/menu.ipxe` + `menus/*.ipxe` (incl.
+   `bios.ipxe`) — to the TFTP root, keeping the menu entry in sync.
 2. Re-uploads `../bios-config/build/bios-apply.img` (if present locally)
-   to `/mnt/tank/system/pxe/assets/bios-config/bios-apply.img` via the
+   to `/mnt/tank/system/pxe/http/bios-config/bios-apply.img` via the
    TrueNAS REST API (filesystem.put). **No SSH needed.**
 3. Logs a sha256 prefix of the uploaded image so you can eyeball diffs
    between runs.
@@ -123,15 +127,15 @@ curl -I http://10.10.5.10:8080/bios-config/bios-apply.img
 # Content-Type: application/x-troff-man    (or similar — MIME doesn't matter)
 ```
 
-Browse to `https://pxe.w1.lv/` → the main menu → "Custom URL Menu"
-→ the custom menu should now show both "Talos: …" and "Apply
-canonical BIOS config (bios-config MVP)".
+PXE-boot a node (amtctl → Reset → PXE) → the Homelab PXE top-level
+menu (`menu.ipxe`) appears → the **BIOS** sub-menu should now offer
+"Apply canonical BIOS config (bios-config MVP)".
 
 ## Operator flow — applying to a node
 
 1. Open `amtctl.w1.lv` → click the target node → **Reset → PXE**.
    The node warm-resets with a one-shot PXE boot override.
-2. netboot.xyz appears. Pick **Custom URL Menu**.
+2. The Homelab PXE menu appears. Pick **BIOS**.
 3. Pick **Apply canonical BIOS config (bios-config MVP)**.
 4. Wait a few seconds — the UEFI Shell loads the image, auto-runs
    `startup.nsh`, and `setup_var.efi` applies the committed settings.
@@ -162,15 +166,15 @@ iteration — phase apps just picks up the newer `.img`.
   the iPXE error. First things to look at:
   - `curl -I http://10.10.5.10:8080/bios-config/bios-apply.img` on
     the mgmt VLAN — expect `200 OK`.
-  - `ls /mnt/tank/system/pxe/assets/bios-config/` on the NAS.
-  - `docker logs netbootxyz` — HTTP access log lines for
+  - `ls /mnt/tank/system/pxe/http/bios-config/` on the NAS.
+  - `docker logs pxe` — `nginx` HTTP access log lines for
     `/bios-config/bios-apply.img`.
-- **iPXE pinning:** `netboot-xyz` is pinned at `MENU_VERSION=2.0.89`
-  (iPXE 1.21.x) per
-  [`ipxe-keyboard-regression`](ipxe-keyboard-regression.md) (wiki)
-  — source: `truenas-infra/docs/netboot-xyz-ipxe-keyboard-regression.md`.
-  `sanboot` is stable in 1.21. If that pin ever bumps, re-test this
-  flow.
+- **iPXE version:** `homelab-pxe` builds its `ipxe.efi` from upstream
+  iPXE source (1.21.x) in the image, with the `USB_HCD_USBIO` flag
+  enabled to work around the xHCI keyboard regression on Q170-class
+  hardware (see `apps/pxe/build/local-usb.h` + `apps/pxe/README.md`).
+  `sanboot` is stable in 1.21. If the pinned iPXE source ref ever bumps,
+  re-test this flow.
 - **Recovering from a bad write:** CMOS reset via jumper or battery
   pull. See `bios-config/docs/recovery.md`. The PXE flow can then
   re-apply the canonical BIOS without physical access.

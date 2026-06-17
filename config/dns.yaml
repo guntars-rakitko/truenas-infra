@@ -32,7 +32,7 @@ records:
     comment: MeshCentral UI (via Traefik)
   - name: pxe.w1.lv
     address: 10.10.5.20
-    comment: netboot.xyz UI (via Traefik)
+    comment: Homelab PXE (homelab-pxe) HTTP assets (via Traefik)
   - name: minio-prd.w1.lv
     address: 10.10.5.20
     comment: MinIO prd console (via Traefik)
