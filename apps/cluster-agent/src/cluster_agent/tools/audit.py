@@ -74,6 +74,7 @@ def audit(
     tool: str,
     *,
     redact: list[str] | None = None,
+    redact_result: bool = False,
     summarize: Callable[[Any], str] = _summarize,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: emit one JSON audit line per call.
@@ -82,6 +83,12 @@ def audit(
         tool: short name (e.g. "kubectl_get", "loki_query")
         redact: param names to replace with ***REDACTED*** in the audit log
                 (e.g. ["token", "password", "api_key"])
+        redact_result: when True, the return value is NOT summarized into the
+                log — `result_summary` becomes ***REDACTED***. Use for tools
+                whose RETURN value is itself a secret (e.g. an installation
+                access token), so the audit still records that the call
+                happened + its status/duration without leaking the credential
+                to stdout → Loki.
         summarize: callable that turns the return value into a one-line
                    summary string (default: repr() + 200-char truncation)
     """
@@ -106,7 +113,7 @@ def audit(
             )
             try:
                 result = fn(*args, **kwargs)
-                event.result_summary = summarize(result)
+                event.result_summary = "***REDACTED***" if redact_result else summarize(result)
                 return result
             except Exception as exc:
                 event.status = "error"
