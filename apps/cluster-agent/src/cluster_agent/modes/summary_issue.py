@@ -154,8 +154,15 @@ def _finding_index_for_group(
     findings: list[Finding],
     dispatch_refs: dict[str, str],
 ) -> str:
-    """Return '#<issue_number>' if this AlertGroup is plausibly covered
-    by one of the emitted findings; else empty string.
+    """Return the finding's full `owner/repo#NN` issue ref if this
+    AlertGroup is plausibly covered by one of the emitted findings; else
+    empty string.
+
+    The FULL ref (not a bare `#NN`) is deliberate: since the 2026-07-06
+    graduation, findings live in `kube-infra` while this summary lives in
+    `cluster-agent-digest`, so GitHub needs the `owner/repo#NN` form to
+    render a cross-repo link (a bare `#NN` would resolve inside the digest
+    repo — the wrong issue).
 
     `dispatch_refs` maps Finding.id → "owner/repo#NN" (from DispatchResult).
     Heuristic: match alertname substring in any evidence-source field.
@@ -167,7 +174,7 @@ def _finding_index_for_group(
         for ev in getattr(f, "evidence", []) or []:
             source = getattr(ev, "source", "") or ""
             if group.alertname in source:
-                return "#" + ref.rsplit("#", 1)[-1]
+                return ref
     return ""
 
 
@@ -280,7 +287,9 @@ def render_summary_body(
     else:
         actionable_block = "\n".join(
             "- {ref} **[{sev}]** {title}".format(
-                ref="#" + dispatch_refs[f.id].rsplit("#", 1)[-1]
+                # Full `owner/repo#NN` ref so the link resolves to the
+                # kube-infra finding cross-repo (see _finding_index_for_group).
+                ref=dispatch_refs[f.id]
                 if dispatch_refs.get(f.id)
                 else "(no issue)",
                 sev=getattr(f, "severity", "?"),

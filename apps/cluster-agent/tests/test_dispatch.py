@@ -115,3 +115,82 @@ def test_dispatch_grafana_failure_increments_metric_but_does_not_break_pipeline(
     assert result.grafana_annotation_id is None
     # And the failure counter ticked exactly once
     assert after - before == 1
+
+
+# ── 2026-07-06 graduation: findings → kube-infra, routing + labels ────────
+
+def test_dispatch_create_routes_to_findings_repo_with_review_labels(tmp_path, monkeypatch):
+    """Findings file into FINDINGS_REPO (the ops repo) carrying the
+    `cluster-agent` provenance + `needs-review` triage labels."""
+    from cluster_agent import dispatch as d
+    from cluster_agent.state import db as db_mod
+
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+    gr = MagicMock(return_value="1")
+    gh = MagicMock(return_value={"number": 42})
+    monkeypatch.setattr(d, "post_annotation", gr)
+    monkeypatch.setattr(d, "gh_issue_create", gh)
+    monkeypatch.setenv("FINDINGS_REPO", "guntars-rakitko/kube-infra")
+    monkeypatch.delenv("FINDINGS_MIN_SEVERITY", raising=False)
+
+    result = dispatch(_make_finding(), DedupAction(kind=_DedupActionKind.CREATE), db=sdb)
+
+    assert result.gh_issue_ref == "guntars-rakitko/kube-infra#42"
+    assert gh.call_args.args[0] == "guntars-rakitko/kube-infra"
+    labels = gh.call_args.kwargs["labels"]
+    assert "cluster-agent" in labels
+    assert "needs-review" in labels
+    assert "severity-medium" in labels
+    assert "kub-dev" in labels
+
+
+def test_dispatch_comment_targets_ref_repo_not_env_repo(tmp_path, monkeypatch):
+    """Migration safety: a finding created in the OLD repo (its stored
+    repo-qualified gh_issue_ref) keeps being commented on THERE, even after
+    FINDINGS_REPO has been repointed at kube-infra. Commenting on the env
+    repo with the old number would hit the wrong kube-infra issue."""
+    from cluster_agent import dispatch as d
+    from cluster_agent.state import db as db_mod
+
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+    gh_comment = MagicMock(return_value={"id": 1})
+    monkeypatch.setattr(d, "post_annotation", MagicMock(return_value="1"))
+    monkeypatch.setattr(d, "gh_issue_create", MagicMock())
+    monkeypatch.setattr(d, "gh_issue_comment", gh_comment)
+    monkeypatch.setenv("FINDINGS_REPO", "guntars-rakitko/kube-infra")   # NEW target
+
+    action = DedupAction(
+        kind=_DedupActionKind.COMMENT,
+        gh_issue_ref="guntars-rakitko/cluster-agent-sandbox#5",         # OLD repo
+    )
+    dispatch(_make_finding(), action, db=sdb)
+
+    assert gh_comment.called
+    assert gh_comment.call_args.args[0] == "guntars-rakitko/cluster-agent-sandbox"  # NOT kube-infra
+    assert gh_comment.call_args.args[1] == 5
+    body = gh_comment.call_args.kwargs.get("body") or gh_comment.call_args.args[2]
+    assert "Still firing as of" in body
+
+
+def test_dispatch_findings_min_severity_floor_suppresses_below(tmp_path, monkeypatch):
+    """FINDINGS_MIN_SEVERITY (inert escape hatch) suppresses the GH issue
+    for a below-floor finding but still fires Grafana + records state."""
+    from cluster_agent import dispatch as d
+    from cluster_agent.state import db as db_mod
+
+    sdb = db_mod.StateDB(tmp_path / "state.db")
+    gr = MagicMock(return_value="9")
+    gh = MagicMock()   # MUST NOT be called (medium < high floor)
+    monkeypatch.setattr(d, "post_annotation", gr)
+    monkeypatch.setattr(d, "gh_issue_create", gh)
+    monkeypatch.setenv("FINDINGS_REPO", "guntars-rakitko/kube-infra")
+    monkeypatch.setenv("FINDINGS_MIN_SEVERITY", "high")
+
+    result = dispatch(_make_finding(), DedupAction(kind=_DedupActionKind.CREATE), db=sdb)
+
+    assert gh.called is False                     # no issue filed
+    assert result.grafana_annotation_id == "9"    # Grafana still fired
+    assert result.gh_issue_ref is None
+    row = sdb.fetchone("SELECT state FROM findings WHERE dedup_key=?",
+                       (_make_finding().dedup_key,))
+    assert row["state"] == "open"                 # state still recorded

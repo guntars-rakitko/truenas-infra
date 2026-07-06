@@ -97,6 +97,13 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         # if/when Mode G is revived.
         # Mode A (P2 daily-digest)
         "SANDBOX_REPO":                  "SANDBOX_REPO",
+        # Findings/summary routing (2026-07-06 graduation spec).
+        # FINDINGS_REPO → ops repo (kube-infra); DIGEST_REPO → renamed
+        # digest repo; FINDINGS_MIN_SEVERITY = inert floor (empty = every
+        # finding files). All fall back to SANDBOX_REPO in code.
+        "DIGEST_REPO":                   "DIGEST_REPO",
+        "FINDINGS_REPO":                 "FINDINGS_REPO",
+        "FINDINGS_MIN_SEVERITY":         "FINDINGS_MIN_SEVERITY",
         "LLM_MODEL":                     "LLM_MODEL",
         "MODE_A_CLUSTERS":               "MODE_A_CLUSTERS",
         # Daily-digest (P2 — 2026-05-26 pivot from 5-min polling)

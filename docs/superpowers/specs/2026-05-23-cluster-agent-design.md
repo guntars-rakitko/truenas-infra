@@ -673,6 +673,16 @@ truenas-infra/apps/cluster-agent/
 **Skip-ahead rule:** any phase can be paused for any duration. Operator
 decides when to advance. Minimums discourage rushed promotion; no maximum.
 
+> **P2 graduation refined (2026-07-06)** — see
+> [`2026-07-06-cluster-agent-digest-graduation.md`](2026-07-06-cluster-agent-digest-graduation.md).
+> The P1 soak passed long ago (Mode A trusted on both clusters since
+> 2026-05-26). "Mode A → real issues" is executed **by type, not
+> wholesale**: individual findings (all severities) graduate to
+> `kube-infra` (the ops repo, human-close, `needs-review` queue); the
+> daily digest-**summary** firehose gets its own permanent home
+> (`cluster-agent-sandbox` renamed → `cluster-agent-digest`). Neither a
+> severity bridge nor a wholesale move — see that spec § 3 for why.
+
 ### 7.4 Operational readiness gates (objective, not vibes)
 
 Before promoting any phase, **all** of:

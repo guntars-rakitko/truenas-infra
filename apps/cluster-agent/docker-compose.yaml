@@ -156,6 +156,15 @@ services:
       - LOG_LEVEL=INFO
       # ── Mode A (P1 / now P2 daily-digest)
       - SANDBOX_REPO=${SANDBOX_REPO}
+      # Findings/summary routing (2026-07-06 graduation spec). FINDINGS_REPO
+      # files individual findings in the ops repo (kube-infra); DIGEST_REPO
+      # files the daily summary in the renamed digest repo. Both fall back
+      # to SANDBOX_REPO in code (dispatch.py / daily_digest.py), so a
+      # half-applied cutover never 0-outs output. FINDINGS_MIN_SEVERITY is
+      # an inert floor (empty = every finding files).
+      - DIGEST_REPO=${DIGEST_REPO}
+      - FINDINGS_REPO=${FINDINGS_REPO}
+      - FINDINGS_MIN_SEVERITY=${FINDINGS_MIN_SEVERITY}
       - LLM_MODEL=${LLM_MODEL}
       # MODE_A_CLUSTERS — per-cluster scheduler-time allowlist for Mode A.
       # Default "dev,prd"; operator can set to just "dev" to silence prd.
