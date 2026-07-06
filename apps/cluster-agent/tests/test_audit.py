@@ -34,6 +34,22 @@ def test_audit_redacts_known_secret_fields(capsys):
     assert event["params"]["public"] == "visible"
 
 
+def test_audit_redacts_result_when_flagged(capsys):
+    """redact_result=True: the caller still gets the real return value, but
+    the audit line's result_summary is ***REDACTED*** so a secret RETURN
+    value (e.g. a GH installation token) never reaches stdout → Loki."""
+    @audit(tool="mint_token", redact_result=True)
+    def mint_token() -> str:
+        return "ghs_supersecrettoken"
+
+    result = mint_token()
+    assert result == "ghs_supersecrettoken"          # caller gets the real value
+    event = json.loads(capsys.readouterr().out.strip())
+    assert event["result_summary"] == "***REDACTED***"
+    assert "ghs_supersecrettoken" not in json.dumps(event)   # not anywhere in the line
+    assert event["status"] == "ok"
+
+
 def test_audit_captures_exception(capsys):
     @audit(tool="dummy_fail")
     def dummy_fail() -> None:

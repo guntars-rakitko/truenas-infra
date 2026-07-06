@@ -57,7 +57,7 @@ def _build_app_jwt() -> str:
     )
 
 
-@audit(tool="gh_get_installation_token")
+@audit(tool="gh_get_installation_token", redact_result=True)
 def gh_get_installation_token() -> str:
     """Trade the App JWT for a short-lived installation token (cached).
 
