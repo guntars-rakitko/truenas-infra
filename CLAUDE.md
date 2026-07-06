@@ -315,20 +315,20 @@ The cluster-agent runs as a NAS-side Docker container
 polling to a daily 06:00-EEST digest on 2026-05-26 (P2), then extended
 same day to also mine Loki for notable log patterns that didn't trigger
 an alert (P3). One LLM call per cluster per day produces a curated
-`Report` with 0-N actionable Findings that land as GH issues in
-[cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox).
+`Report` with 0-N actionable Findings. **Routing by issue type (2026-07-06
+graduation, LIVE):** individual **Findings (all severities) file in
+[`kube-infra`](https://github.com/guntars-rakitko/kube-infra)** — the ops
+repo, human-close, labelled `cluster-agent` + `needs-review` (the review
+queue); the daily **digest-summary** goes to
+[`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest)
+(renamed from `-sandbox`, auto-supersedes yesterday's). Controlled by Doppler
+`FINDINGS_REPO` / `DIGEST_REPO` (both fall back to `SANDBOX_REPO` in code);
+`FINDINGS_MIN_SEVERITY` is an inert severity floor (empty = every finding
+files). A finding created before the cutover keeps updating in its own repo
+(dispatch comments on the repo embedded in the stored `gh_issue_ref`). Spec
++ rationale (why by-type, not wholesale-move or severity-bridge):
+[`docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md`](docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).
 Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
-
-> ⏳ **Graduation shipped in code, cutover PENDING (2026-07-06).** The
-> `apps/cluster-agent/` code to route **individual findings → `kube-infra`**
-> (all severities, `cluster-agent`+`needs-review` labels, human-close) and
-> the **daily summary → `cluster-agent-digest`** (renamed from `-sandbox`)
-> is merged + tested, but **inert until the operator cutover** (repo rename +
-> Doppler `DIGEST_REPO`/`FINDINGS_REPO`/`FINDINGS_MIN_SEVERITY` + GH-App
-> Issues-R/W-on-kube-infra + `manage.sh phase apps --apply`). **Until then
-> everything still lands in `cluster-agent-sandbox`.** Cutover sequence +
-> rationale: spec [`docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md`](docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md)
-> § 7. Remove this note + fold the new routing into the prose below once cut over.
 
 **Daily-digest architecture (short version).** Each 06:00 fire:
 
@@ -508,8 +508,13 @@ PromQL `{cluster="kub-prd"}` — same identifier, same vocabulary.
   `SES_FROM_DEFAULT` — SES SMTP creds, mirrored from
   `infrastructure/shr` `SHARED_SES_W1_*`. Rotate in lockstep with the
   canonical copy.
-- `SANDBOX_REPO` / `LLM_MODEL` — Mode A config (sandbox repo for digest
-  issues, model name for `_MODEL_RATES_PER_1M` lookup).
+- `FINDINGS_REPO` / `DIGEST_REPO` / `FINDINGS_MIN_SEVERITY` — Mode A routing
+  (2026-07-06 graduation): findings→`kube-infra`, summary→`cluster-agent-digest`,
+  inert severity floor (empty = all). Both repos fall back to `SANDBOX_REPO`
+  in code. All 3 are in `_DOPPLER_KEYS_PER_APP[cluster-agent]`, so they MUST
+  exist in Doppler (empty is fine) or `manage.sh phase apps` fails loud.
+- `SANDBOX_REPO` / `LLM_MODEL` — legacy fallback repo (redirects to
+  `cluster-agent-digest` post-rename) + model name for `_MODEL_RATES_PER_1M`.
 - `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` — runtime kill switches.
 
 **Reserved-for-future keys (paused after 2026-05-27 wrap):**
