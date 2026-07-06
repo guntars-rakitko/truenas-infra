@@ -32,6 +32,7 @@ BUCKETS=(
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets
     postgres-backups     # CloudNativePG — Barman Cloud Plugin WAL + base backups
     pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
+    sms-gateway-backups  # SMS-gateway appliance — nightly pg_dump of the box's smsgw+gammu DBs (box-<env>/ prefix)
     velero               # Velero — K8s manifest backups
 )
 
