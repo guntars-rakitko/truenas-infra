@@ -184,7 +184,13 @@ async def run_async(*, cluster: str) -> DigestResult:
     #   "email,issue"→ both
     try:
         from .summary_issue import emit_summary
-        repo = os.environ.get("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+        # Digest-SUMMARY destination — the renamed permanent digest repo
+        # (distinct from the per-finding destination, which dispatch()
+        # routes to FINDINGS_REPO/kube-infra). Falls back to the legacy
+        # SANDBOX_REPO through the rename cutover. (2026-07-06 graduation.)
+        repo = os.environ.get("DIGEST_REPO") or os.environ.get(
+            "SANDBOX_REPO", "guntars-rakitko/cluster-agent-digest"
+        )
         emit_summary(
             repo=repo,
             cluster=cluster,

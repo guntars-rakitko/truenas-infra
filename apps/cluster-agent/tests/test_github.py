@@ -65,13 +65,31 @@ def test_gh_issue_create_refuses_non_allowlisted_repo(monkeypatch):
     # fire before any header lookup.
     monkeypatch.setattr(gh, "_gh_headers", lambda: {})
 
+    # NB: use a repo that is NOT on the write-allowlist. kube-infra was
+    # added to the allowlist in the 2026-07-06 findings-graduation, so it
+    # can no longer serve as the "forbidden" example.
     try:
-        gh.gh_issue_create("guntars-rakitko/kube-infra", "test", "body")
+        gh.gh_issue_create("guntars-rakitko/giks", "test", "body")
     except PermissionError as e:
-        assert "kube-infra" in str(e)
+        assert "guntars-rakitko/giks" in str(e)
         assert "_WRITE_ALLOWED_REPOS" in str(e)
     else:
         raise AssertionError("expected PermissionError on non-allowlisted repo")
+
+
+def test_write_allowlist_includes_graduation_repos():
+    """The 2026-07-06 findings-graduation must have the ops repo + the
+    renamed digest repo on the write-allowlist (and keep the transitional
+    sandbox entry). `_assert_write_allowed` returns None (no raise) for
+    each."""
+    from cluster_agent.tools.github import _assert_write_allowed
+
+    for repo in (
+        "guntars-rakitko/kube-infra",
+        "guntars-rakitko/cluster-agent-digest",
+        "guntars-rakitko/cluster-agent-sandbox",
+    ):
+        _assert_write_allowed(repo)   # must not raise
 
 
 def test_gh_issue_comment_refuses_non_allowlisted_repo(monkeypatch):

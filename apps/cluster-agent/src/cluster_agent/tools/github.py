@@ -141,11 +141,21 @@ def gh_get_commit(repo: str, sha: str) -> dict[str, Any]:
 # Read tools (gh_issue_list, gh_get_pr) are NOT scoped — read-only is
 # fine even cross-repo and we need it for cross-cluster awareness in
 # future modes.
-# To add a new sandbox repo (e.g. once Mode G's backup-verify reports
-# graduate beyond the agent-sandbox), add it here AND uninstall the
-# GH App from anywhere it shouldn't write.
+# To add a new write target, add it here AND ensure the GH App is
+# installed there with Issues R/W only (no contents/PRs/workflows).
 _WRITE_ALLOWED_REPOS: frozenset[str] = frozenset({
+    # Daily digest-summary destination. Renamed from `-sandbox` when
+    # Mode A graduated out of P1 soak (2026-07-06 graduation spec:
+    # truenas-infra/docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).
+    "guntars-rakitko/cluster-agent-digest",
+    # Transitional: kept so in-flight state.db findings whose stored
+    # gh_issue_ref still points at the old repo can be commented on
+    # through the rename cutover. Drop once no open finding references it.
     "guntars-rakitko/cluster-agent-sandbox",
+    # Individual findings (all severities) graduated to the ops repo
+    # (2026-07-06). The App is scoped to Issues R/W ONLY on kube-infra;
+    # this in-code allowlist is the second lock.
+    "guntars-rakitko/kube-infra",
 })
 
 

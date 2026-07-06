@@ -319,6 +319,17 @@ an alert (P3). One LLM call per cluster per day produces a curated
 [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox).
 Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 
+> ⏳ **Graduation shipped in code, cutover PENDING (2026-07-06).** The
+> `apps/cluster-agent/` code to route **individual findings → `kube-infra`**
+> (all severities, `cluster-agent`+`needs-review` labels, human-close) and
+> the **daily summary → `cluster-agent-digest`** (renamed from `-sandbox`)
+> is merged + tested, but **inert until the operator cutover** (repo rename +
+> Doppler `DIGEST_REPO`/`FINDINGS_REPO`/`FINDINGS_MIN_SEVERITY` + GH-App
+> Issues-R/W-on-kube-infra + `manage.sh phase apps --apply`). **Until then
+> everything still lands in `cluster-agent-sandbox`.** Cutover sequence +
+> rationale: spec [`docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md`](docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md)
+> § 7. Remove this note + fold the new routing into the prose below once cut over.
+
 **Daily-digest architecture (short version).** Each 06:00 fire:
 
 1. Pulls 24h of `ALERTS{alertstate="firing"}` from Prometheus,

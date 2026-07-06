@@ -4,15 +4,24 @@ Three surfaces, in this fixed order (each best-effort — a failure on
 a later surface doesn't roll back the earlier ones):
 
   1. Grafana annotation — always. Vertical line on the dashboards.
-  2. GitHub issue (sandbox repo) — only on action.create OR
-     action.reopen. action.comment posts a comment on the existing
+  2. GitHub issue — only on action.create OR action.reopen.
+     action.comment posts a "still firing" comment on the existing
      issue, doesn't create a new one.
   3. SQLite state.db — always. Records the dedup_key + gh_issue_ref
      for the next dedup lookup.
 
-P2 will switch the GH destination from the sandbox repo to the real
-kube-infra issues (gated on operator's review of ≥20 findings during
-P1 soak per spec § 7.3).
+**Destination (2026-07-06 graduation — spec:
+truenas-infra/docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).**
+Individual findings (ALL severities) file in the ops repo via
+`FINDINGS_REPO` (→ `guntars-rakitko/kube-infra`); the daily digest-
+SUMMARY has its own destination (`DIGEST_REPO`, handled in
+modes/summary_issue.py). `FINDINGS_REPO` falls back to `DIGEST_REPO`
+then `SANDBOX_REPO` so a half-applied cutover never 0-outs findings.
+`FINDINGS_MIN_SEVERITY` (default empty = every finding files) is an
+inert escape hatch if low/info findings ever prove noisy in the ops
+repo. On COMMENT/REOPEN the comment lands on the repo embedded in the
+stored `gh_issue_ref` (not the current env repo) — so findings created
+in the old repo before the cutover keep being updated there.
 """
 from __future__ import annotations
 import dataclasses
@@ -62,6 +71,63 @@ def _issue_body(finding: Finding) -> str:
     return "\n".join(lines)
 
 
+# Severity ordering for the optional FINDINGS_MIN_SEVERITY floor.
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _findings_repo() -> str | None:
+    """Repo NEW findings file into. `FINDINGS_REPO` graduated findings to
+    the ops repo (kube-infra); falls back to `DIGEST_REPO` then the legacy
+    `SANDBOX_REPO` so a half-applied cutover never silently drops findings."""
+    return (
+        os.environ.get("FINDINGS_REPO")
+        or os.environ.get("DIGEST_REPO")
+        or os.environ.get("SANDBOX_REPO")
+    )
+
+
+def _below_findings_floor(severity: str) -> bool:
+    """True iff FINDINGS_MIN_SEVERITY is set AND this finding is below it.
+
+    Empty/unset/invalid floor ⇒ always False (every finding files — the
+    default). Escape hatch only: set to `medium`/`high` if low/info
+    findings ever prove noisy in the ops repo. Applies to CREATE only —
+    an already-open issue keeps getting recurrence comments regardless."""
+    floor = os.environ.get("FINDINGS_MIN_SEVERITY", "").strip().lower()
+    if floor not in _SEVERITY_RANK:
+        return False
+    return _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK[floor]
+
+
+def _recurrence_comment(finding: Finding, *, reopened: bool = False) -> str:
+    """Body for a dedup COMMENT/REOPEN. Leads with an explicit
+    'still firing as of <date>' so a live-but-known finding is
+    distinguishable from one that went quiet, then repeats the current
+    evidence for context."""
+    date = finding.created_at.date().isoformat()
+    lead = (
+        f"**Re-fired after closure — still firing as of {date}**"
+        if reopened
+        else f"**Still firing as of {date}**"
+    )
+    return f"{lead} (re-observed {finding.created_at.isoformat()}).\n\n" + _issue_body(finding)
+
+
+def _comment_target(gh_issue_ref: str, fallback_repo: str | None) -> tuple[str | None, int | None]:
+    """Split a stored `owner/repo#NN` ref into (repo, number).
+
+    The ref is repo-qualified, so a COMMENT/REOPEN lands on the issue's
+    OWN repo — critical across the sandbox→kube-infra cutover, where an
+    in-flight finding's issue lives in the old repo while new findings go
+    to the new one. Legacy refs without a repo prefix fall back to
+    `fallback_repo`."""
+    ref_repo, sep, ref_num = gh_issue_ref.rpartition("#")
+    if not sep:
+        return fallback_repo, None
+    repo = ref_repo or fallback_repo
+    return (repo, int(ref_num)) if ref_num.isdigit() else (repo, None)
+
+
 def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchResult:
     """Write the finding to all 3 surfaces. Returns refs for each."""
     time_ms = int(finding.created_at.timestamp() * 1000)
@@ -86,11 +152,20 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
         DISPATCH_ERRORS.labels(surface="grafana_annotation").inc()
 
     # 2) GH — create or comment, conditionally
-    repo = os.environ.get("SANDBOX_REPO")
+    repo = _findings_repo()
     gh_ref: str | None = None
     if action.kind == _DedupActionKind.CREATE:
-        if not repo:
-            log.warning("SANDBOX_REPO not set; skipping GH create")
+        if _below_findings_floor(finding.severity):
+            log.info(
+                "finding %s severity=%s below FINDINGS_MIN_SEVERITY floor; "
+                "Grafana-only, no issue filed",
+                finding.id, finding.severity,
+            )
+        elif not repo:
+            log.warning(
+                "no findings repo set (FINDINGS_REPO/DIGEST_REPO/SANDBOX_REPO); "
+                "skipping GH create"
+            )
         else:
             try:
                 resp = gh_issue_create(
@@ -98,6 +173,14 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                     title=finding.title,
                     body=_issue_body(finding),
                     labels=[
+                        # `cluster-agent` = provenance (lets the operator
+                        # filter/hide the bot's issues in the ops repo);
+                        # `needs-review` = the triage queue
+                        # (`label:needs-review` == "surfaced, not yet
+                        # triaged"). Both are created in kube-infra by the
+                        # 2026-07-06 graduation rollout.
+                        "cluster-agent",
+                        "needs-review",
                         f"mode-{finding.mode}",
                         f"severity-{finding.severity}",
                         # `kub-{cluster}` matches the Loki/Prom cluster
@@ -113,31 +196,32 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                 DISPATCH_ERRORS.labels(surface="gh_issue_create").inc()
     elif action.kind == _DedupActionKind.COMMENT:
         gh_ref = action.gh_issue_ref
-        if action.gh_issue_ref and repo:
-            try:
-                number = int(action.gh_issue_ref.split("#")[-1])
-                gh_issue_comment(
-                    repo, number,
-                    body=f"Re-fired at {finding.created_at.isoformat()}.\n\n" + _issue_body(finding),
-                )
-            except Exception as e:
-                log.warning("gh_issue_comment failed: %r", e)
-                DISPATCH_ERRORS.labels(surface="gh_issue_comment").inc()
+        if action.gh_issue_ref:
+            ref_repo, ref_num = _comment_target(action.gh_issue_ref, repo)
+            if ref_repo and ref_num is not None:
+                try:
+                    gh_issue_comment(ref_repo, ref_num, body=_recurrence_comment(finding))
+                except Exception as e:
+                    log.warning("gh_issue_comment failed: %r", e)
+                    DISPATCH_ERRORS.labels(surface="gh_issue_comment").inc()
     elif action.kind == _DedupActionKind.REOPEN:
-        # For the P1 dev soak we treat reopen identically to comment —
-        # the issue stays open, we add a re-fire comment. Promoting
-        # reopen-as-state-change to a separate GH API call lands in P2.
+        # Closed <7d ago and the problem recurred. Add a "re-fired after
+        # closure" recurrence comment on the issue's OWN repo. (Promoting
+        # this to an actual state=open reopen is a small follow-up noted in
+        # the graduation spec — findings are human-close-only, so the
+        # comment already notifies watchers of the recurrence.)
         gh_ref = action.gh_issue_ref
-        if action.gh_issue_ref and repo:
-            try:
-                number = int(action.gh_issue_ref.split("#")[-1])
-                gh_issue_comment(
-                    repo, number,
-                    body=f"Re-fired after closure at {finding.created_at.isoformat()}.\n\n" + _issue_body(finding),
-                )
-            except Exception as e:
-                log.warning("gh_issue_comment (reopen) failed: %r", e)
-                DISPATCH_ERRORS.labels(surface="gh_issue_reopen_comment").inc()
+        if action.gh_issue_ref:
+            ref_repo, ref_num = _comment_target(action.gh_issue_ref, repo)
+            if ref_repo and ref_num is not None:
+                try:
+                    gh_issue_comment(
+                        ref_repo, ref_num,
+                        body=_recurrence_comment(finding, reopened=True),
+                    )
+                except Exception as e:
+                    log.warning("gh_issue_comment (reopen) failed: %r", e)
+                    DISPATCH_ERRORS.labels(surface="gh_issue_reopen_comment").inc()
 
     # 3) SQLite — always (record / upsert)
     record(
