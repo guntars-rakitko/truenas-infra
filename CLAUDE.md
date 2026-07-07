@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Overview
 
-API-driven TrueNAS configuration for a homelab NAS. All configuration is stored in Git and applied via the TrueNAS REST API — no manual UI changes. This ensures the NAS can be fully rebuilt from scripts if needed.
+API-driven TrueNAS configuration for a homelab NAS. Almost all configuration is stored in Git and applied via the TrueNAS REST API, so the NAS can be rebuilt from scripts. **Two things are deliberately managed out-of-band in the UI** and are NOT reproduced by the tool: (1) the `truenas_admin` operator identity itself (its login + the "Allowed Sudo Commands (No Password)" allowlist that the automation depends on — see § SSH + sudo on NAS), and (2) a small set of NUT bits noted below (Extra Users, alert classes, the Init/Shutdown hook registration). A clean rebuild therefore re-runs the phases **and** re-applies those UI-managed pieces from their documented recipes.
 
 The NAS serves the Kubernetes clusters defined in `guntars-rakitko/kube-infra` and sits on the network managed by `guntars-rakitko/mikrotik-infra`.
 
@@ -102,8 +102,8 @@ When upgrading, update the pinned version here and re-verify all scripts against
 
 | Interface | VLAN | IP | Purpose |
 |---|---|---|---|
-| NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: NFS (Longhorn prd), MinIO (Velero prd) |
-| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: NFS (Longhorn dev), MinIO (Velero dev) |
+| NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
+| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
 | NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, PXE/TFTP, NUT |
 
@@ -111,7 +111,7 @@ Connected to CRS310:
 - `ether7` — tagged trunk, VLANs 10/15/20 (data, NIC1)
 - `ether8` — untagged, VLAN 5 (management, NIC2)
 
-Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.10.10` and `.15.10`; Plex only on `.20.10`), so home devices cannot reach Kube backup targets even though NIC1 is physically shared.
+Service-to-interface binding is enforced in TrueNAS. Kube backup targets are MinIO S3, which binds only on the data-VLAN IPs (`.10.10` / `.15.10`); Plex + SMB bind only on `.20.10`. So home devices cannot reach Kube backup targets even though NIC1 is physically shared. Note on NFS: the old Longhorn NFS exports were **decommissioned 2026-04-27** (Longhorn → MinIO S3 `longhorn` bucket, kube-infra #26). The NFS service does still listen on all three sub-IPs (`.5.10` / `.10.10` / `.15.10` — see `config/shares.yaml § nfs.service.bindip`), but the **only live NFS export is `/mnt/tank/system/stress-results`**, ACL-scoped to the mgmt VLAN (`10.10.5.0/24`) for the hw-validation PXE image. `.5.10` is in the bindip so that report path survives even when NIC2 is one of the validation subjects being stress-broken.
 
 ---
 
@@ -127,8 +127,7 @@ Service-to-interface binding is enforced in TrueNAS (e.g. NFS only listens on `.
 | MinIO prd S3 API | Velero backup store | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
 | MinIO dev S3 API | Velero backup store | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
 | Traefik dashboard | Proxy ops view | https://traefik-nas.w1.lv/dashboard/ |
-| NFS (prd) | Longhorn backups | 10.10.10.10 (NFS, service-level bindip) |
-| NFS (dev) | Longhorn backups | 10.10.15.10 |
+| NFS export (hw-validation) | `/mnt/tank/system/stress-results` — the **only** live NFS export (Longhorn NFS decommissioned 2026-04-27 → MinIO S3 `longhorn` bucket, kube-infra #26) | 10.10.5.10 (mgmt VLAN, ACL `10.10.5.0/24`; service also binds `.10.10`/`.15.10`) |
 | PXE / TFTP server | custom iPXE 1.21.1+ built from source (apps/pxe/) — USB_HCD_USBIO fix for Intel Q170. Dynamic menu auto-listed from /mnt/tank/system/pxe/http/extras/{utils,distros,live}/*.iso by apps/pxe/pxe-genmenu.sh. Operator runbook: `docs/pxe-operator.md` | 10.10.5.10:69/udp (TFTP), :8080 (HTTP assets) |
 | cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
@@ -166,12 +165,26 @@ for multi-instance (minio-prd, traefik-nas), `<role>-<NN>` for per-box
 
 ---
 
-## Storage Design (TBD)
+## Storage Design
 
-To be defined during Phase 1 hardware setup. Expected:
-- ZFS pool across available NVMe drives
-- Datasets for: Longhorn backups, Velero/MinIO, Plex media, general storage
-- Snapshot schedule on critical datasets
+Live design — source of truth is `config/storage.yaml` (consumed by
+`modules/{pool,datasets,storage_tasks}.py`). Summary:
+
+- **Pool `tank`** — single 5-wide **RAIDZ1** vdev across the 5× 1 TB NVMe
+  drives (3× PM981a + 2× PM9A1), `ashift=12`, `autotrim=on`. The 256 GB
+  PM981 (slot 4) is the TrueNAS-installer-managed `boot-pool`, not part of
+  `tank`. ⚠ When replacing a PM9A1, match by **serial, not slot** — the
+  2026-07-06 reslot reversed the nvme4/nvme5 enumeration (see the reslot
+  note in `storage.yaml`).
+- **Dataset defaults** — `compression=lz4`, `atime=off`, `xattr=sa`,
+  `recordsize=128K` (Velero datasets override to `1M`).
+- **Dataset tree** (env-first): `tank/kube/{prd,dev}/velero` (Longhorn
+  datasets **removed 2026-04-27** — Longhorn → MinIO S3, kube-infra #26),
+  `tank/media/{plex,torrent}`, `tank/shared/general`, and `tank/system/*`
+  (pxe, apps-config/*, tls, stress-results).
+- **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
+  `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
+- **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
 
 ---
 
@@ -235,7 +248,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 6 canonical buckets per cluster
+./scripts/setup-minio-buckets.sh      # 9 canonical buckets per cluster
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -245,23 +258,29 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the four canonical backup buckets on each MinIO instance:
+Creates the nine canonical backup buckets on each MinIO instance
+(authoritative list = the `BUCKETS` array in the script):
 
 | Bucket | Consumer |
 |---|---|
-| `velero` | Velero — K8s manifest backups |
-| `longhorn` | Longhorn — volume + system backups |
-| `mssql-backups` | SQL Server — `BACKUP DATABASE TO URL` targets |
-| `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups (PG migration Phase 5) |
-| `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
+| `cluster-agent` | cluster-agent — `state.db` nightly backups |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
+| `loki-chunks` | Loki — log chunks (compressed log streams + index) |
+| `longhorn` | Longhorn — volume + system backups (S3 BackupTarget; replaced the old NFS export 2026-04-27) |
+| `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
+| `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
+| `pocket-id-litestream` | Pocket-ID — SQLite Litestream replicas (DR for the OIDC IdP) |
+| `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
+| `velero` | Velero — K8s manifest backups |
 
 #### setup-minio-users.sh
 
 Provisions the cluster's service user. **One user per cluster**,
-shared across all backup tracks (Velero / Longhorn / MSSQL /
-etcd-snapshots), `readwrite` policy. Per-track IAM scoping isn't
-worth the operational overhead for this scale.
+shared across all cluster backup tracks (Velero / Longhorn / Postgres /
+etcd-snapshots / cluster-agent / loki-chunks / …), `readwrite` policy.
+Per-track IAM scoping isn't worth the operational overhead for this
+scale. (`mssql-backups` is **not** a cluster track — it's fed by the
+legacy GIKS-v1 box's own MSSQL credentials, not this per-cluster user.)
 
 **Source of truth for the credentials is Doppler**
 `infrastructure/{dev,prd}` → `KUBE_MINIO_ACCESS_KEY_ID` +
@@ -286,18 +305,21 @@ Current ILM rules:
 
 | Bucket | Expiration | Why |
 |---|---|---|
+| `cluster-agent` (both clusters) | 30 days | cluster-agent `state.db` nightly backups — 30d of history is ample to recover the dedup/state DB; older copies are noise. |
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
 | `postgres-backups` (prd) | 90 days | Coarse backstop for orphaned Barman objects. The CNPG ObjectStore `retentionPolicy: 30d` is the real PITR-window pruner; the 90d ILM only sweeps objects Barman's own retention misses (e.g. after a cluster delete). |
 | `postgres-backups` (dev) | 14 days | Per-env split — dev's PITR window is 7d (regenerable data), so its ILM backstop is 14d (always kept > the Barman retention). |
 | `sms-gateway-backups` (both clusters) | 30 days | SMS-gateway appliance nightly `pg_dump`s (own backup track, separate from CloudNativePG's `postgres-backups`). 30d is ample for the box's member/billing data. |
 
-Velero / Longhorn / etcd-snapshot buckets are intentionally not in
-this script — Velero and Longhorn manage their own retention via
-controller TTL, and etcd-snapshots is curated by hand for now.
+Velero / Longhorn / etcd-snapshots / loki-chunks / pocket-id-litestream
+buckets are intentionally not in this script — Velero and Longhorn
+manage their own retention via controller TTL, Loki and Litestream
+prune their own object stores, and etcd-snapshots is curated by hand
+for now.
 
 #### setup-minio-encryption.sh
 
-Enables **SSE-S3 default encryption** on all 6 buckets of both
+Enables **SSE-S3 default encryption** on all 9 buckets of both
 instances (GDPR at-rest encryption, kube-infra #520 Workstream C).
 With SSE-S3 on, every object is encrypted server-side before it hits
 the ZFS pool — backups become ciphertext at rest, transparently.
@@ -710,7 +732,8 @@ Migration tracking: kube-infra #92.
 **Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
 primary UPS (`apc1`) protects the NAS + all 6 K8s nodes + networking
 gear; the second UPS is reserved as a hot spare. Battery replaced
-**2026-05-28** (APC RBC7 pair, ~3-year expected lifespan; next due ~2029).
+**2026-06-13** (APC RBC7 pair + AP9620 swap, ~3-year expected lifespan;
+next due ~2029).
 
 **NUT topology:**
 
@@ -811,7 +834,17 @@ confirmed the UPS cuts power + power-cycles the rack.
   shutdowncmd + restarts ups, uploads hook + root-only pw file, registers the
   SHUTDOWN init/shutdown script). Init/shutdown scripts persist in the config
   DB across reboots + updates.
-- `config/services.yaml § nut.shutdowncmd` — **keep empty**.
+- `config/services.yaml § nut.shutdowncmd` — ~~**keep empty**~~
+  **⚠ SUPERSEDED by Path B (kube-infra #611, 2026-06-02 — see the banner
+  at the top of this §).** `shutdowncmd` is now **SET** to
+  `/mnt/tank/system/talos/nas-ups-orchestrator.sh` (verify:
+  `config/services.yaml:276`). **Do NOT clear it** — an empty
+  `shutdowncmd` would break the Path-B DR orchestration. The Attempt-1/
+  Attempt-2 prose above is retained only as history of the pre-Path-B
+  design (when the Init/Shutdown hook armed the UPS and `shutdowncmd`
+  was deliberately empty); the Init/Shutdown hook still arms the UPS
+  kill-power, but it now runs *alongside* the orchestrator, not instead
+  of a `shutdowncmd`.
 
 Re-validate after changes with the LIGHT drill: `sudo upsmon -c fsd` (sets the
 flag → arms) → read `last-shutdown.log`. A plain `reboot` must NOT arm it
@@ -884,7 +917,7 @@ dwells in the LB zone for a while while recharging — so HOURLY caps the email
 spam without moving the (deliberately aggressive) thresholds.
 
 **Battery health verification:**
-- Last manual quick test: **2026-05-28 (Done and passed)** — establishes baseline for the new RBC7 pair.
+- Last manual quick test: **2026-06-13 (Done and passed)** — establishes baseline for the new RBC7 pair.
 - Automatic test interval: APC firmware default (14 days). Attempted to override to monthly via `ups.test.interval` 2026-05-28 — firmware rejected, kept default.
 - Manual test command (zero-risk, ~30s):
   ```sh

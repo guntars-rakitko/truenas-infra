@@ -16,7 +16,7 @@
 #     (with `MINIO_ROOT_USER_DEV` / `MINIO_ROOT_PASSWORD_DEV` from
 #     Doppler `infrastructure/ops`)
 #
-# Verification: `mc ls nas-{dev,prd}` shows all four buckets.
+# Verification: `mc ls nas-{dev,prd}` shows all nine buckets.
 
 set -euo pipefail
 

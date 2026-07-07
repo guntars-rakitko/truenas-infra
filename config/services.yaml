@@ -286,9 +286,9 @@ tls:
     # provider: cloudflare    # or route53, mikrotik-internal, etc.
     # email: admin@w1.lv
 
-# System defaults applied during bring-up.
-system:
-  timezone: Europe/Riga
-  console_banner: |
-    truenas-infra — API-configured. Manual edits will be overwritten.
-    Source of truth: github.com/guntars-rakitko/truenas-infra
+# NOTE: there is intentionally no `system:` block here. Timezone (UTC) and
+# NTP are set from `config/tunables.yaml § system` by `modules/tunables.py`.
+# A former `system:` block in THIS file (timezone: Europe/Riga + a
+# console_banner) was dead config — no module reads services.yaml's
+# `system:` key (nut.py reads only `nut:`), and its Europe/Riga value
+# contradicted the live UTC. Removed 2026-07-08.
