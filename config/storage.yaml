@@ -15,18 +15,30 @@ pool:
     #   slot 2 → PM981a 1TB → tank
     #   slot 3 → PM981a 1TB → tank
     #   slot 4 → PM981 256GB → boot-pool (TrueNAS installer manages)
-    #   slot 5 → PM9A1 1TB → tank
-    #   slot 6 → PM9A1 1TB → tank
+    #   slot 5 → PM9A1 1TB → tank  (S6H2NF0WC37390 = nvme4n1)
+    #   slot 8 → PM9A1 1TB → tank  (S6H2NF0WC37392 = nvme5n1 — see reslot note)
+    #   slot 6 → EMPTY (…392 moved out of here 2026-07-06 — see below)
     type: RAIDZ1
     # Tank devnames resolved 2026-05-15 via disk.query against the live
-    # post-install NAS. nvme3n1 is the 256GB PM981 boot drive (managed
-    # by TrueNAS installer as boot-pool) — intentionally NOT in tank.
+    # post-install NAS, RE-CONFIRMED 2026-07-06 after the PM9A1 reslot below.
+    # nvme3n1 is the 256GB PM981 boot drive (managed by the TrueNAS installer
+    # as boot-pool) — intentionally NOT in tank.
     #   nvme0n1  PM981a-H7  S/N S4GSNF0N301379   1TB  tank
     #   nvme1n1  PM981a-H1  S/N S4GRNX0NA00357   1TB  tank
     #   nvme2n1  PM981a-H1  S/N S4GRNX1RB33857   1TB  tank
     #   nvme3n1  PM981 256GB S/N S444NX0N496890  256GB  boot-pool (excluded)
-    #   nvme4n1  PM9A1      S/N S6H2NF0WC37392   1TB  tank
-    #   nvme5n1  PM9A1      S/N S6H2NF0WC37390   1TB  tank
+    #   nvme4n1  PM9A1      S/N S6H2NF0WC37390   1TB  tank  (slot 5)
+    #   nvme5n1  PM9A1      S/N S6H2NF0WC37392   1TB  tank  (slot 8 — reslotted)
+    #
+    # ⚠ HARDWARE INCIDENT 2026-07-06 — the PM9A1 S6H2NF0WC37392 hard-dropped off
+    # the PCIe bus under load (CSTS=0xffffffff, SMART-clean) twice; physically
+    # RESLOTTED from slot 6 → slot 8 + `zpool clear` + full scrub = 0 errors,
+    # no re-drop (likely a marginal M.2 contact fixed by the reseat — MONITOR).
+    # The reslot re-enumerated the two PM9A1s, so nvme4n1↔nvme5n1 serials are
+    # the REVERSE of the pre-2026-07-06 mapping. This table + slot map above are
+    # the CURRENT live truth (verified via disk.query). SAFETY: when replacing a
+    # PM9A1, match by SERIAL, not slot — …392 (the previously-faulty unit) is
+    # nvme5n1 in slot 8; …390 (healthy) is nvme4n1 in slot 5.
     disks:
       - nvme0n1
       - nvme1n1
