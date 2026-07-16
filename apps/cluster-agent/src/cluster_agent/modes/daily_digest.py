@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+from collections import defaultdict
 from typing import Any
 
 from ..emit.metrics import (
@@ -37,11 +38,12 @@ from ..emit.metrics import (
 )
 from ..llm import triage_digest, LLMBudgetExceeded
 from ..state.db import StateDB
-from ..state.dedup import lookup, DedupAction
+from ..state.dedup import lookup, mark_closed, DedupAction
 from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
 from ..tools.loki import loki_query, loki_metric_query_range
 from ..tools.kubectl import kubectl_describe, ToolError
-from ..dispatch import dispatch
+from ..tools.github import gh_issue_list
+from ..dispatch import dispatch, _findings_repo
 from .digest_aggregator import (
     aggregate,
     aggregate_log_patterns,
@@ -121,6 +123,15 @@ async def run_async(*, cluster: str) -> DigestResult:
 
     # ── 5. Open issue dedup keys ────────────────────────────────────
     sdb = StateDB(os.environ["STATE_DB_PATH"])
+    # 5a. Reconcile state.db against real GH issue state FIRST, so the
+    # dedup list below reflects what's actually still open. Without this,
+    # operator-closed findings stay state='open' forever and the LLM keeps
+    # skipping the chronic condition as "already tracked" — see
+    # _reconcile_finding_states docstring.
+    try:
+        _reconcile_finding_states(sdb, _findings_repo())
+    except Exception as e:  # never let reconcile break the digest
+        log.warning("digest %s: finding-state reconcile failed: %r", cluster, e)
     open_keys = _load_open_dedup_keys(sdb, cluster)
 
     # ── 6. ONE LLM call → Report ────────────────────────────────────
@@ -297,6 +308,83 @@ def _extract_log_excerpts(loki_response: dict, *, max_lines: int) -> list[str]:
             ts, line = ts_value
             excerpts.append(line[:200])
     return excerpts
+
+
+def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
+    """Sync state.db 'open' findings against their real GitHub issue state.
+
+    **Why this exists (2026-07-16 fix).** dispatch.record() only ever
+    writes state='open'; nothing teaches state.db that an issue was closed
+    *by the operator*. But finding issues are human-close-only (the
+    `needs-review` triage queue), so every operator close leaves the
+    state.db row stuck at state='open' forever. `_load_open_dedup_keys`
+    then keeps handing those stale keys to the LLM, the prompt says "skip —
+    already tracked by an open issue", and the chronic condition is never
+    re-filed even though nothing is actually tracking it. This is the root
+    cause of the "digest cites closed issues as still-open" gap: on 2026-07
+    every finding issue was closed yet the Trivy / Longhorn / etc. chronic
+    alerts were still being suppressed against sandbox#NN records last-seen
+    in May. (Spec: docs/superpowers/specs/2026-07-16-finding-state-reconcile.md.)
+
+    For each open finding, look up its GH issue's real state (grouped by
+    repo → ≤2 API calls per distinct repo). Mark it closed in state.db when
+    the issue is closed on GitHub, the issue is gone, or its repo is
+    unreachable (e.g. the retired `cluster-agent-sandbox`). closed_at =
+    the GH close date when known, else the finding's last_seen_at (old →
+    lands outside REOPEN_WINDOW → the next emit CREATEs a fresh issue in
+    the active findings repo instead of commenting on a dead one).
+
+    Best-effort: a GH error on the *active* findings repo is swallowed so a
+    transient GitHub outage can't false-close live findings; a retired /
+    unreachable *other* repo is treated as "all closed" (correct — nothing
+    is tracking those anymore). Returns the number of rows closed.
+    """
+    rows = [
+        dict(r)
+        for r in sdb.execute(
+            "SELECT dedup_key, gh_issue_ref, last_seen_at FROM findings "
+            "WHERE state='open' AND gh_issue_ref IS NOT NULL"
+        ).fetchall()
+    ]
+    if not rows:
+        return 0
+
+    by_repo: dict[str, list[tuple[dict, int]]] = defaultdict(list)
+    for r in rows:
+        repo, sep, num = r["gh_issue_ref"].rpartition("#")
+        if sep and repo and num.isdigit():
+            by_repo[repo].append((r, int(num)))
+
+    closed = 0
+    for repo, items in by_repo.items():
+        # number -> (state, closed_at); None sentinel = repo unreachable
+        state_map: dict[int, tuple[str, str | None]] | None = {}
+        try:
+            for st in ("open", "closed"):
+                for issue in gh_issue_list(repo, state=st, per_page=100):
+                    state_map[issue["number"]] = (issue["state"], issue.get("closed_at"))
+        except Exception as e:
+            log.warning("reconcile: gh_issue_list(%s) failed: %r", repo, e)
+            if repo == findings_repo:
+                # Active repo + transient error → do NOT false-close.
+                continue
+            state_map = None  # retired/unreachable repo → treat all as closed
+
+        for r, num in items:
+            if state_map is None:
+                gh_state, gh_closed = "closed", None
+            else:
+                gh = state_map.get(num)
+                # Missing from a reachable repo (deleted / paged past 100)
+                # is treated as closed — it's not an open tracker either way.
+                gh_state, gh_closed = gh if gh is not None else ("closed", None)
+            if gh_state == "closed":
+                mark_closed(sdb, r["dedup_key"], closed_at=gh_closed or r["last_seen_at"])
+                closed += 1
+
+    if closed:
+        log.info("reconcile: closed %d stale-open finding(s) vs live GH state", closed)
+    return closed
 
 
 def _load_open_dedup_keys(sdb: StateDB, cluster: str) -> list[str]:

@@ -92,6 +92,27 @@ def lookup(db: StateDB, dedup_key: str) -> DedupAction:
     return DedupAction(kind=_DedupActionKind.CREATE)
 
 
+def mark_closed(db: StateDB, dedup_key: str, *, closed_at: str) -> None:
+    """Reconcile a single finding to `state='closed'` (idempotent).
+
+    Used by the digest runner's finding-state reconcile when the operator
+    closed the finding's GH issue out-of-band (the `needs-review` queue is
+    human-close). Only touches `state` + `closed_at` — leaves severity /
+    payload / created_at / last_seen_at intact so the row stays faithful
+    and the next `lookup()` gets the right REOPEN-vs-CREATE decision from
+    `closed_at`.
+
+    `closed_at` is an ISO8601 string (the GH issue's real close date when
+    known, else the finding's `last_seen_at` as a fallback — which is old
+    enough to land outside REOPEN_WINDOW so a recurrence CREATEs fresh in
+    the active findings repo rather than commenting on a retired issue).
+    """
+    db.execute(
+        "UPDATE findings SET state='closed', closed_at=? WHERE dedup_key=?",
+        (closed_at, dedup_key),
+    )
+
+
 def record(
     db: StateDB,
     dedup_key: str,
