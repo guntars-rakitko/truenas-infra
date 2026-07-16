@@ -252,6 +252,11 @@ async def test_daily_digest_passes_open_dedup_keys_to_llm(tmp_path, monkeypatch)
            gh_issue_ref="guntars-rakitko/cluster-agent-sandbox#8",
            state="open", cluster="dev")
 
+    # Stub the GH reconcile (tested separately) so this test stays offline
+    # and its two seeded findings stay open → reach the LLM as intended.
+    monkeypatch.setattr(daily_digest, "_reconcile_finding_states",
+                        lambda sdb, repo: 0)
+
     now = dt.datetime.now(dt.timezone.utc)
     samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(5, 0, -1)]
     monkeypatch.setattr(daily_digest, "alertmanager_history",

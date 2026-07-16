@@ -369,8 +369,15 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    `certificate_expired`, `x509_expired`, `connection_refused`,
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
-4. Looks up existing open GH issue dedup_keys from state.db (LLM
-   avoids semantic duplicates).
+4. **Reconciles state.db against live GH issue state** (2026-07-16,
+   `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
+   remaining open dedup_keys from state.db (LLM avoids semantic
+   duplicates). The reconcile is load-bearing: finding issues are
+   human-close-only, and nothing else teaches state.db that the operator
+   closed one — without it, closed findings stay `state='open'` forever
+   and the LLM keeps skipping the chronic condition as "already tracked"
+   against a dead issue (the 2026-07 "digest cites closed issues as open"
+   gap). Spec: `docs/superpowers/specs/2026-07-16-finding-state-reconcile.md`.
 5. ONE LLM call → Report (alerts + log patterns + dedup context).
 6. Each Finding dispatched to Grafana annotation + GH issue +
    state.db record.
