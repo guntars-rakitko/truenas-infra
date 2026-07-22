@@ -185,3 +185,141 @@ def test_ensure_ntp_servers_noop_when_match() -> None:
     cli = _mk_cli([[{"id": 4, "address": "ntp.w1.lv"}]])
     diff = ensure_ntp_servers(cli, addresses=("ntp.w1.lv",), apply=True)
     assert diff.changed is False
+
+
+# ─── ensure_tunables (ZFS module params + udev rules) ────────────────────────
+
+
+def test_ensure_tunables_creates_missing() -> None:
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    cli = _mk_cli([[], {"id": 1}])  # tunable.query (empty), tunable.create
+    specs = (TunableSpec(type="ZFS", var="zfs_txg_timeout", value="1", comment="x"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=True)
+
+    assert diff.changed is True
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert names == ["tunable.query", "tunable.create"]
+    create = next(c for c in cli.call.call_args_list if c.args[0] == "tunable.create")
+    assert create.args[1] == {
+        "type": "ZFS",
+        "var": "zfs_txg_timeout",
+        "value": "1",
+        "comment": "x",
+        "enabled": True,
+    }
+
+
+def test_ensure_tunables_noop_when_match() -> None:
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    existing = [
+        {"id": 1, "type": "ZFS", "var": "zfs_txg_timeout",
+         "value": "1", "comment": "x", "enabled": True},
+    ]
+    cli = _mk_cli([existing])
+    specs = (TunableSpec(type="ZFS", var="zfs_txg_timeout", value="1", comment="x"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=True)
+
+    assert diff.changed is False
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "tunable.create" not in names
+    assert "tunable.update" not in names
+
+
+def test_ensure_tunables_updates_on_value_drift() -> None:
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    existing = [
+        {"id": 7, "type": "ZFS", "var": "zfs_txg_timeout",
+         "value": "5", "comment": "x", "enabled": True},
+    ]
+    cli = _mk_cli([existing, {"id": 7}])  # query, update
+    specs = (TunableSpec(type="ZFS", var="zfs_txg_timeout", value="1", comment="x"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=True)
+
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "tunable.update")
+    assert update.args[1] == 7  # id positional
+    assert update.args[2] == {"value": "1", "comment": "x", "enabled": True}
+
+
+def test_ensure_tunables_creates_udev_rule() -> None:
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    rule = 'ACTION=="add", SUBSYSTEM=="nvme", KERNEL=="nvme[0-9]", RUN+="/usr/sbin/nvme set-feature /dev/%k -f 0x02 -v 2"\n'
+    cli = _mk_cli([[], {"id": 9}])
+    specs = (TunableSpec(type="UDEV", var="90-nvme-ps2-cap", value=rule, comment="cap"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=True)
+
+    assert diff.changed is True
+    create = next(c for c in cli.call.call_args_list if c.args[0] == "tunable.create")
+    assert create.args[1]["type"] == "UDEV"
+    assert create.args[1]["var"] == "90-nvme-ps2-cap"
+
+
+def test_ensure_tunables_dry_run_no_write() -> None:
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    cli = _mk_cli([[]])  # only the query
+    specs = (TunableSpec(type="ZFS", var="zfs_txg_timeout", value="1"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=False)
+
+    assert diff.changed is True
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert names == ["tunable.query"]  # no create/update in dry-run
+
+
+def test_ensure_tunables_does_not_delete_unmanaged() -> None:
+    """A live tunable we don't declare is left alone."""
+    from truenas_infra.modules.tunables import TunableSpec, ensure_tunables
+
+    existing = [
+        {"id": 1, "type": "ZFS", "var": "zfs_txg_timeout",
+         "value": "1", "comment": "x", "enabled": True},
+        {"id": 2, "type": "SYSCTL", "var": "kernel.watchdog",
+         "value": "0", "comment": "", "enabled": True},
+    ]
+    cli = _mk_cli([existing])
+    specs = (TunableSpec(type="ZFS", var="zfs_txg_timeout", value="1", comment="x"),)
+
+    diff = ensure_tunables(cli, specs=specs, apply=True)
+
+    assert diff.changed is False
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "tunable.delete" not in names
+
+
+def test_load_tunables_config_parses_tunables(tmp_path: Path) -> None:
+    from truenas_infra.modules.tunables import load_tunables_config
+
+    yaml_file = tmp_path / "tunables.yaml"
+    yaml_file.write_text(
+        textwrap.dedent(
+            """
+            tunables:
+              - type: ZFS
+                var: zfs_txg_timeout
+                value: "1"
+                comment: "smaller txg"
+              - type: UDEV
+                var: 90-nvme-ps2-cap
+                value: |
+                  ACTION=="add", RUN+="/usr/sbin/nvme set-feature /dev/%k -f 0x02 -v 2"
+            """
+        ).strip()
+    )
+
+    cfg = load_tunables_config(yaml_file)
+
+    assert len(cfg.tunables) == 2
+    assert cfg.tunables[0].type == "ZFS"
+    assert cfg.tunables[0].var == "zfs_txg_timeout"
+    assert cfg.tunables[0].value == "1"
+    assert cfg.tunables[1].type == "UDEV"
+    assert "set-feature" in cfg.tunables[1].value

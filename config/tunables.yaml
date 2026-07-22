@@ -25,6 +25,51 @@ kernel:
     # gateway, only kernel-mandatory link-local fe80:: addresses) so
     # disabling it at the kernel level isn't worth the fragility.
 
+# ─── TrueNAS tunables (ZFS module params + udev rules) ───────────────────────
+# Applied via the `tunable.*` API by modules/tunables.py. Unlike the kernel
+# boot args above, these take effect on `--apply` (ZFS params are live; udev
+# rules fire on the next device add / `udevadm trigger` / reboot).
+#
+# Beelink ME Mini 3.3V-rail mitigations (NVMe-dropout incident 2026-07-22).
+# Root cause: the shared 3.3V M.2 rail sags under peak *simultaneous* NVMe
+# current and drops a drive off the PCIe bus (CSTS=0xffffffff). Total wattage
+# is not the limit (an external 90W PSU didn't help upstream); peak current is.
+# These cap and spread that peak. They are probability-reducers against an
+# under-provisioned rail, NOT a cure — see docs/runbooks and the incident notes.
+tunables:
+  # Cap concurrent async writes per leaf vdev (was 10) so fewer NAND-program
+  # operations draw current simultaneously across the 5 RAIDZ1 members.
+  - type: ZFS
+    var: zfs_vdev_async_write_max_active
+    value: "4"
+    comment: "ME Mini 3.3V rail: cap concurrent async writes per leaf vdev (was 10)"
+
+  # Gentler scrub/resilver queue depth (was 3). The 2026-07-06 drop was mid-scrub.
+  - type: ZFS
+    var: zfs_vdev_scrub_max_active
+    value: "2"
+    comment: "ME Mini 3.3V rail: gentler scrub/resilver queue depth (was 3)"
+
+  # Flush txgs every 1s (was 5) so synchronized write-current spikes are smaller.
+  - type: ZFS
+    var: zfs_txg_timeout
+    value: "1"
+    comment: "ME Mini 3.3V rail: smaller, more frequent txg write spikes (was 5s)"
+
+  # Cap every NVMe controller at power state PS2 — the lowest *operational*
+  # state (PM981a 8.00W→3.50W, PM9A1 8.49W→3.18W): ~59% less worst-case
+  # simultaneous rail current. PS2 is operational, so no added wake latency
+  # (unlike an idle PS3/PS4 or APST). `nvme set-feature -s` (save) is REJECTED
+  # by these OEM Samsung drives, so a udev RUN rule is the persistence
+  # mechanism — and it re-applies on every device add, including a PCI-rescan
+  # recovery after a drop (no reboot needed). Matches controllers (nvme[0-9]),
+  # not namespaces (nvme0n1 = block subsystem).
+  - type: UDEV
+    var: 90-nvme-ps2-cap
+    value: |
+      ACTION=="add", SUBSYSTEM=="nvme", KERNEL=="nvme[0-9]", RUN+="/usr/sbin/nvme set-feature /dev/%k -f 0x02 -v 2"
+    comment: "ME Mini 3.3V rail: cap NVMe at PS2 (lowest operational power state) on device add"
+
 system:
   # Timezone: UTC for consistent timestamps across infra + log correlation
   timezone: UTC

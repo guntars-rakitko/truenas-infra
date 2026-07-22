@@ -219,24 +219,16 @@ class _Ctx:
 
 
 def _write_storage_yaml(path: Path, disks: tuple[str, ...] = ("nvme0n1", "nvme1n1", "nvme2n1")) -> None:
+    disk_lines = "\n".join(f"      - {d}" for d in disks)
     path.write_text(
-        textwrap.dedent(
-            f"""
-            pool:
-              name: tank
-              topology:
-                type: RAIDZ1
-                disks:
-            """
-        ).rstrip()
-        + "\n"
-        + "".join(f"      - {d}\n" for d in disks)
-        + textwrap.dedent(
-            """
-              ashift: 12
-              autotrim: true
-            """
-        )
+        "pool:\n"
+        "  name: tank\n"
+        "  topology:\n"
+        "    type: RAIDZ1\n"
+        "    disks:\n"
+        f"{disk_lines}\n"
+        "  ashift: 12\n"
+        "  autotrim: true\n"
     )
 
 
@@ -246,13 +238,16 @@ def test_run_noop_when_pool_exists(tmp_path: Path) -> None:
     cfg_path = tmp_path / "storage.yaml"
     _write_storage_yaml(cfg_path)
 
-    cli = _mk_cli([[{"name": "tank", "status": "ONLINE"}]])
+    # autotrim already matches config (`true`), so ensure_autotrim is a noop.
+    pool = {"name": "tank", "status": "ONLINE", "autotrim": {"value": "on"}}
+    cli = _mk_cli([[pool], [pool]])
 
     rc = run(cli, _Ctx(apply=True), only=None, config_path=cfg_path)
 
     assert rc == 0
     call_names = [c.args[0] for c in cli.call.call_args_list]
-    assert call_names == ["pool.query"]
+    # 1st query = ensure_pool existence check; 2nd = ensure_autotrim reconcile.
+    assert call_names == ["pool.query", "pool.query"]
 
 
 def test_run_creates_pool_with_confirm(tmp_path: Path) -> None:
@@ -266,13 +261,15 @@ def test_run_creates_pool_with_confirm(tmp_path: Path) -> None:
         _disk_list(),                                      # disk.query
         {"id": 42, "name": "tank", "status": "ONLINE"},    # pool.create
         [{"name": "tank", "status": "ONLINE"}],            # pool.query (post-check)
+        # ensure_autotrim reconcile query — pool already autotrim-on → noop.
+        [{"name": "tank", "status": "ONLINE", "autotrim": {"value": "on"}}],
     ])
 
     rc = run(cli, _Ctx(apply=True, confirm_token=CONFIRM_TOKEN), only=None, config_path=cfg_path)
 
     assert rc == 0
     call_names = [c.args[0] for c in cli.call.call_args_list]
-    assert call_names == ["pool.query", "disk.query", "pool.create", "pool.query"]
+    assert call_names == ["pool.query", "disk.query", "pool.create", "pool.query", "pool.query"]
 
 
 def test_run_refuses_without_confirm(tmp_path: Path) -> None:
@@ -288,3 +285,63 @@ def test_run_refuses_without_confirm(tmp_path: Path) -> None:
     assert rc != 0
     call_names = [c.args[0] for c in cli.call.call_args_list]
     assert "pool.create" not in call_names
+
+
+# ─── ensure_autotrim ─────────────────────────────────────────────────────────
+
+
+def test_ensure_autotrim_disables_when_on() -> None:
+    from truenas_infra.modules.pool import PoolConfig, ensure_autotrim
+
+    cfg = PoolConfig(name="tank", topology_type="RAIDZ1", disks=("nvme0n1",), autotrim=False)
+    pool = {"id": 1, "name": "tank", "autotrim": {"value": "on"}}
+    cli = _mk_cli([[pool], {**pool, "autotrim": {"value": "off"}}])
+
+    diff = ensure_autotrim(cli, cfg, apply=True)
+
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "pool.update")
+    assert update.args[1] == 1
+    assert update.args[2] == {"autotrim": "OFF"}
+
+
+def test_ensure_autotrim_noop_when_already_off() -> None:
+    from truenas_infra.modules.pool import PoolConfig, ensure_autotrim
+
+    cfg = PoolConfig(name="tank", topology_type="RAIDZ1", disks=("nvme0n1",), autotrim=False)
+    pool = {"id": 1, "name": "tank", "autotrim": {"value": "off"}}
+    cli = _mk_cli([[pool]])
+
+    diff = ensure_autotrim(cli, cfg, apply=True)
+
+    assert diff.changed is False
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "pool.update" not in names
+
+
+def test_ensure_autotrim_noop_when_pool_absent() -> None:
+    """No pool yet (fresh rebuild) → nothing to reconcile; creation sets defaults."""
+    from truenas_infra.modules.pool import PoolConfig, ensure_autotrim
+
+    cfg = PoolConfig(name="tank", topology_type="RAIDZ1", disks=("nvme0n1",), autotrim=False)
+    cli = _mk_cli([[]])
+
+    diff = ensure_autotrim(cli, cfg, apply=True)
+
+    assert diff.changed is False
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "pool.update" not in names
+
+
+def test_ensure_autotrim_dry_run_no_write() -> None:
+    from truenas_infra.modules.pool import PoolConfig, ensure_autotrim
+
+    cfg = PoolConfig(name="tank", topology_type="RAIDZ1", disks=("nvme0n1",), autotrim=False)
+    pool = {"id": 1, "name": "tank", "autotrim": {"value": "on"}}
+    cli = _mk_cli([[pool]])
+
+    diff = ensure_autotrim(cli, cfg, apply=False)
+
+    assert diff.changed is True
+    names = [c.args[0] for c in cli.call.call_args_list]
+    assert "pool.update" not in names

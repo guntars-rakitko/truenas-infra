@@ -28,7 +28,9 @@ class PoolConfig:
     topology_type: str       # "RAIDZ1" / "RAIDZ2" / "MIRROR" / etc.
     disks: tuple[str, ...]   # logical device names e.g. "nvme0n1"
     ashift: int = 12
-    autotrim: bool = True
+    # Default OFF: on the Beelink ME Mini the 3.3V rail can't take the TRIM
+    # current bursts autotrim triggers (see ensure_autotrim + storage.yaml).
+    autotrim: bool = False
 
 
 def load_pool_config(path: Path) -> PoolConfig:
@@ -42,7 +44,7 @@ def load_pool_config(path: Path) -> PoolConfig:
         topology_type=topology.get("type", "RAIDZ1").upper(),
         disks=tuple(topology.get("disks") or ()),
         ashift=int(p.get("ashift", 12)),
-        autotrim=bool(p.get("autotrim", True)),
+        autotrim=bool(p.get("autotrim", False)),
     )
 
 
@@ -156,6 +158,34 @@ def ensure_pool(
     return Diff.create(payload)
 
 
+# ─── ensure_autotrim ─────────────────────────────────────────────────────────
+
+
+def ensure_autotrim(cli: Any, spec: PoolConfig, *, apply: bool) -> Diff:
+    """Reconcile the pool's `autotrim` property (non-destructive).
+
+    Unlike `ensure_pool` (one-shot create), this runs every phase apply so the
+    property can't drift. autotrim was disabled 2026-07-22 as a Beelink ME Mini
+    3.3V-rail mitigation: with it on, file deletes fire TRIM bursts that spike
+    simultaneous NVMe current and drop a drive off the bus. `pool.update` is a
+    plain property write — no data risk.
+    """
+    existing = cli.call("pool.query", [["name", "=", spec.name]])
+    if not existing:
+        # Pool not created yet — `ensure_pool` handles creation; nothing to reconcile.
+        return Diff.noop(existing)
+    pool = existing[0]
+    desired = "ON" if spec.autotrim else "OFF"
+    prop = pool.get("autotrim") or {}
+    current = str(prop.get("value", "")).upper()
+    if current == desired:
+        return Diff.noop(pool)
+    if apply:
+        updated = cli.call("pool.update", pool["id"], {"autotrim": desired})
+        return Diff.update(before=pool, after=updated)
+    return Diff.update(before=pool, after={**pool, "autotrim": desired})
+
+
 # ─── Phase entry point ───────────────────────────────────────────────────────
 
 
@@ -189,6 +219,16 @@ def run(
         name=cfg.name,
         topology=cfg.topology_type,
         disks=list(cfg.disks),
+        action=diff.action,
+        changed=diff.changed,
+    )
+
+    # Reconcile non-destructive pool properties (autotrim) on every apply.
+    diff = ensure_autotrim(cli, cfg, apply=ctx.apply)
+    log.info(
+        "autotrim_ensured",
+        pool=cfg.name,
+        desired="ON" if cfg.autotrim else "OFF",
         action=diff.action,
         changed=diff.changed,
     )
