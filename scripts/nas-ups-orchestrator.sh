@@ -15,6 +15,31 @@
 #      which burns a hardcoded 5-min DrainTimeout once etcd quorum is lost on a
 #      whole-rack outage. StopAllPods (graceful CRI SIGTERM + 30s ceiling) + fs
 #      sync still run, so data flushing is unchanged. ~3.2 min, 0 faulted volumes.
+#
+#      ⚠ --force IS LOAD-BEARING FOR A SECOND, INDEPENDENT REASON (found
+#      2026-07-29 during the Talos v1.13.5->v1.13.7 roll). The etcd-quorum
+#      rationale above is INCOMPLETE: that drain uses the Kubernetes *eviction*
+#      API, and on BOTH clusters every node hosts PodDisruptionBudgets sitting at
+#      ALLOWED DISRUPTIONS = 0 — the single-replica Prometheus / Alertmanager /
+#      Grafana / Loki / Pocket-ID (1 replica vs minAvailable:1 is structurally
+#      unsatisfiable), the CNPG `giks-primary` PDB, and all three Longhorn
+#      `instance-manager-*` PDBs. So the drain would hang until DrainTimeout even
+#      on a perfectly HEALTHY cluster with quorum intact — quorum loss is not
+#      required to trigger it. Dropping --force would re-add ~5 min per node to a
+#      battery-constrained shutdown. Do NOT remove it.
+#
+#      Talos v1.13.7 verified: `shutdown --force` still exists with unchanged
+#      semantics ("force a node to shutdown without a cordon/drain"). Note this
+#      is a DIFFERENT command from `talosctl upgrade` (whose --preserve flag was
+#      DEPRECATED, not removed, in v1.13) — neither affects this path.
+#
+#      ⚠ $TCTL below is a SEPARATELY STAGED binary and does NOT track the nodes.
+#      It is v1.13.2. Verified working 2026-07-29: that client + the os:operator
+#      cred authenticates to a v1.13.7 node and returns cleanly (same-minor).
+#      All 6 nodes are on v1.13.7 as of 2026-07-29 (dev + prd both rolled).
+#      RE-VERIFY AFTER ANY NODE UPGRADE — nothing else would surface a break
+#      until a real power outage:
+#        /mnt/tank/system/talos/talosctl --talosconfig <cfg> -n <node> version
 #   2) poll each node's apid (:50000) until all are down (or a timeout backstop
 #      so the NAS never hangs forever).
 #   3) halt the NAS LAST → /sbin/shutdown -P now. That fires the #57 Init/Shutdown
