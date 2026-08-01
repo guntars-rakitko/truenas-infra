@@ -98,13 +98,35 @@ nut:
   #     out the routine ~90s grid blips. Revisit downward once the slow
   #     node shutdown is fixed.
   #
-  #   override.battery.runtime.low = 600 — Secondary trigger (LB if estimated
-  #     runtime drops below 10 min). LOWERED 840→600 (kube-infra #611):
+  #   override.battery.runtime.low = 420 — Secondary trigger (LB if estimated
+  #     runtime drops below 7 min). History: 840→600 (kube-infra #611), then
+  #     600→420 on 2026-08-01.
   #     840 sat inside the apcsmart runtime-estimate jitter band (read
   #     900-1260s at the SAME 99% charge), which (a) flapped false "battery
   #     low" alerts at full charge, and (b) let the on-battery transfer
   #     transient instantly trip LB → the master shut down in ~20s and
-  #     orphaned the nodes. 600 sits clear of the jitter.
+  #     orphaned the nodes.
+  #
+  #     ⚠ 600 did NOT sit clear of the jitter — that earlier claim was wrong.
+  #     MEASURED 2026-08-01 via netdata (upsruntime/upscharge/upsload, 20-min
+  #     window): at a FLAT battery.charge = 100.0% on mains, the runtime
+  #     estimate swung 480–1260 s while UPS load swung 38–72%. The apcsmart
+  #     runtime figure is derived from INSTANTANEOUS load, so a NAS write
+  #     burst (scrub, resilver, Velero) drives the estimate below 600 and
+  #     synthesises a false LB → a `UPSBatteryLow` alert at full charge, on
+  #     mains, never having touched the battery. These alerts are `one_shot`
+  #     (they never self-clear), so they accumulate until dismissed by hand.
+  #     420 sits below the measured 480 s jitter floor.
+  #
+  #     Safety margin retained: the Path-B orchestrator brings all 6 nodes
+  #     down in ~187 s (validated drill 2026-06-02), so 420 s is ~2.2x the
+  #     measured need, and battery.charge.low = 60 remains the primary
+  #     trigger for a genuine outage (charge does NOT jitter — it read a
+  #     flat 100.0% throughout). Trade-off: on a real outage, shutdown now
+  #     starts with 7 min of estimated reserve instead of 10.
+  #     If the runtime estimator is ever seen dipping below 420 on mains,
+  #     lower again rather than reverting — or drop the runtime override
+  #     entirely and rely on charge.low alone.
   #
   #   override.battery.charge.low = 60 — Primary trigger. LOWERED 75→60:
   #     node shutdown is now ~3.2 min (poweroff --force, #611), so 60%
@@ -130,7 +152,7 @@ nut:
   options: |
     ignorelb
     override.battery.charge.low = 60
-    override.battery.runtime.low = 600
+    override.battery.runtime.low = 420
     sdtype = 5
 
   # HOSTSYNC (kube-infra #611, 2026-05-31): on FSD the master upsmon waits
