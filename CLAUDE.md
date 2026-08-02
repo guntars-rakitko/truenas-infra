@@ -217,10 +217,32 @@ udev rule fires on next device add / reboot / `udevadm trigger`) and
 `sudo nvme get-feature /dev/nvmeX -f 0x02` → `Current value:0x00000002`.
 
 **Not a durable fix.** Community evidence: every software mitigation eventually
-fails on a full 6-drive DRAM-cached array. The real levers are fewer active
-drives and/or **DRAM-less low-power drives** (Crucial P3/P310, Samsung 980
-non-Pro, WD SN580). Our fleet is the worst case (6 DRAM-cached OEM Samsungs).
-There is **no NVMe/power BIOS fix** (current 16 GB branch = M1V404).
+fails on a full 6-drive DRAM-cached array. There is **no NVMe/power BIOS fix**
+(current 16 GB branch = M1V404).
+
+> ⭐ **Read [`docs/nvme-dropout-forensics.md`](docs/nvme-dropout-forensics.md)
+> before acting on any of the above.** Kernel-log forensics (2026-08-02) found
+> **two distinct failure modes**, which is why single-cause theories kept
+> failing to predict the next incident:
+> - **Mode A** (4 events, slots 04 + 07) — instant death, *zero* warning,
+>   `CSTS=0xffffffff`, **no AER**. Power-like.
+> - **Mode B** (1 event) — I/O-timeout cascade ending in
+>   `Device not ready; aborting reset, CSTS=0x1`, i.e. the controller is
+>   **alive and answering**. A **drive firmware hang**, not a power event.
+>   Specific to PM9A1 `S6H2NF0WC37392`, whose fault followed it across a
+>   physical reslot → that drive is faulty on evidence.
+>
+> **Fixing one mode will not fix the other.** That doc also carries the
+> recovery ladder (⚠ a warm reboot is **not** enough — the M.2 3.3 V rail
+> stays energised, so a latched controller stays hung; use a full power-off),
+> the `nvme-drop-capture` cron and how to triage it, the `journalctl` traps
+> (`-k` implies `-b`; `truenas_admin` **cannot** join `adm`/`systemd-journal`),
+> and a **42-day** statistical evidence bar.
+>
+> ⚠ **Buy replacement drives on lowest *operational* power state ≤ ~1.5–2 W**
+> (`nvme id-ctrl -H` → PS descriptor table) — **not** on "DRAM-less", a rule
+> the community's own data contradicts (DRAM-less P310 and 990 EVO Plus both
+> appear on the failing side). Our fleet is 6 DRAM-cached OEM Samsungs.
 
 ---
 
