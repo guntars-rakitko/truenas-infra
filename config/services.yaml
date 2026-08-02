@@ -214,9 +214,14 @@ nut:
     # ~3.2 min via SHUTDOWNCMD "/sbin/poweroff --force" (kube-infra #611),
     # not the old ~6-8 min drain path. 450s still leaves a wide margin over
     # the node poweroff + NAS halt; ratchet lower (360/270) later as real
-    # outages confirm timing. LB triggers (charge.low 75 / runtime.low 840)
-    # deliberately left aggressive for battery reserve — only this delay
-    # is being trimmed for now.
+    # outages confirm timing.
+    # ⚠ HISTORICAL: this paragraph described the 2026-05-31 state, when the LB
+    # triggers were charge.low 75 / runtime.low 840. Both have since moved —
+    # CURRENT values are charge.low 60 / runtime.low 420 (see `options:` above,
+    # which is the source of truth). runtime.low was lowered to 420 on
+    # 2026-08-01 because the apcsmart runtime estimate jitters 480–1260 s at a
+    # flat 100% charge under variable NAS load, firing false UPSBatteryLow
+    # alerts on mains.
     ups_delay_shutdown: 90       # seconds — UPS kills outputs N sec after `shutdown.return`. Trimmed
                                  # 450→90 on 2026-06-01: the Path B orchestrator (NAS SHUTDOWNCMD)
                                  # confirms ALL nodes are down (poll 0/6) BEFORE the NAS halts+arms the
@@ -228,7 +233,8 @@ nut:
     # READ-ONLY on this UPS firmware (upsrw → ERR READONLY, confirmed
     # 2026-05-30). They are enforced instead via the driver-side
     # `override.*` directives in `options:` above (ignorelb + overrides),
-    # which the live UPS already reports as 600 / 50. Do NOT add them here
+    # which the live UPS reports as 420 / 60 (verified live 2026-08-01; the
+    # earlier "600 / 50" in this comment was stale). Do NOT add them here
     # as firmware writes — they will always fail.
     # battery_runtime_low: 660   # seconds — firmware-clamped on Smart-UPS;
                                  #   APC derives this from battery.charge.low (10%)
