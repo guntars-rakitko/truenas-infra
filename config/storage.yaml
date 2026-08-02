@@ -46,7 +46,14 @@ pool:
       - nvme4n1
       - nvme5n1
   ashift: 12
-  autotrim: true
+  # Disabled 2026-07-22 (Beelink ME Mini 3.3V-rail mitigation): with autotrim
+  # ON, file deletes issue TRIM/deallocate bursts that spike simultaneous NVMe
+  # current and drop a drive off the PCIe bus. This was the differentiator on
+  # the 2026-07-22 drop (a retention-delete on the nightly talos-updater fired
+  # a TRIM burst; quiet nights with equal write volume did not drop). Free
+  # space is reclaimed by periodic manual `zpool trim tank` in a quiet window.
+  # Reconciled by modules/pool.py::ensure_autotrim (non-destructive pool.update).
+  autotrim: false
 
 # Defaults applied to every dataset unless overridden.
 defaults:

@@ -88,7 +88,7 @@ When upgrading, update the pinned version here and re-verify all scripts against
 
 | Component | Detail |
 |---|---|
-| Device | Beelink ME Mini (post-RMA unit; 3.3V rail + ASM2824 link-training defect fixed in units manufactured after 2025-09-08) |
+| Device | Beelink ME Mini (post-RMA "v2" unit — 16 GB, no eMMC). ⚠ **The 3.3V-rail defect is NOT fixed on this unit.** Beelink's post-2025-09-08 inductor change was supposed to cure it; it did not — the NVMe drops recurred 2026-07-19 and 2026-07-22 (both the same drive `S4GRNX0NA00357` in slot 04, at ~03:00 UTC under the nightly write burst). Root cause is the shared 3.3V M.2 rail sagging under peak *simultaneous* NVMe current (community-corroborated; an external 90 W PSU + added regulator did not help upstream). Mitigations are software probability-reducers, NOT a cure — see § NVMe 3.3V-rail mitigations. Note: this unit has a **flat PCIe topology** (each NVMe on its own ADL-N PCH root port, no ASM2824 switch), so the ASM2824 link-training erratum does not apply here. |
 | CPU | Intel N150 (4 E-cores, no HT) |
 | RAM | 16 GB LPDDR5 (soldered; reads as 16.0 GB via `system.info` — earlier "12 GB" spec was wrong) |
 | Storage | 6× M.2 NVMe slots — 1× 256 GB PM981 boot (`nvme3n1`, S/N `S444NX0N496890`) + 5× 1 TB NVMe in RAIDZ1 tank (`nvme0n1`+`nvme1n1`+`nvme2n1` = 3× PM981a, `nvme4n1`+`nvme5n1` = 2× PM9A1). Slot 4 is PCIe 3.0 x2 (boot); slots 1, 2, 3, 5, 6 are PCIe 3.0 x1 |
@@ -171,7 +171,9 @@ Live design — source of truth is `config/storage.yaml` (consumed by
 `modules/{pool,datasets,storage_tasks}.py`). Summary:
 
 - **Pool `tank`** — single 5-wide **RAIDZ1** vdev across the 5× 1 TB NVMe
-  drives (3× PM981a + 2× PM9A1), `ashift=12`, `autotrim=on`. The 256 GB
+  drives (3× PM981a + 2× PM9A1), `ashift=12`, **`autotrim=off`** (disabled
+  2026-07-22 — TRIM bursts spike 3.3V-rail current; see § NVMe 3.3V-rail
+  mitigations; enforced by `pool.py::ensure_autotrim`). The 256 GB
   PM981 (slot 4) is the TrueNAS-installer-managed `boot-pool`, not part of
   `tank`. ⚠ When replacing a PM9A1, match by **serial, not slot** — the
   2026-07-06 reslot reversed the nvme4/nvme5 enumeration (see the reslot
@@ -185,6 +187,40 @@ Live design — source of truth is `config/storage.yaml` (consumed by
 - **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
   `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
 - **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
+
+---
+
+## NVMe 3.3V-rail mitigations
+
+The ME Mini's shared 3.3V M.2 rail sags under peak **simultaneous** NVMe
+current and drops a drive off the PCIe bus (`CSTS=0xffffffff`). Confirmed a
+platform fault, not the drives (SMART-clean; recurs across drives/slots;
+post-RMA "v2" unit still affected; an external 90 W PSU didn't help upstream).
+**Total wattage is not the limit — peak current is.** The mitigations below are
+declarative and reconciled by the tooling; they are **probability-reducers, not
+a cure**. Full incident forensics live in the operator's session notes.
+
+Applied as code (all reversible), by layer:
+
+| Mitigation | Where (source of truth) | Effect |
+|---|---|---|
+| `zfs_vdev_async_write_max_active=4` (was 10) | `config/tunables.yaml` § tunables → `tunables.py::ensure_tunables` | fewer concurrent NAND-program ops per leaf vdev |
+| `zfs_vdev_scrub_max_active=2` (was 3) | same | gentler scrub/resilver current |
+| `zfs_txg_timeout=1` (was 5) | same | smaller, more frequent txg write spikes |
+| **NVMe PS2 power-state cap** (udev rule `90-nvme-ps2-cap`) | same (type `UDEV`) | caps each drive at its lowest *operational* state (PM981a 8.00→3.50 W, PM9A1 8.49→3.18 W) ≈ **59% less worst-case rail current**. Re-applies on every device `add` (incl. a PCI-rescan recovery, no reboot). `-s` save is rejected by these OEM Samsungs, hence the udev RUN rule. |
+| **`autotrim=off`** | `config/storage.yaml` § pool → `pool.py::ensure_autotrim` | removes TRIM/deallocate current bursts on delete (the differentiator on the 2026-07-22 drop). Reclaim space with periodic manual `zpool trim tank`. |
+| `nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off` | `config/tunables.yaml` § kernel | pre-existing APST/ASPM disable (kept; reboot-only) |
+
+Deploy: `./manage.sh phase tunables --apply` (ZFS params live immediately;
+udev rule fires on next device add / reboot / `udevadm trigger`) and
+`./manage.sh phase pool --apply` (autotrim). Verify a drive's cap with
+`sudo nvme get-feature /dev/nvmeX -f 0x02` → `Current value:0x00000002`.
+
+**Not a durable fix.** Community evidence: every software mitigation eventually
+fails on a full 6-drive DRAM-cached array. The real levers are fewer active
+drives and/or **DRAM-less low-power drives** (Crucial P3/P310, Samsung 980
+non-Pro, WD SN580). Our fleet is the worst case (6 DRAM-cached OEM Samsungs).
+There is **no NVMe/power BIOS fix** (current 16 GB branch = M1V404).
 
 ---
 

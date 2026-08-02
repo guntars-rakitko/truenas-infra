@@ -1,13 +1,17 @@
-"""Phase: tunables — kernel boot args + (future) sysctl tunables.
+"""Phase: tunables — kernel boot args + TrueNAS tunables (ZFS / sysctl / udev).
 
-Kernel boot args are set via `system.advanced.update({"kernel_extra_options": "..."})`.
-They take effect on next reboot.
+Two kinds of config:
+  * `kernel_extra_options` — set via `system.advanced.update`; reboot-only.
+  * `tunables:` — ZFS module params, sysctls, and udev rules, reconciled via
+    the `tunable.*` API by `ensure_tunables`. ZFS/sysctl apply live; udev rules
+    fire on the next device add (`udevadm trigger` / reboot re-applies them).
 
-**Why this phase exists**: on the Beelink ME Mini 2 with Samsung PM981/PM9A1-
-series NVMe drives, aggressive PCIe ASPM / NVMe APST causes the controllers
-to drop off the bus under sustained write load. The drives are fine — the
-power-management is too aggressive. Linux recommends the three params we
-apply here.
+**Why this phase exists**: on the Beelink ME Mini the shared 3.3V M.2 rail sags
+under peak *simultaneous* NVMe current and drops a drive off the PCIe bus. The
+drives are fine. The kernel args disable aggressive PCIe ASPM / NVMe APST; the
+`tunables:` entries cap and spread peak rail current (ZFS write-concurrency +
+an NVMe PS2 power-state udev cap). See CLAUDE.md § NVMe 3.3V-rail mitigations.
+These are probability-reducers against an under-provisioned rail, not a cure.
 """
 
 from __future__ import annotations
@@ -22,10 +26,27 @@ from truenas_infra.util import Diff
 
 
 @dataclass(frozen=True)
+class TunableSpec:
+    """A single TrueNAS tunable (System > Advanced), applied via `tunable.*`.
+
+    `type` is one of ZFS (kernel module parameter, e.g. `zfs_txg_timeout`),
+    SYSCTL (a sysctl name), or UDEV (`var` is a udev rules-file name, `.rules`
+    appended automatically; `value` is the file contents).
+    """
+
+    type: str
+    var: str
+    value: str
+    comment: str = ""
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class TunablesConfig:
     kernel_extra_options: tuple[str, ...] = ()
     timezone: str = ""
     ntp_servers: tuple[str, ...] = ()
+    tunables: tuple[TunableSpec, ...] = ()
 
 
 def load_tunables_config(path: Path) -> TunablesConfig:
@@ -36,6 +57,16 @@ def load_tunables_config(path: Path) -> TunablesConfig:
         kernel_extra_options=tuple(kernel.get("extra_options") or ()),
         timezone=system.get("timezone", ""),
         ntp_servers=tuple(system.get("ntp_servers") or ()),
+        tunables=tuple(
+            TunableSpec(
+                type=str(t["type"]).upper(),
+                var=str(t["var"]),
+                value=str(t["value"]),
+                comment=str(t.get("comment", "")),
+                enabled=bool(t.get("enabled", True)),
+            )
+            for t in (raw.get("tunables") or [])
+        ),
     )
 
 
@@ -60,6 +91,63 @@ def ensure_kernel_extra_options(
         updated = cli.call("system.advanced.update", {"kernel_extra_options": new_value})
         return Diff.update(before=live, after=updated)
     return Diff.update(before=live, after={**live, "kernel_extra_options": new_value})
+
+
+# ─── ensure_tunables ─────────────────────────────────────────────────────────
+
+
+def ensure_tunables(cli: Any, *, specs: tuple[TunableSpec, ...], apply: bool) -> Diff:
+    """Reconcile TrueNAS tunables (ZFS module params, sysctls, udev rules).
+
+    Matches live tunables by ``(type, var)``. Creates missing ones and updates
+    any whose value/comment/enabled drifted. Does **not** delete tunables it
+    doesn't manage — only the declared set is reconciled, so hand-added
+    tunables survive. Idempotent.
+
+    ZFS/SYSCTL params apply live on create/update; UDEV rules are written to
+    ``/etc/udev/rules.d`` and fire on the next device add (a ``udevadm trigger``
+    or reboot re-applies them to already-present devices).
+    """
+    existing = cli.call("tunable.query")
+    by_key = {(t["type"], t["var"]): t for t in existing}
+
+    created: list[str] = []
+    updated: list[str] = []
+    for spec in specs:
+        cur = by_key.get((spec.type, spec.var))
+        if cur is None:
+            created.append(spec.var)
+            if apply:
+                cli.call(
+                    "tunable.create",
+                    {
+                        "type": spec.type,
+                        "var": spec.var,
+                        "value": spec.value,
+                        "comment": spec.comment,
+                        "enabled": spec.enabled,
+                    },
+                )
+        elif (
+            cur.get("value") != spec.value
+            or cur.get("comment") != spec.comment
+            or bool(cur.get("enabled", True)) != spec.enabled
+        ):
+            updated.append(spec.var)
+            if apply:
+                cli.call(
+                    "tunable.update",
+                    cur["id"],
+                    {
+                        "value": spec.value,
+                        "comment": spec.comment,
+                        "enabled": spec.enabled,
+                    },
+                )
+
+    if not created and not updated:
+        return Diff.noop(existing)
+    return Diff.update(before=existing, after={"created": created, "updated": updated})
 
 
 # ─── ensure_timezone ─────────────────────────────────────────────────────────
@@ -131,6 +219,16 @@ def run(
     )
     if diff.changed and ctx.apply:
         log.warning("reboot_required", reason="kernel_extra_options takes effect after reboot")
+
+    # ZFS module params / sysctls / udev rules (apply live; no reboot needed)
+    if cfg.tunables:
+        diff = ensure_tunables(cli, specs=cfg.tunables, apply=ctx.apply)
+        log.info(
+            "tunables_ensured",
+            count=len(cfg.tunables),
+            action=diff.action,
+            changed=diff.changed,
+        )
 
     # Timezone
     if cfg.timezone:
