@@ -802,6 +802,32 @@ K8s nodes (×6)
      cred staged at /mnt/tank/system/talos/{dev,prd}-shutdown.talosconfig).
 ```
 
+⚠ **`--force` is load-bearing for TWO reasons, not one (found 2026-07-29).**
+The recorded rationale — "skips the drain that burns a 5-min `DrainTimeout`
+once etcd quorum is lost" — is **incomplete**. That drain uses the Kubernetes
+*eviction* API, and on **both** clusters every node hosts PDBs at
+`ALLOWED DISRUPTIONS = 0` (single-replica Prometheus / Alertmanager / Grafana /
+Loki / Pocket-ID, the CNPG `giks-primary`, and all three Longhorn
+`instance-manager-*`). So the drain hangs to timeout **even on a fully healthy
+cluster with quorum intact** — quorum loss is not required. Removing `--force`
+would add ~5 min per node to a battery-constrained shutdown. Verified on Talos
+v1.13.7: `shutdown --force` still exists, semantics unchanged. (Distinct from
+`talosctl upgrade`, whose `--preserve` flag was **deprecated — not removed** —
+in v1.13; it still parses and exits 0 with a warning. Unrelated to this path.)
+
+⚠ **The staged `talosctl` does NOT track the node version — re-verify after
+every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned
+binary (v1.13.2 as of 2026-07-29, while all 6 nodes moved to v1.13.7). Same-minor
+compatibility was **empirically confirmed** — that client plus the real
+`os:operator` credential authenticates to a v1.13.7 node and returns cleanly —
+but a future major/minor gap would break the UPS shutdown path **silently**,
+surfacing only during a real outage. One-line check after any node upgrade:
+
+```sh
+/mnt/tank/system/talos/talosctl --talosconfig /mnt/tank/system/talos/dev-shutdown.talosconfig \
+  -n 10.10.5.14 --endpoints 10.10.5.14 version --short   # expect Server: v1.13.x
+```
+
 **Two NUT users — role separation:**
 
 | User | Password key | Perms | Used by | Where defined |
