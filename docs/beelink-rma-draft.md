@@ -1,15 +1,28 @@
 # Beelink ME Mini — RMA draft
 
-**Context:** NVMe controllers on slots 1–3 drop off the PCIe bus under sustained
-write load (initial ZFS pool creation). Root cause per community diagnosis:
-undersized 3.3 V rail + ASM2824 PCIe switch link-training bug. Beelink has
-acknowledged this and silently revised the board in units manufactured after
-**8 September 2025**.
+> ⚠ **SUPERSEDED IN PART — read [`nvme-dropout-forensics.md`](nvme-dropout-forensics.md) first.**
+> This draft was written 2026-04-20 against the community's then-current theory.
+> Kernel-log forensics on 2026-08-02 disproved two of its premises:
+> 1. **There is no ASM2824 PCIe switch on this unit** — the topology is flat
+>    (each NVMe on its own Alder Lake-N PCH root port), so the switch
+>    link-training erratum does not apply here. **Zero AER events** in six
+>    weeks also rules out PCIe signal integrity generally.
+> 2. **The post-8-September-2025 revision did NOT fix it.** This unit *is* a
+>    post-RMA v2 replacement and has dropped five times. Other owners report
+>    the same. Do not expect a further replacement to help — and note the
+>    forensics show **two distinct failure modes**, one of which is a fault in
+>    a specific drive, not the board.
+>
+> The RMA text below is retained for reference. If re-submitting, lead with the
+> Mode A evidence (instant `CSTS=0xffffffff` death with no AER and no warning),
+> which is the part that genuinely implicates the board.
 
-See [`docs/superpowers/specs/2026-04-20-beelink-nvme-defect.md`](#) if/when
-written for the full incident record. This file is the RMA request draft only.
+**Context:** NVMe controllers drop off the PCIe bus under sustained
+write load. Root cause per community diagnosis: undersized 3.3 V rail.
+Beelink silently revised the board in units manufactured after
+**8 September 2025** — a revision this unit has, and which did not fix it.
 
-**First draft:** 2026-04-20
+**First draft:** 2026-04-20 · **Corrected:** 2026-08-02
 
 ---
 
