@@ -364,16 +364,40 @@ Current ILM rules:
 | Bucket | Expiration | Why |
 |---|---|---|
 | `cluster-agent` (both clusters) | 30 days | cluster-agent `state.db` nightly backups — 30d of history is ample to recover the dedup/state DB; older copies are noise. |
+| `etcd-snapshots` (dev) | **7 days** | Hourly `talosctl etcd snapshot`. 168 snapshots. Dev cluster state is re-creatable, so a week of hourly granularity is generous. Added 2026-08-07 — see the warning below. |
+| `etcd-snapshots` (prd) | **14 days** | 336 snapshots. Production gets the longer window so a problem noticed a week late still has pre-incident snapshots. |
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
 | `postgres-backups` (prd) | 90 days | Coarse backstop for orphaned Barman objects. The CNPG ObjectStore `retentionPolicy: 30d` is the real PITR-window pruner; the 90d ILM only sweeps objects Barman's own retention misses (e.g. after a cluster delete). |
 | `postgres-backups` (dev) | 14 days | Per-env split — dev's PITR window is 7d (regenerable data), so its ILM backstop is 14d (always kept > the Barman retention). |
 | `sms-gateway-backups` (both clusters) | 30 days | SMS-gateway appliance nightly `pg_dump`s (own backup track, separate from CloudNativePG's `postgres-backups`). 30d is ample for the box's member/billing data. |
 
-Velero / Longhorn / etcd-snapshots / loki-chunks / pocket-id-litestream
-buckets are intentionally not in this script — Velero and Longhorn
-manage their own retention via controller TTL, Loki and Litestream
-prune their own object stores, and etcd-snapshots is curated by hand
-for now.
+⚠ **`etcd-snapshots` had NO retention at all until 2026-08-07, despite two
+files claiming otherwise.** This section said it was "curated by hand"; the
+CronJob header in `kube-infra` said retention was "handled MinIO-side via
+`mc ilm rule add ... --expire-days 30`". Neither was true — no ILM rule had
+ever existed and nothing had ever been pruned. Measured on 2026-08-07, oldest
+object being the first snapshot ever taken (2026-05-23):
+
+| Bucket | Size | Objects |
+|---|---|---|
+| `nas-dev/etcd-snapshots` | 451 GiB | 1825 |
+| `nas-prd/etcd-snapshots` | 382 GiB | 1812 |
+
+833 GiB — roughly half of `tank/kube` (1.69 T). Hourly and growing (80 MiB per
+snapshot in May → 294 MiB in August), so it compounded. The first sweep was
+irreversible: both buckets are un-versioned with no object-lock.
+
+⚠ **Tiered retention is not expressible via ILM here.** Objects share one flat
+`etcd-<stamp>.db` namespace with no date prefixes, so `--expire-days` applies
+uniformly. Hourly-then-daily tiering would need a prune step in the CronJob.
+
+Velero / Longhorn / loki-chunks / pocket-id-litestream remain intentionally
+absent — Loki's compactor and Litestream prune their own object stores, and
+**Velero and Longhorn must NOT be given an age-based backstop**: Longhorn
+backups are incremental block chains where later backups reference blocks
+written by earlier ones, so expiring a base by age corrupts every surviving
+backup that depended on it, and Velero's TTL controller expects to own
+deletion.
 
 #### setup-minio-encryption.sh
 
