@@ -23,7 +23,7 @@
 # ──────────────────────────────────────────────────────────────────
 # Stage 1: iPXE builder
 # ──────────────────────────────────────────────────────────────────
-FROM alpine:3.23 AS ipxe-builder
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS ipxe-builder
 
 # iPXE EFI build dependencies. Alpine package names (not Debian).
 # Minimum set: toolchain + perl (for iPXE's pre-build scripts) + git.
@@ -73,7 +73,7 @@ RUN make -j$(nproc) bin-x86_64-efi/snponly.efi EMBED=embed.ipxe
 # iPXE can't unzip. So we extract the binary once at image-build time
 # and bake it in. Bumping MEMTEST_VERSION below + rebuild gets the
 # latest into every container restart.
-FROM alpine:3.23 AS memtest-extractor
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS memtest-extractor
 
 # Note: memtest86plus v8.x ZIP ships only Linux-bootable kernels
 # (mt86p_XXX_x86_64 multiboot image), NOT EFI binaries. iPXE boots
@@ -94,7 +94,7 @@ RUN apk add --no-cache curl unzip && \
 # ──────────────────────────────────────────────────────────────────
 # Stage 3: Runtime
 # ──────────────────────────────────────────────────────────────────
-FROM alpine:3.23
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
 RUN apk add --no-cache \
         bash \
