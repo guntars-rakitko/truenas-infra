@@ -466,10 +466,34 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > exactly this failure mode, so the obvious expression evaluates to an empty
 > vector and never fires.
 >
-> Restart/redeploy is `ssh truenas_admin@nas.w1.lv 'midclt call app.redeploy
-> cluster-agent'`. It is a TrueNAS ix-app: there is no
-> `/mnt/tank/cluster-agent` compose dir, and `truenas_admin` has no
-> passwordless docker-socket access.
+> #### ⚠ A Doppler change does NOT reach the container via `app.redeploy`
+>
+> Doppler is not read at container start. `manage.sh` **renders** the compose
+> with secret values substituted and stores that rendered config in TrueNAS
+> under `/mnt/.ix-apps/app_configs/cluster-agent/`. `midclt call app.redeploy`
+> recreates the container from that **stored** config — so after a Doppler
+> write it faithfully redeploys the *old* value.
+>
+> Measured 2026-09-05, and it cost a wasted rotation cycle: after writing new
+> kubeconfigs to Doppler and running `app.redeploy`, a dry-run still reported
+> `app_ensured action=update changed=True`. Only after
+>
+> ```sh
+> ./manage.sh phase apps --only cluster-agent --apply
+> ```
+>
+> did it report `changed=False`. Use that for any Doppler-sourced change;
+> `app.redeploy` is fine only for a plain restart (e.g. picking up edited
+> Python in the code bind-mount).
+>
+> ⚠ Also do not confirm a restart with `/health` alone — the old container
+> keeps serving 200 while the redeploy is queued, so a poll returns "healthy"
+> against the process you were trying to replace (observed: `/health` reported
+> ok with `uptime_seconds=1061654`, the 12-day-old process, immediately after
+> an apply). Wait for `process_start_time_seconds` in `/metrics` to change.
+>
+> It is a TrueNAS ix-app: there is no `/mnt/tank/cluster-agent` compose dir,
+> and `truenas_admin` has no passwordless docker-socket access.
 
 **Daily-digest architecture (short version).** Each 06:00 fire:
 

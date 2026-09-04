@@ -20,7 +20,9 @@
 #      rather than assuming the requested duration was granted.
 #   3. Proves the token works with a real read against each cluster.
 #   4. Renders kubeconfigs matching the shape the agent expects.
-#   5. With --apply: writes both to Doppler and redeploys the NAS app.
+#   5. With --apply: writes both to Doppler, re-renders the app config via
+#      manage.sh (NOT app.redeploy — see the apply section), waits for the
+#      new process, then re-verifies the deployed credential.
 #
 # Step 2 is the point. `--service-account-max-token-expiration` is NOT
 # set on either apiserver, so the granted lifetime is whatever the
@@ -38,7 +40,8 @@
 #   - kubectl with admin kubeconfigs at kube-infra/talos-os/kubeconfig-{dev,prd}
 #     (override with KUBECONFIG_DIR)
 #   - doppler CLI authenticated (only for --apply)
-#   - ssh to the NAS as truenas_admin (only for --apply)
+#   - ssh to the NAS as truenas_admin, and a working truenas-infra
+#     manage.sh (Doppler infrastructure/ops access) — only for --apply
 #
 # ## Verification after running with --apply
 #
@@ -57,6 +60,9 @@ DOPPLER_PROJECT="cluster-agent"
 DOPPLER_CONFIG="prd"
 NAS_SSH="${NAS_SSH:-truenas_admin@nas.w1.lv}"
 NAS_APP="cluster-agent"
+# Repo root — manage.sh lives here and is the ONLY thing that pushes new
+# Doppler values into the app config (see the apply section).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # 8760h = 1 year. The previous 2160h (90 days) expired unnoticed; a
 # longer lifetime does not fix the silence (the alerts do) but it does
@@ -189,13 +195,23 @@ To publish, re-run with --apply, or do it by hand:
     KUBECONFIG_DEV="\$(base64 < /tmp/cluster-agent-dev.kubeconfig | tr -d '\n')" \\
     KUBECONFIG_PRD="\$(base64 < /tmp/cluster-agent-prd.kubeconfig | tr -d '\n')" \\
     --project $DOPPLER_PROJECT --config $DOPPLER_CONFIG
-  ssh $NAS_SSH 'midclt call app.redeploy $NAS_APP'
+  cd $REPO_ROOT && ./manage.sh phase apps --only $NAS_APP --apply
+
+  ^ NOT 'midclt call app.redeploy' — that recreates the container from the
+    STORED rendered config and would redeploy the OLD token. Only the
+    manage.sh apply re-renders from current Doppler.
 
 Then shred the copies — they hold live tokens:
   rm -f /tmp/cluster-agent-{dev,prd}.kubeconfig
 EOF
   exit 0
 fi
+
+# Record the running process's start time BEFORE anything changes, so the
+# wait loop below can tell a genuinely new process from the old one still
+# answering /health.
+AGENT_START_BEFORE="$(curl -s --max-time 5 http://10.10.10.10:9595/metrics 2>/dev/null \
+  | awk '/^process_start_time_seconds/ {print $2}')"
 
 echo "==> writing kubeconfigs to Doppler $DOPPLER_PROJECT/$DOPPLER_CONFIG"
 # Doppler stores these base64-encoded; the compose layer decodes them.
@@ -206,23 +222,64 @@ doppler secrets set \
   KUBECONFIG_PRD="$(base64 < "${RENDERED[prd]}" | tr -d '\n')" \
   --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG" --silent
 
-echo "==> redeploying the NAS app so the container picks up the new values"
-# midclt, NOT `docker compose` — the agent is a TrueNAS ix-app, and
-# truenas_admin has no passwordless access to the docker socket.
-# shellcheck disable=SC2029  # NAS_APP is a fixed constant, not user input;
-# client-side expansion is what we want here.
-ssh "$NAS_SSH" "midclt call app.redeploy $NAS_APP" >/dev/null
+echo "==> re-rendering the app config so the container picks up the new values"
+# ⚠ `midclt call app.redeploy` is NOT enough, and this cost a wasted cycle
+# on 2026-09-05. Doppler is not read at container start: manage.sh RENDERS
+# the compose with the secret values substituted and stores that rendered
+# config in TrueNAS (/mnt/.ix-apps/app_configs/cluster-agent/...).
+# `app.redeploy` recreates the container from the STORED config, so it
+# faithfully redeploys the OLD token. Proof: after a Doppler write plus a
+# redeploy, `manage.sh phase apps --only cluster-agent` (dry-run) still
+# reported `app_ensured action=update changed=True`.
+#
+# The apply below re-renders from current Doppler AND recreates the
+# container. Verified: `changed=True` before it, `changed=False` after.
+(cd "$REPO_ROOT" && ./manage.sh phase apps --only "$NAS_APP" --apply) \
+  | grep -vE "cluster_agent_file_ensured" || true
 
-echo "==> waiting for the agent to come back"
-for _ in $(seq 1 30); do
-  if curl -sf --max-time 5 http://10.10.10.10:9595/health >/dev/null 2>&1; then
-    echo "    healthy"
+echo "==> waiting for the NEW process to come up"
+# ⚠ Do NOT just poll /health. The old container keeps serving 200 while the
+# redeploy is still queued, so a naive poll returns "healthy" instantly and
+# proves nothing (observed 2026-09-05: /health reported ok with
+# uptime_seconds=1061654 — the 12-day-old process — right after an apply).
+# Wait for process_start_time_seconds to actually CHANGE.
+agent_start() {
+  curl -s --max-time 5 http://10.10.10.10:9595/metrics 2>/dev/null \
+    | awk '/^process_start_time_seconds/ {print $2}'
+}
+BEFORE="${AGENT_START_BEFORE:-}"
+for _ in $(seq 1 60); do
+  NOW="$(agent_start || true)"
+  if [[ -n "$NOW" && "$NOW" != "$BEFORE" ]]; then
+    echo "    new process up (process_start_time_seconds $BEFORE -> $NOW)"
     break
   fi
-  sleep 10
+  sleep 5
 done
 
 curl -s --max-time 10 http://10.10.10.10:9595/health || true
+echo
+echo
+
+echo "==> verifying the deployed credential can do what Mode A step 1 needs"
+# The container's env is now byte-identical to what we just wrote, so
+# testing the Doppler value tests what the agent holds.
+for CLUSTER in dev prd; do
+  V="$WORKDIR/verify-$CLUSTER.kubeconfig"
+  doppler secrets get "KUBECONFIG_$(echo "$CLUSTER" | tr '[:lower:]' '[:upper:]')" \
+    --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG" --plain 2>/dev/null \
+    | tr -d '\n\r ' | base64 -d > "$V"
+  printf "    %s: alertmanager " "$CLUSTER"
+  KUBECONFIG="$V" kubectl -n monitoring get --raw \
+    '/api/v1/namespaces/monitoring/services/kube-prometheus-stack-alertmanager:9093/proxy/api/v2/status' \
+    >/dev/null 2>&1 && printf "ok / prometheus " || printf "FAIL / prometheus "
+  KUBECONFIG="$V" kubectl -n monitoring get --raw \
+    '/api/v1/namespaces/monitoring/services/kube-prometheus-stack-prometheus:9090/proxy/api/v1/query?query=up' \
+    >/dev/null 2>&1 && printf "ok / loki " || printf "FAIL / loki "
+  KUBECONFIG="$V" kubectl -n monitoring get --raw \
+    '/api/v1/namespaces/monitoring/services/loki:3100/proxy/loki/api/v1/labels' \
+    >/dev/null 2>&1 && echo "ok" || echo "FAIL"
+done
 echo
 echo "Done. The next scheduled digest is 06:00 (dev) / 06:01 (prd) Europe/Riga."
 echo "Confirm a SUCCESS series appears after it runs — the absence of one is"
