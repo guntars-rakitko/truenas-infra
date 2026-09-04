@@ -436,6 +436,41 @@ files). A finding created before the cutover keeps updating in its own repo
 [`docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md`](docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).
 Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 
+> #### ⚠ The agent's K8s tokens EXPIRE, and expiry is invisible from the outside
+>
+> The `cluster-agent-readonly` SA tokens (one per cluster, in `flux-system`)
+> are TokenRequest tokens with a finite lifetime. The originals were minted
+> 2026-05-23 at `--duration=2160h` and **expired 2026-08-21 — the agent then
+> produced nothing for 14 days and nobody noticed.** Mode A's first step
+> (`alertmanager_history()`) reaches Prometheus/Alertmanager through the
+> apiserver `services/proxy` endpoint with that token, so an expired token
+> fails every run at step 1, before any LLM call.
+>
+> Nothing about the failure is visible from outside the process: the
+> container stays up, `/health` returns `status: ok` with the scheduler
+> arming the next run, and Prometheus keeps scraping successfully. The only
+> evidence is `cluster_agent_run_total{status="error"}` climbing while no
+> `status="success"` series exists at all.
+>
+> **Rotate with [`scripts/render-cluster-agent-kubeconfigs.sh`](scripts/render-cluster-agent-kubeconfigs.sh)**
+> — it mints, verifies the *actually granted* expiry (never assume the
+> requested duration was honoured), proves both the plain API read and the
+> `services/proxy` path work, and with `--apply` writes Doppler and
+> redeploys. Run it without `--apply` first.
+>
+> Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
+> / `ClusterAgentRunsFailing` in kube-infra
+> `flux-cd/infrastructure/configs/base/prometheus-rules-cluster-agent.yaml`.
+> ⚠ Those rules are deliberately built on the run **counter**, not on
+> `cluster_agent_last_success_timestamp` — that gauge has no samples in
+> exactly this failure mode, so the obvious expression evaluates to an empty
+> vector and never fires.
+>
+> Restart/redeploy is `ssh truenas_admin@nas.w1.lv 'midclt call app.redeploy
+> cluster-agent'`. It is a TrueNAS ix-app: there is no
+> `/mnt/tank/cluster-agent` compose dir, and `truenas_admin` has no
+> passwordless docker-socket access.
+
 **Daily-digest architecture (short version).** Each 06:00 fire:
 
 1. Pulls 24h of `ALERTS{alertstate="firing"}` from Prometheus,
@@ -1058,6 +1093,9 @@ config/
 src/                  # Python CLI implementation
 scripts/
   setup-minio-{buckets,users,lifecycle}.sh    # one-shot MinIO bootstrap
+  render-cluster-agent-kubeconfigs.sh         # rotate the agent's SA tokens
+                                              # (mint + verify granted expiry
+                                              #  + prove services/proxy works)
 ```
 
 ---
