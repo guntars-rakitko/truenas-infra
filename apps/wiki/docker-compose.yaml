@@ -9,7 +9,7 @@
 # apps/traefik/routes.yaml. nginx only binds on mgmt-VLAN IP.
 services:
   wiki:
-    image: nginx:1.31-alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a
+    image: nginx:1.31-alpine@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
     container_name: wiki
     restart: unless-stopped
     ports:
