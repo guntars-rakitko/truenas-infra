@@ -65,11 +65,13 @@ RULES=(
     "nas-dev/etcd-snapshots 7"
     "nas-dev/mssql-backups 90"
     "nas-dev/postgres-backups 14"
+    "nas-dev/postgres-backups-w1 14"
     "nas-dev/sms-gateway-backups 30"
     "nas-prd/cluster-agent 30"
     "nas-prd/etcd-snapshots 14"
     "nas-prd/mssql-backups 90"
     "nas-prd/postgres-backups 90"
+    "nas-prd/postgres-backups-w1 90"
     "nas-prd/sms-gateway-backups 30"
 )
 

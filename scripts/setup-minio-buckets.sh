@@ -31,6 +31,14 @@ BUCKETS=(
     longhorn             # Longhorn — volume + system backups
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets
     postgres-backups     # CloudNativePG — Barman Cloud Plugin WAL + base backups
+    postgres-backups-w1  # CloudNativePG w1-db (web-tracker) — its OWN bucket, NOT a prefix
+                         # under postgres-backups. Two reasons, both mechanical:
+                         # MinIO ILM is BUCKET-WIDE (setup-minio-lifecycle.sh adds
+                         # `mc ilm rule add --expire-days` with no --prefix), so a shared
+                         # bucket cannot hold two retention windows; and a serverName typo
+                         # then lands in the FINANCIAL chain's prefix and its retention
+                         # silently prunes it. ⚠ This is an ILM boundary, NOT a credential
+                         # one — the shared service user below has readwrite on s3:*.
     pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
     sms-gateway-backups  # SMS-gateway appliance — nightly pg_dump of the box's smsgw+gammu DBs (box-<env>/ prefix)
     velero               # Velero — K8s manifest backups
