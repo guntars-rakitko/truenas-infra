@@ -327,6 +327,7 @@ Creates the nine canonical backup buckets on each MinIO instance
 | `longhorn` | Longhorn — volume + system backups (S3 BackupTarget; replaced the old NFS export 2026-04-27) |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
 | `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
+| `postgres-backups-w1` | CloudNativePG **w1-db** (web-tracker) — its own bucket, not a prefix. MinIO ILM is bucket-wide, so two retention windows need two buckets; and it makes a `serverName` typo fail into an empty bucket instead of silently landing in the financial chain's prefix. ⚠ An ILM boundary, **not** a credential one — the shared service user has `readwrite` on `s3:*`. |
 | `pocket-id-litestream` | Pocket-ID — SQLite Litestream replicas (DR for the OIDC IdP) |
 | `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
 | `velero` | Velero — K8s manifest backups |
@@ -369,6 +370,8 @@ Current ILM rules:
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
 | `postgres-backups` (prd) | 90 days | Coarse backstop for orphaned Barman objects. The CNPG ObjectStore `retentionPolicy: 30d` is the real PITR-window pruner; the 90d ILM only sweeps objects Barman's own retention misses (e.g. after a cluster delete). |
 | `postgres-backups` (dev) | 14 days | Per-env split — dev's PITR window is 7d (regenerable data), so its ILM backstop is 14d (always kept > the Barman retention). |
+| `postgres-backups-w1` (prd) | 90 days | Same shape as `postgres-backups`: the w1-db ObjectStore's `retentionPolicy: 30d` is the real pruner; ILM only sweeps what Barman's own retention misses. |
+| `postgres-backups-w1` (dev) | 14 days | w1-db dev PITR window is 7d, ILM backstop 14d — kept > the Barman retention, same rule as above. |
 | `sms-gateway-backups` (both clusters) | 30 days | SMS-gateway appliance nightly `pg_dump`s (own backup track, separate from CloudNativePG's `postgres-backups`). 30d is ample for the box's member/billing data. |
 
 ⚠ **`etcd-snapshots` had NO retention at all until 2026-08-07, despite two
