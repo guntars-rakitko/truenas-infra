@@ -19,7 +19,6 @@ nodes. FastAPI sidecar polls each node's ME firmware via WS-MAN every
 | `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries. Shared with `bios-config` AMT tools (cross-repo read). |
 | AMT admin creds | Doppler `infrastructure/ops` → `AMT_USER` + `AMT_PASSWORD`. `manage.sh apps` injects them as `AMTCTL_AMT_USER` / `AMTCTL_AMT_PASSWORD` env vars when rendering the compose. The same Doppler keys are read directly by `bios-config`'s AMT tools. |
 | `docker-compose.yaml` | python:3.13-alpine + runtime venv bootstrap |
-| `Dockerfile` | Reference (not used — compose does runtime install) |
 
 ## What AMT gives us
 
