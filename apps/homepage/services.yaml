@@ -170,10 +170,16 @@
         description: "Member management — dev"
         siteMonitor: https://admin-dev.giks.lv/
 
+    # ⚠ RESERVED, NOT DEPLOYED — this card is red on purpose (2026-09-13).
+    # Nothing serves dev.giks.lv: no IngressRoute exists on kube-dev and none
+    # was ever committed. GIKS.MemberPortal is in the GIKS solution but has no
+    # Dockerfile, no CI workflow and no published image, so it cannot be
+    # deployed as a container yet. The probe stays so the gap keeps showing —
+    # a red dot here is accurate, not a fault to silence. See kube-infra#1179.
     - GIKS portal dev:
         icon: mdi-account-box
         href: https://dev.giks.lv/
-        description: "Member self-service portal — dev"
+        description: "⚠ RESERVED — portal not built/deployed yet (404)"
         siteMonitor: https://dev.giks.lv/
 
     - GIKS Admin (public):
