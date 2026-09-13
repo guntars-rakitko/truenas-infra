@@ -1,30 +1,100 @@
 # Homepage bookmarks — declarative side-rail links.
 # https://gethomepage.dev/configs/bookmarks/
+#
+# Repo links live HERE, not as service cards (design decision D6): 14 repos as
+# cards would swamp the launcher, and a repo link has no health state worth a
+# status dot.
 
-- Developer:
-    - Claude Code:
-        - abbr: CC
-          href: https://docs.claude.com/claude-code
-    - TrueNAS 25.10 API:
+- Repos:
+    - kube-infra:
+        - abbr: KI
+          href: https://github.com/guntars-rakitko/kube-infra
+    - truenas-infra:
         - abbr: TN
-          href: https://www.truenas.com/docs/api/
-    - Traefik v3 docs:
-        - abbr: TR
-          href: https://doc.traefik.io/traefik/
-    - MkDocs Material:
-        - abbr: MK
-          href: https://squidfunk.github.io/mkdocs-material/
+          href: https://github.com/guntars-rakitko/truenas-infra
+    - mikrotik-infra:
+        - abbr: MT
+          href: https://github.com/guntars-rakitko/mikrotik-infra
+    - GIKS:
+        - abbr: GK
+          href: https://github.com/guntars-rakitko/GIKS
+    - sms-gateway:
+        - abbr: SG
+          href: https://github.com/guntars-rakitko/sms-gateway
+    - web-tracker:
+        - abbr: WT
+          href: https://github.com/guntars-rakitko/web-tracker
+    - wiki:
+        - abbr: WK
+          href: https://github.com/guntars-rakitko/wiki
+    - dotfiles:
+        - abbr: DF
+          href: https://github.com/guntars-rakitko/dotfiles
 
-- External services:
+- More repos:
+    - bios-config:
+        - abbr: BC
+          href: https://github.com/guntars-rakitko/bios-config
+    - hw-validation:
+        - abbr: HV
+          href: https://github.com/guntars-rakitko/hw-validation
+    - latvian-registers:
+        - abbr: LR
+          href: https://github.com/guntars-rakitko/latvian-registers
+    - AdTracker:
+        - abbr: AT
+          href: https://github.com/guntars-rakitko/AdTracker
+    - rss-website-monitor:
+        - abbr: RS
+          href: https://github.com/guntars-rakitko/rss-website-monitor
+    - GIKS-v1 (legacy):
+        - abbr: G1
+          href: https://github.com/guntars-rakitko/GIKS-v1
+
+- Ops consoles:
+    - GitHub:
+        - abbr: GH
+          href: https://github.com/guntars-rakitko
     - CloudFlare:
         - abbr: CF
           href: https://dash.cloudflare.com/
-    - Let's Encrypt:
-        - abbr: LE
-          href: https://letsencrypt.org/docs/
-    - BITE Latvia (LTE):
-        - abbr: LT
-          href: https://www.bite.lv/
-    - Beelink support:
-        - abbr: BE
-          href: https://www.bee-link.com/
+    - Doppler:
+        - abbr: DP
+          href: https://dashboard.doppler.com/
+    - Backblaze B2:
+        - abbr: B2
+          href: https://secure.backblaze.com/b2_buckets.htm
+    # ⚠ Region pinned: SES lives in eu-north-1. The WRONG region returns an
+    # EMPTY list rather than an error, which reads as "all clean".
+    - AWS SES (eu-north-1):
+        - abbr: SE
+          href: https://eu-north-1.console.aws.amazon.com/ses/home?region=eu-north-1
+
+- Vendor docs:
+    - Talos Linux:
+        - abbr: TL
+          href: https://www.talos.dev/docs/
+    - Flux CD:
+        - abbr: FX
+          href: https://fluxcd.io/flux/
+    - CloudNativePG:
+        - abbr: PG
+          href: https://cloudnative-pg.io/documentation/
+    - Cilium:
+        - abbr: CI
+          href: https://docs.cilium.io/
+    - Longhorn:
+        - abbr: LH
+          href: https://longhorn.io/docs/
+    - Traefik v3:
+        - abbr: TR
+          href: https://doc.traefik.io/traefik/
+    - TrueNAS API:
+        - abbr: TA
+          href: https://www.truenas.com/docs/api/
+    - MkDocs Material:
+        - abbr: MK
+          href: https://squidfunk.github.io/mkdocs-material/
+    - Claude Code:
+        - abbr: CC
+          href: https://docs.claude.com/claude-code
