@@ -1,31 +1,39 @@
 # Homepage service catalog — declarative.
 # https://gethomepage.dev/configs/services/
 #
-# Each entry becomes a card. `siteMonitor` does an HTTP probe for up/down
-# indicator; no credentials required. `widget:` stanzas that call service
-# APIs (MinIO, TrueNAS, Traefik) are intentionally held out of MVP to
-# avoid credential plumbing — added in a follow-up pass.
+# A card is earned by a URL a HUMAN OPENS IN A BROWSER (design decision D1).
+# Data-plane endpoints — giks-db-*/w1-db-* (Postgres LBs), s3-*:9000, gh-*
+# (Flux webhook receivers), hc-* (blackbox probe targets), iperf3, NTP — are
+# deliberately absent. They live in wiki/docs/architecture/hostnames.md, which
+# is the inventory surface. This file is a launcher.
 #
 # ⚠️ WIKI MIRROR: Adding/removing a service here ALSO requires updating:
 #   wiki/docs/architecture/hostnames.md  (admin / data / infra plane tables)
 #   wiki/docs/reference/links.md         (dashboards table)
 #
-# ⚠️ No MikroTik cards by design (2026-04-24). We removed Router / CRS310 /
-# CRS326 / cAP ax / LMT 5G because the `mikrotik` widget only works if the
-# NAS can reach the device's REST :80, which required opening /ip service
-# www + firewall carve-outs from mgmt → base-vlan. That's a widened attack
-# surface (WebFig + REST) for a convenience dashboard — not worth it.
-# Winbox on base-vlan covers GUI admin; manage.sh SSH covers automation.
-# Revisit only if we can keep the whole fleet `service www` disabled (e.g.
-# over WireGuard from a trusted admin host).
+# ── siteMonitor policy ──────────────────────────────────────────────────────
+# Cluster admin UIs (grafana-*, prom-*, alertmanager-*, longhorn-*, hubble-*,
+# traefik-int-*) sit behind Pocket-ID OIDC ForwardAuth on traefik-admin. A
+# probe against them gets 302 → id-*.w1.lv and resolves GREEN even if the
+# backing app is dead — that proves the gate answered, not the app. They are
+# therefore LINK-ONLY, with no siteMonitor (D2). tests/test_homepage_config.py
+# enforces this.
+#
+# Apps that serve their OWN login page (GIKS AdminApp, SMS-gateway console) DO
+# keep a probe: there a 200 is served by the application itself, so it really
+# does prove the app is up (D3).
+#
+# ⚠️ No MikroTik WIDGETS by design (2026-04-24). The `mikrotik` widget only
+# works if the NAS can reach each device's REST :80, which required opening
+# /ip service www + mgmt→base-vlan firewall carve-outs — a widened attack
+# surface for a convenience dashboard. THAT DECISION STILL STANDS. The Network
+# group below is plain <a href> links only: no widget, no probe, no REST, no
+# firewall rule. Do not "restore" the widget.
 
 - Infrastructure:
     # ── K8s nodes (hardware layer via AMT) ──────────────────────
-    # Split prd / dev into two cards, 3 rows each. Each line shows
-    # "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl.w1.lv for
-    # rich per-node view (hardware info, network, power actions).
-    # When actual K8s clusters come up, a separate "Kubernetes" group
-    # will handle pod/node/ingress state at the cluster layer.
+    # Each line shows "host: 🟢/🟡/🔴 state · IP". Click-through → amtctl
+    # for the rich per-node view (hardware info, network, power actions).
     - K8s prd nodes:
         icon: mdi-server-network
         href: https://amtctl.w1.lv/
@@ -58,6 +66,26 @@
             - field: kub-dev-03
               label: kub-dev-03
 
+    - AMT control:
+        icon: mdi-power-plug
+        href: https://amtctl.w1.lv/
+        description: "Power on/off/reset · one-time boot to PXE or BIOS"
+        siteMonitor: https://amtctl.w1.lv/
+
+    - MeshCentral:
+        icon: meshcentral.png
+        href: https://mc.w1.lv/
+        description: "AMT / KVM management (6 nodes)"
+        # config.json has RedirPort:0 + TlsOffload:true (2026-04-21), which
+        # killed the :4430 bogus redirect. / returns 200 clean.
+        siteMonitor: https://mc.w1.lv/
+
+    - PXE / netboot.xyz:
+        icon: mdi-network-outline
+        href: https://pxe.w1.lv/
+        description: "iPXE boot menu — Talos, BIOS flash, stress image"
+        siteMonitor: https://pxe.w1.lv/
+
     - hw-validation stress:
         icon: mdi-pulse
         href: https://stress.w1.lv/
@@ -68,21 +96,128 @@
         icon: traefik.png
         href: https://traefik-nas.w1.lv/dashboard/
         description: "Mgmt-plane reverse proxy"
-        # /api/http/routers returns JSON via api@internal — always 200
-        # when Traefik is up. /ping would need --ping=true flag in compose;
-        # /api works unauthenticated on Traefik v3 dashboards.
+        # /api/http/routers returns JSON via api@internal — always 200 when
+        # Traefik is up. /ping would need --ping=true in the compose.
         siteMonitor: https://traefik-nas.w1.lv/api/http/routers
         widget:
           type: traefik
           url: https://traefik-nas.w1.lv
 
-    - MeshCentral:
-        icon: meshcentral.png
-        href: https://mc.w1.lv/
-        description: "AMT / KVM management (6 nodes)"
-        # Fixed 2026-04-21: config.json now has RedirPort:0 + TlsOffload:true
-        # which killed the :4430 bogus redirect. / returns 200 clean.
-        siteMonitor: https://mc.w1.lv/
+# ── Kubernetes ───────────────────────────────────────────────────────────────
+# LB IPs: prd 10.10.5.30, dev 10.10.5.40 (Cilium LB-IPAM on mgmt-vlan, same
+# /24 as the NAS — no routing, no firewall carve-out). All LINK-ONLY per D2.
+
+- Kubernetes · prd:
+    - Grafana prd:
+        icon: grafana.png
+        href: https://grafana-prd.w1.lv/
+        description: "Dashboards · Pocket-ID gated"
+
+    - Prometheus prd:
+        icon: prometheus.png
+        href: https://prom-prd.w1.lv/
+        description: "Metrics + alert rules (read-only API)"
+
+    - Alertmanager prd:
+        icon: alertmanager.png
+        href: https://alertmanager-prd.w1.lv/
+        description: "Alert routing + silences"
+
+    - Longhorn prd:
+        icon: longhorn.png
+        href: https://longhorn-prd.w1.lv/
+        description: "Distributed block storage · volumes + backups"
+
+    - Hubble prd:
+        icon: mdi-sitemap
+        href: https://hubble-prd.w1.lv/
+        description: "Cilium network flow observability"
+
+    - Traefik admin prd:
+        icon: traefik.png
+        href: https://traefik-int-prd.w1.lv/
+        description: "Cluster admin-plane proxy dashboard"
+
+    - Pocket-ID prd:
+        icon: mdi-shield-key
+        href: https://id-prd.w1.lv/
+        description: "OIDC identity provider — the login surface itself"
+
+- Kubernetes · dev:
+    - Grafana dev:
+        icon: grafana.png
+        href: https://grafana-dev.w1.lv/
+        description: "Dashboards · Pocket-ID gated"
+
+    - Prometheus dev:
+        icon: prometheus.png
+        href: https://prom-dev.w1.lv/
+        description: "Metrics + alert rules (read-only API)"
+
+    - Alertmanager dev:
+        icon: alertmanager.png
+        href: https://alertmanager-dev.w1.lv/
+        description: "Alert routing + silences"
+
+    - Longhorn dev:
+        icon: longhorn.png
+        href: https://longhorn-dev.w1.lv/
+        description: "Distributed block storage · volumes + backups"
+
+    - Hubble dev:
+        icon: mdi-sitemap
+        href: https://hubble-dev.w1.lv/
+        description: "Cilium network flow observability"
+
+    - Traefik admin dev:
+        icon: traefik.png
+        href: https://traefik-int-dev.w1.lv/
+        description: "Cluster admin-plane proxy dashboard"
+
+    - Pocket-ID dev:
+        icon: mdi-shield-key
+        href: https://id-dev.w1.lv/
+        description: "OIDC identity provider — the login surface itself"
+
+# ── Applications ─────────────────────────────────────────────────────────────
+# These serve their own login pages, so a 200 proves the app is alive (D3).
+# Reachable from the NAS: fleet.yaml forward chain accepts mgmt → prd/dev.
+
+- Applications:
+    - GIKS Admin prd:
+        icon: mdi-account-group
+        href: https://admin-prd.giks.lv/
+        description: "Member management — LAN/WG only (v2 pre-production soak)"
+        siteMonitor: https://admin-prd.giks.lv/
+
+    - GIKS Admin dev:
+        icon: mdi-account-group
+        href: https://admin-dev.giks.lv/
+        description: "Member management — dev"
+        siteMonitor: https://admin-dev.giks.lv/
+
+    - GIKS portal dev:
+        icon: mdi-account-box
+        href: https://dev.giks.lv/
+        description: "Member self-service portal — dev"
+        siteMonitor: https://dev.giks.lv/
+
+    - GIKS Admin (public):
+        icon: mdi-cloud-outline
+        href: https://admin.giks.lv/
+        description: "⚠ serves the MAINTENANCE OVERLAY via cloudflared, not the app"
+
+    - SMS gateway prd:
+        icon: mdi-cellphone-message
+        href: https://sms-gw-prd.w1.lv/admin
+        description: "Blazor console · API at /v1 · OpenAPI at /swagger"
+        siteMonitor: https://sms-gw-prd.w1.lv/admin/login
+
+    - SMS gateway dev:
+        icon: mdi-cellphone-message
+        href: https://sms-gw-dev.w1.lv/admin
+        description: "Blazor console · API at /v1 · OpenAPI at /swagger"
+        siteMonitor: https://sms-gw-dev.w1.lv/admin/login
 
 - NAS:
     - TrueNAS:
@@ -98,15 +233,14 @@
           nasType: scale      # TrueNAS SCALE / Community Edition
 
 - Storage:
+    # The s3-*.w1.lv:9000 API endpoints are NOT carded (D1) — an S3 API is not
+    # something a human clicks. They remain in wiki hostnames.md.
     - MinIO prd Console:
         icon: minio.png
         href: https://minio-prd.w1.lv/
         description: "S3 admin — prd (Velero / workloads)"
         siteMonitor: https://minio-prd.w1.lv/
-        # No widget: — Homepage v1.12 removed the native `minio` widget
-        # type (gethomepage.dev/widgets/services/minio/ returns 404).
-        # Live stats would need a customapi widget hitting MinIO's
-        # Prometheus endpoint; not worth it until we instrument anyway.
+        # No widget: — Homepage v1.12 removed the native `minio` widget type.
 
     - MinIO dev Console:
         icon: minio.png
@@ -114,62 +248,46 @@
         description: "S3 admin — dev"
         siteMonitor: https://minio-dev.w1.lv/
 
-    - MinIO prd S3:
-        icon: minio.png
-        href: "https://s3-prd.w1.lv:9000/"
-        description: "S3 API (port 9000, data plane)"
-        siteMonitor: "https://s3-prd.w1.lv:9000/minio/health/live"
+# ── Network ──────────────────────────────────────────────────────────────────
+# LINK-ONLY. No widget, no siteMonitor, no REST, no firewall rule. See the
+# MikroTik note in the file header before changing anything here.
+# These are base-vlan (10.10.0.0/24) devices; reach them over WireGuard or
+# from base-vlan. WebFig is HTTP (self-signed if HTTPS), hence http:// hrefs.
 
-    - MinIO dev S3:
-        icon: minio.png
-        href: "https://s3-dev.w1.lv:9000/"
-        description: "S3 API (port 9000, data plane)"
-        siteMonitor: "https://s3-dev.w1.lv:9000/minio/health/live"
+- Network:
+    - Router (RB5009):
+        icon: mikrotik.png
+        href: http://router.w1.lv/
+        description: "WebFig — VLANs, firewall, DNS, DHCP, WireGuard"
 
-- Docs & Links:
+    - Switch data (CRS310):
+        icon: mikrotik.png
+        href: http://sw-data.w1.lv/
+        description: "2.5G traffic switch — K8s data + NAS trunk"
+
+    - Switch mgmt (CRS326):
+        icon: mikrotik.png
+        href: http://sw-mgmt.w1.lv/
+        description: "1G mgmt switch — K8s mgmt NICs + home"
+
+    - WiFi AP (cAP ax):
+        icon: mikrotik.png
+        href: http://wifi.w1.lv/
+        description: "CAP mode — 5GHz pinned ch36"
+
+    - LTE modem:
+        icon: mikrotik.png
+        href: http://lte.w1.lv/
+        description: "LMT 5G — WAN backup"
+
+    - Egress appliance:
+        icon: mikrotik.png
+        href: http://egress.w1.lv/
+        description: "wAP ac LTE6 — rotating-IP SOCKS5 :1080 for web-tracker"
+
+- Docs:
     - Internal Wiki:
         icon: mkdocs.png
         href: https://wiki.w1.lv/
-        description: "Homelab + GIKS docs"
+        description: "Homelab + GIKS docs — start here"
         siteMonitor: https://wiki.w1.lv/
-
-    - GitHub — truenas-infra:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/truenas-infra
-        description: "NAS API config"
-
-    - GitHub — mikrotik-infra:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/mikrotik-infra
-        description: "Router / switches / VLANs"
-
-    - GitHub — kube-infra:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/kube-infra
-        description: "Talos + Kubernetes"
-
-    - GitHub — bios-config:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/bios-config
-        description: "ASUS Q170S1 BIOS settings"
-
-    - GitHub — hw-validation:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/hw-validation
-        description: "PXE stress test image (the source of stress.w1.lv)"
-
-    - GitHub — wiki:
-        icon: github.png
-        href: https://github.com/guntars-rakitko/wiki
-        description: "This internal wiki (source)"
-
-- Media (planned):
-    - Plex (deferred):
-        icon: plex.png
-        href: '#'
-        description: "apps.yaml enabled:false — media tier post-RMA"
-
-    - qBittorrent (deferred):
-        icon: qbittorrent.png
-        href: '#'
-        description: "apps.yaml enabled:false — media tier post-RMA"

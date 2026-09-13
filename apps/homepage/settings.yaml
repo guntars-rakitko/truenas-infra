@@ -17,19 +17,28 @@ hideVersion: true
 layout:
   Infrastructure:
     style: row
+    columns: 4
+  Kubernetes · prd:
+    style: row
+    columns: 4
+  Kubernetes · dev:
+    style: row
+    columns: 4
+  Applications:
+    style: row
     columns: 3
   NAS:
     style: row
     columns: 3
   Storage:
     style: row
-    columns: 3
-  Docs & Links:
-    style: row
-    columns: 3
-  Media (planned):
-    style: row
     columns: 2
+  Network:
+    style: row
+    columns: 3
+  Docs:
+    style: row
+    columns: 3
 
 # Treat service cards with an offline siteMonitor as visibly red (not
 # just grey). Makes "half the stack is down" instantly obvious.
