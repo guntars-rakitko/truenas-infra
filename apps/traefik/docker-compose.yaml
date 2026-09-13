@@ -11,7 +11,6 @@ services:
     ports:
       - "10.10.5.20:443:443"
       - "10.10.5.20:80:80"         # HTTP entry point for HTTPS redirect
-      - "10.10.5.20:8080:8080"     # Internal dashboard (also exposed on :443 via traefik-nas.w1.lv)
     volumes:
       # Wildcard cert — hot-reloaded via file-watch when tls-rotate
       # updates these files.
@@ -31,8 +30,12 @@ services:
       # File provider — watches /etc/traefik/dynamic for changes
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
-      # Dashboard + API — available via traefik-nas.w1.lv (routed in routes.yaml)
-      - --api.dashboard=true
+      # NO --api.dashboard / --api.insecure. The dashboard was removed
+      # 2026-09-13: it served traefik-nas.w1.lv/dashboard/ with NO auth at
+      # all (200 to anyone on the mgmt VLAN), exposing the full routing
+      # config, and it caught none of the three routing bugs found that day
+      # — end-to-end probes did. `routes.yaml` in git is the source of
+      # truth for what this Traefik serves. Do not re-enable without auth.
       # Logs
       - --log.level=INFO
       - --accesslog=true
