@@ -15,7 +15,7 @@ dependencies = [
     # Official TrueNAS API client (JSON-RPC over WebSocket). REST is deprecated.
     # Pin to the 25.10 compatible branch.
     "truenas-api-client @ git+https://github.com/truenas/api_client.git@TS-25.10.3",
-    "pydantic>=2.13.4",
+    "pydantic>=2.13.5",
     "structlog>=26.1.0",
     "PyYAML>=6.0.3",
     "click>=8.4.1",
