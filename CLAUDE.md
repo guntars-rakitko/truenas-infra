@@ -73,7 +73,8 @@ that's operator responsibility.
 
 ## Version Policy
 
-**Target deployment version: TrueNAS Community Edition 25.10.3** (codename "Goldeye"). This is the version being installed on the Beelink ME Mini 2. The Community Edition is the free SCALE-lineage successor that uses Docker (not K3s) for apps.
+**Running version: TrueNAS Community Edition 25.10.7** (codename "Goldeye"), upgraded
+from 25.10.3.1 on 2026-09-13. This runs on the Beelink ME Mini 2. The Community Edition is the free SCALE-lineage successor that uses Docker (not K3s) for apps.
 
 **Always check the latest TrueNAS version and API documentation before deploying or configuring anything.** Never rely on cached knowledge. Verify at:
 - https://www.truenas.com/docs/
@@ -81,6 +82,31 @@ that's operator responsibility.
 - Release notes: https://www.truenas.com/docs/scale/25.10/gettingstarted/scalereleasenotes/
 
 When upgrading, update the pinned version here and re-verify all scripts against the new API surface.
+
+### 25.10.3.1 → 25.10.7 (2026-09-13)
+
+Taken for the **ZFS 2.3 → 2.3.9** fixes (silent read corruption after block cloning, data
+loss on redacted replication send, zvol sync writes not reaching the ZIL) plus NFS server
+crash fixes — both clusters mount NFS from here — and kernel 6.12.105.
+
+⚠ **This is an elevated-risk operation on THIS hardware, not a routine patch.** The update
+is a multi-GB download+write followed by a reboot, which is exactly the documented trigger
+profile for the Beelink ME mini 3.3 V rail defect (see § NVMe 3.3V-rail mitigations): a
+sudden write burst onto a cold array. The Jul-22 drop was caused by a 118 MB write. Do it
+with physical power access — a warm reboot does NOT clear a hung NVMe controller; only a
+full power-off does.
+
+**Outcome: clean.** No drive dropped; all 6 NVMe present after reboot, `tank` ONLINE,
+0 errors. API surface verified against 25.10.7 afterwards: `preflight` connects and
+`users` / `network` / `shares` / `nut` / `apps` / `tunables` / `storage-tasks` all dry-run
+`rc=0` with **zero `changed=True`** — i.e. the upgrade reverted none of our declared config.
+Dependent services all returned on their own (minio-prd/dev, cluster-agent both VLANs, wiki,
+PXE tftp+http), and both K8s clusters rode through it with Velero BackupStorageLocation
+back to `Available` without intervention.
+
+⚠ **Verify drives by SERIAL after any reboot, never by `nvmeN`.** This upgrade reshuffled
+enumeration again — `S4GRNX1RB33857` and `S4GRNX0NA00357` swapped nvme1/nvme2. A
+device-name comparison would have looked like a missing drive when nothing was wrong.
 
 ---
 
@@ -94,7 +120,7 @@ When upgrading, update the pinned version here and re-verify all scripts against
 | Storage | 6× M.2 NVMe slots — 1× 256 GB PM981 boot (`nvme3n1`, S/N `S444NX0N496890`) + 5× 1 TB NVMe in RAIDZ1 tank (`nvme0n1`+`nvme1n1`+`nvme2n1` = 3× PM981a, `nvme4n1`+`nvme5n1` = 2× PM9A1). Slot 4 is PCIe 3.0 x2 (boot); slots 1, 2, 3, 5, 6 are PCIe 3.0 x1 |
 | NIC1 | Intel **I226-V** 2.5G (`igc` driver, `enp1s0`, MAC `78:55:36:07:25:93`) — data, tagged trunk carrying VLANs 10 / 15 / 20 (sub-interfaces 10.10.10.10 / 10.10.15.10 / 10.10.20.10) |
 | NIC2 | Intel **I226-V** 2.5G (`igc` driver, `enp2s0`, MAC `78:55:36:07:25:92`) — management, untagged VLAN 5 (10.10.5.10) |
-| OS | TrueNAS Community Edition 25.10.3.1 (codename Goldeye) |
+| OS | TrueNAS Community Edition 25.10.7 (codename Goldeye) |
 
 ---
 
