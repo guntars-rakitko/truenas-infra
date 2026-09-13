@@ -80,9 +80,15 @@ services:
       - "minio-dev.w1.lv:10.10.5.20"
       - "wiki.w1.lv:10.10.5.20"
       - "home.w1.lv:10.10.5.20"
-      # MinIO S3 data plane (direct)
-      - "s3-prd.w1.lv:10.10.10.10"
-      - "s3-dev.w1.lv:10.10.15.10"
+      - "amtctl.w1.lv:10.10.5.20"
+      - "stress.w1.lv:10.10.5.20"
+      # Apps probed by siteMonitor. Reachable because fleet.yaml's forward
+      # chain accepts "mgmt -> prd" and "mgmt -> dev" (state new).
+      - "admin-prd.giks.lv:10.10.10.20"
+      - "admin-dev.giks.lv:10.10.15.20"
+      - "dev.giks.lv:10.10.15.20"
+      - "sms-gw-prd.w1.lv:10.10.10.9"
+      - "sms-gw-dev.w1.lv:10.10.15.9"
     # Intentionally no `healthcheck:` — the Homepage ghcr.io/gethomepage
     # image doesn't ship wget and is minimal by design. TrueNAS uses the
     # absence of a failing healthcheck as the "running" signal; if we
