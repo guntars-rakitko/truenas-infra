@@ -77,3 +77,22 @@ def test_forwardauth_gated_cards_have_no_sitemonitor() -> None:
         if host.startswith(FORWARDAUTH_GATED_HOST_PREFIXES) and "siteMonitor" in body:
             offenders.append(f"{group}/{card}")
     assert offenders == [], f"gated cards must not be probed (D2): {offenders}"
+
+
+def test_every_probed_host_has_an_extra_hosts_entry() -> None:
+    """The compose `extra_hosts` block is belt-and-braces so siteMonitor
+    survives a DNS hiccup. Every probed host must be in it — a probe that
+    depends on DNS alone goes red on a resolver blip and reads as an outage.
+    """
+    compose = yaml.safe_load((HOMEPAGE_DIR / "docker-compose.yaml").read_text())
+    pinned = {
+        entry.split(":")[0]
+        for entry in compose["services"]["homepage"]["extra_hosts"]
+    }
+    probed = {
+        urlparse(str(body["siteMonitor"])).hostname
+        for _, _, body in _iter_cards()
+        if "siteMonitor" in body
+    }
+    missing = sorted(probed - pinned)
+    assert missing == [], f"probed hosts absent from extra_hosts: {missing}"
