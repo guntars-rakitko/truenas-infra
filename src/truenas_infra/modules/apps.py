@@ -1025,8 +1025,9 @@ def run(
     # phase halts before any other app is created. Menus/scripts/bios-apply
     # files stay in the post-create block — those are read at runtime via
     # live bind-mounts and don't need to exist at container-create time.
+    pxe_build_context_changed = False
     if only in (None, "pxe"):
-        _ensure_pxe_build_context_via_ctx(cli, ctx, log)
+        pxe_build_context_changed = _ensure_pxe_build_context_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
         if only and spec.name != only:
@@ -1038,6 +1039,12 @@ def run(
             compose=str(spec.compose_path),
             action=diff.action, changed=diff.changed,
         )
+        # ⚠ A changed build context does NOT change the compose, so the diff
+        # above is a noop and nothing rebuilds. Force it. When the compose DID
+        # change, app.create/update already re-ran `docker compose up` and
+        # re-evaluated the build — redeploying again would only waste a rebuild.
+        if spec.name == "pxe" and pxe_build_context_changed and not diff.changed:
+            _redeploy_app_for_build_context(cli, ctx, log, spec.name)
 
     # 3. Talos PXE auto-updater: upload script + schematic to the NAS via
     # filesystem.put, then register a short cronjob that invokes the
@@ -1502,14 +1509,50 @@ def _pxe_read_helper(cli: Any, ctx: Any) -> Any:
     return _read
 
 
-def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+def _redeploy_app_for_build_context(cli: Any, ctx: Any, log: Any, app_name: str) -> None:
+    """Force `app_name` to rebuild after its build context changed.
+
+    ⚠ WHY THIS EXISTS (2026-09-13). `ensure_custom_app` diffs the RENDERED
+    COMPOSE only. The pxe compose says `build: /mnt/tank/system/apps-config/
+    pxe/build` — a path, not content — so editing the Dockerfile behind that
+    path leaves the compose byte-identical, `app_ensured` reports
+    `noop changed=False`, and TrueNAS never re-runs `docker compose up`.
+    The new Dockerfile sits on disk, unused, while the container keeps
+    serving the image built from the OLD one.
+
+    Measured: after `--apply` landed alpine 3.20 -> 3.24 on the NAS,
+    `app_ensured` said noop and the served ipxe.efi stayed 275,968 bytes
+    (the 3.20 build). Only an explicit `app.redeploy` rebuilt it (289,280
+    bytes). Without this, every future build-context edit needs an operator
+    to know that folklore.
+
+    This is the THIRD layer of the same class of bug — git -> NAS file was
+    fixed by content hashing, NAS file -> running container is this one.
+    """
+    if not ctx.apply:
+        log.info("app_rebuild_would_trigger", name=app_name,
+                 reason="build_context_changed",
+                 note="dry-run — `--apply` would `app.redeploy` to rebuild the image")
+        return
+    log.info("app_rebuild_triggered", name=app_name,
+             reason="build_context_changed")
+    cli.call("app.redeploy", app_name, job=True)
+    log.info("app_rebuild_done", name=app_name)
+
+
+def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> bool:
     """Upload apps/pxe/build/** to the NAS so docker-compose's
-    build.context directive can read them at image-build time."""
+    build.context directive can read them at image-build time.
+
+    Returns True when any file changed. ⚠ The caller MUST act on that —
+    uploading the context does NOT rebuild anything on its own; see
+    `_redeploy_app_for_build_context`.
+    """
     if not PXE_BUILD_CONTEXT_DIR.is_dir():
         log.warning("pxe_build_context_skipped",
                     local_dir_exists=False,
                     local_dir=str(PXE_BUILD_CONTEXT_DIR))
-        return
+        return False
 
     diffs = ensure_pxe_build_context(
         cli, _pxe_upload_helper(cli, ctx),
@@ -1523,6 +1566,7 @@ def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                  path=f"{PXE_BUILD_CONTEXT_REMOTE_DIR}/{name}",
                  action=diff.action, changed=diff.changed,
                  content_verified=(diff.after or {}).get("content_verified"))
+    return any(d.changed for _, d in diffs)
 
 
 def _ensure_pxe_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

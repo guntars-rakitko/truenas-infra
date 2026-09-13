@@ -1060,3 +1060,88 @@ def test_ensure_pxe_build_context_redeploys_equal_size_dockerfile_edit(tmp_path:
         "is the false clean that hid alpine 3.20 for months"
     )
     assert dict(diffs)["Dockerfile"].changed is True
+
+
+# ─── build-context change must trigger a rebuild (2026-09-13 layer-3 bug) ────
+
+def _pxe_run_ctx(tmp_path: Path, *, apply: bool):
+    """Minimal ctx/cfg doubles for exercising apps.run()'s pxe path."""
+    class _Cfg:
+        truenas_host = "nas.test"
+        truenas_api_key = "k"
+        truenas_verify_ssl = False
+    class _Ctx:
+        config = _Cfg()
+    c = _Ctx()
+    c.apply = apply
+    return c
+
+
+def test_build_context_change_triggers_redeploy(monkeypatch, tmp_path: Path) -> None:
+    """Dockerfile edit + unchanged compose ⇒ MUST force app.redeploy.
+
+    This is the bug: `ensure_custom_app` diffs the rendered compose, which
+    only references the build path, so a Dockerfile edit leaves it noop and
+    nothing ever rebuilds. Measured live — the NAS kept serving the
+    alpine-3.20 ipxe.efi after the 3.24 Dockerfile landed.
+    """
+    from truenas_infra.modules import apps as m
+
+    calls: list[tuple] = []
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            calls.append((method, a))
+            return None
+
+    m_log = type("L", (), {"info": lambda *a, **k: None,
+                           "warning": lambda *a, **k: None})()
+    ctx = _pxe_run_ctx(tmp_path, apply=True)
+    m._redeploy_app_for_build_context(_Cli(), ctx, m_log, "pxe")
+
+    assert ("app.redeploy", ("pxe",)) in calls, \
+        "a changed build context must force a rebuild"
+
+
+def test_build_context_change_dry_run_does_not_redeploy(tmp_path: Path) -> None:
+    """Dry-run must announce the rebuild, never perform it."""
+    from truenas_infra.modules import apps as m
+
+    calls: list[tuple] = []
+    logged: list[str] = []
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            calls.append((method, a))
+            return None
+
+    class _Log:
+        def info(self, event, **k): logged.append(event)
+        def warning(self, event, **k): logged.append(event)
+
+    ctx = _pxe_run_ctx(tmp_path, apply=False)
+    m._redeploy_app_for_build_context(_Cli(), ctx, _Log(), "pxe")
+
+    assert calls == [], "dry-run must not call app.redeploy"
+    assert "app_rebuild_would_trigger" in logged, \
+        "dry-run must still SAY a rebuild is needed — silence is how this hid"
+
+
+def test_build_context_helper_reports_change(tmp_path: Path) -> None:
+    """The helper must return True when a file changed, else the caller
+    has nothing to act on (which is how the bug survived)."""
+    from truenas_infra.modules.apps import ensure_pxe_build_context
+
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "Dockerfile").write_text("FROM alpine:3.24\n")
+
+    class _Cli:
+        def call(self, method, path, *a, **k):
+            raise RuntimeError("missing")  # ⇒ treated as create
+
+    diffs = ensure_pxe_build_context(
+        _Cli(), lambda **k: None,
+        local_dir=build, remote_dir="/remote/build", apply=True,
+    )
+    assert any(d.changed for _, d in diffs) is True
