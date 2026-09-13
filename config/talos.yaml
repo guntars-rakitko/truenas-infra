@@ -16,21 +16,22 @@ retention: 5
 architecture: amd64
 platform: metal
 
-# System extensions baked into the Talos factory schematic. Mirrored
-# into apps/pxe/schematic.yaml (the canonical source the factory
-# receives) — keep both in sync. Changes here WILL force a new schematic
-# ID from factory.talos.dev on the next updater run (state file is
-# regenerated), which triggers re-download of kernel + initramfs.
+# System extensions + kernel args are NOT configured here.
 #
-# Available extensions: https://github.com/siderolabs/extensions
-extensions:
-  # Graceful shutdown on UPS events. Pairs with the NUT server running on
-  # this NAS at 10.10.5.10:3493 — each K8s node's nut-client monitors and
-  # shuts down cleanly when the UPS reports a battery-low state.
-  - siderolabs/nut-client
-  # Intel microcode — K8s nodes are ASUS Q170S1 (all Intel), this fixes
-  # erratum and reliability bugs on CPU generation N.
-  - siderolabs/intel-ucode
-  # gVisor — userland kernel for container sandboxing. Enables runsc as
-  # an optional container runtime alongside runc.
-  - siderolabs/gvisor
+# The canonical schematic is `apps/pxe/schematic.yaml` — that is the file
+# talos-updater.sh POSTs to factory.talos.dev (via SCHEMATIC_FILE), and it must
+# stay byte-identical to `kube-infra/talos-os/schematic.yaml`.
+#
+# This file is parsed by `load_talos_config()` in
+# src/truenas_infra/modules/apps.py, which reads exactly four keys: version,
+# retention, architecture, platform. Nothing else here is consumed.
+#
+# An `extensions:` list previously lived at this spot as a "mirror" of the
+# schematic. It was never read by any code, so nothing kept it honest, and it
+# drifted: it still listed `nut-client` (stripped from the node image
+# 2026-06-02, kube-infra #611) and `gvisor` (never in the real schematic),
+# while omitting `iscsi-tools` and `util-linux-tools` (both required by
+# Longhorn). Its comment also claimed edits here "WILL force a new schematic
+# ID on the next updater run" — false; only SCHEMATIC_FILE does that.
+# Deleted 2026-09-13 rather than corrected: a second copy with no consumer is
+# a drift generator, not documentation.
