@@ -414,6 +414,42 @@ def ensure_cronjob(
 # ─── File upload to NAS (filesystem.put wrapper) ─────────────────────────────
 
 
+CONTENT_VERIFY_MAX_BYTES = 1 * 1024 * 1024
+"""Pull-back ceiling for content verification in `ensure_file_on_nas`.
+
+1 MiB covers every Dockerfile / script / conf we ship while never touching
+the multi-hundred-MB hw-validation artefacts that use the same helper.
+"""
+
+
+def _remote_content_matches(
+    read_fn: Any,
+    *,
+    local_path: Path,
+    remote_path: str,
+    local_size: int,
+) -> tuple[bool, bool]:
+    """Return (verified, same) for a file whose SIZE already matches.
+
+    `verified` says whether we actually compared bytes; `same` is the
+    idempotency answer. When we cannot verify (no read_fn, file too big,
+    or the read failed) we return (False, True) — i.e. preserve the old
+    size-only behaviour rather than churning uploads — but the caller
+    surfaces `content_verified=False` so a silent assumption is at least
+    a visible one.
+    """
+    if read_fn is None or local_size > CONTENT_VERIFY_MAX_BYTES:
+        return (False, True)
+    try:
+        remote_bytes = read_fn(remote_path)
+    except Exception:  # noqa: BLE001 — degrade to size-only, never fail the phase
+        return (False, True)
+    import hashlib
+    same = (hashlib.sha256(remote_bytes).digest()
+            == hashlib.sha256(local_path.read_bytes()).digest())
+    return (True, same)
+
+
 def ensure_file_on_nas(
     cli: Any,
     upload_fn: Any,
@@ -422,13 +458,35 @@ def ensure_file_on_nas(
     remote_path: str,
     mode: int,
     apply: bool,
+    read_fn: Any = None,
 ) -> Diff:
     """Upload `local_path` to the NAS at `remote_path` via `upload_fn`.
 
-    Idempotency: compare local file size against `filesystem.stat` on the
-    remote. If sizes match, no upload. This is good enough for the tiny
-    script files we're shipping (changes ~= months apart, and any content
-    edit larger than a whitespace tweak changes size).
+    Idempotency: size first (cheap), then CONTENT HASH when the sizes
+    match and the file is small enough to pull back.
+
+    ⚠ SIZE ALONE IS NOT CONTENT — this function used to stop at the size
+    check, with the docstring claiming "any content edit larger than a
+    whitespace tweak changes size". That is FALSE and it cost us a silent
+    deploy failure (2026-09-13): `apps/pxe/build/Dockerfile` was bumped
+    `FROM alpine:3.20` -> `3.23` in git, both spellings are the SAME
+    BYTE LENGTH, so the check reported `noop changed=False` forever and
+    the NAS kept building PXE on 3.20 while the repo claimed 3.23. The
+    dry-run agreed it was clean — a textbook false clean. Any version
+    bump, flag flip (`true`->`fals`… no; but `:3.20`->`:3.23`, `=0`->`=1`,
+    `WARN`->`INFO`) is equal-length and was invisible.
+
+    `read_fn` is an optional callable `read_fn(remote_path) -> bytes`. When
+    supplied and the file is <= CONTENT_VERIFY_MAX_BYTES, a size match is
+    confirmed by comparing sha256. When it is absent, or the file is too
+    large, or the read fails, we fall back to the old size-only behaviour
+    but mark the result `content_verified=False` so the log line says so
+    rather than implying a real match.
+
+    ⚠ The size cap exists because this same function ships hw-validation's
+    192 MB modloop; pulling those back every dry-run would be absurd. Their
+    sizes are content-determined (see _ensure_pxe_hw_validation_via_ctx),
+    so size-only stays adequate there.
 
     `upload_fn` is a callable `upload_fn(*, local_path, remote_path, mode)`
     that actually performs the upload. Injected so tests can mock it
@@ -443,7 +501,13 @@ def ensure_file_on_nas(
         remote = None
 
     if remote is not None and remote.get("size") == local_size:
-        return Diff.noop(desired)
+        verified, same = _remote_content_matches(
+            read_fn, local_path=local_path, remote_path=remote_path,
+            local_size=local_size,
+        )
+        if same:
+            return Diff.noop({**desired, "content_verified": verified})
+        # sizes agree but CONTENT differs — the case the old check missed.
 
     if not apply:
         if remote is None:
@@ -651,6 +715,7 @@ def ensure_pxe_build_context(
     local_dir: Path,
     remote_dir: str,
     apply: bool,
+    read_fn: Any = None,
 ) -> tuple[tuple[str, Diff], ...]:
     """Upload every file in apps/pxe/build/ to the NAS at remote_dir.
 
@@ -663,7 +728,10 @@ def ensure_pxe_build_context(
     0755, everything else as 0644. Returns a list of (filename, diff)
     tuples so the caller can log per-file.
 
-    Idempotent via size+mode check. Safe to re-run.
+    Idempotent via size + CONTENT HASH (see ensure_file_on_nas). Safe to
+    re-run. ⚠ The size-only version of this check silently failed to
+    deploy the alpine 3.20 -> 3.23 Dockerfile bump for months — equal
+    byte length — so `read_fn` must stay wired in here.
     """
     if not local_dir.is_dir():
         return ()
@@ -679,6 +747,7 @@ def ensure_pxe_build_context(
             cli, upload_fn,
             local_path=f, remote_path=remote,
             mode=mode, apply=apply,
+            read_fn=read_fn,
         )))
     return tuple(diffs)
 
@@ -1415,6 +1484,24 @@ def _pxe_upload_helper(cli: Any, ctx: Any) -> Any:
     return _upload
 
 
+def _pxe_read_helper(cli: Any, ctx: Any) -> Any:
+    """Build the `read_fn(remote_path) -> bytes` that content-verification needs.
+
+    Mirror of `_pxe_upload_helper`. Kept separate so a NAS without the
+    /_download endpoint (or a permissions change) degrades to size-only
+    idempotency instead of failing the phase — see `_remote_content_matches`.
+    """
+    from truenas_infra.client import read_remote_file
+    host = ctx.config.truenas_host
+    verify_ssl = ctx.config.truenas_verify_ssl
+
+    def _read(remote_path: str) -> bytes:
+        return read_remote_file(
+            cli, host=host, remote_path=remote_path, verify_ssl=verify_ssl,
+        )
+    return _read
+
+
 def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     """Upload apps/pxe/build/** to the NAS so docker-compose's
     build.context directive can read them at image-build time."""
@@ -1429,11 +1516,13 @@ def _ensure_pxe_build_context_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         local_dir=PXE_BUILD_CONTEXT_DIR,
         remote_dir=PXE_BUILD_CONTEXT_REMOTE_DIR,
         apply=ctx.apply,
+        read_fn=_pxe_read_helper(cli, ctx),
     )
     for name, diff in diffs:
         log.info("pxe_build_context_ensured",
                  path=f"{PXE_BUILD_CONTEXT_REMOTE_DIR}/{name}",
-                 action=diff.action, changed=diff.changed)
+                 action=diff.action, changed=diff.changed,
+                 content_verified=(diff.after or {}).get("content_verified"))
 
 
 def _ensure_pxe_menu_files_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

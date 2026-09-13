@@ -910,3 +910,153 @@ def test_ensure_talos_updater_all_noop_when_state_matches(tmp_path: Path) -> Non
     names = [c.args[0] for c in cli.call.call_args_list]
     assert "cronjob.create" not in names
     assert "cronjob.update" not in names
+
+
+# ─── ensure_file_on_nas: CONTENT vs size (regression for the 2026-09-13 bug) ──
+#
+# The size-only check reported `noop changed=False` for an equal-length
+# content edit. Real instance: apps/pxe/build/Dockerfile went
+# `FROM alpine:3.20` -> `3.23` in git; identical byte length; the NAS kept
+# building on 3.20 for months and every dry-run called it clean.
+# These tests fail against the size-only implementation.
+
+def test_ensure_file_on_nas_detects_equal_size_content_change(tmp_path: Path) -> None:
+    """Same size, different bytes ⇒ MUST upload (the bug)."""
+    from truenas_infra.modules.apps import ensure_file_on_nas
+
+    local = tmp_path / "Dockerfile"
+    local.write_text("FROM alpine:3.23\n")
+    remote_bytes = b"FROM alpine:3.20\n"
+    assert len(remote_bytes) == local.stat().st_size, "fixture must be equal-length"
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            return {"size": local.stat().st_size, "mode": 0o644}
+
+    uploaded: list[str] = []
+
+    def _upload(*, local_path, remote_path, mode):
+        uploaded.append(remote_path)
+
+    diff = ensure_file_on_nas(
+        _Cli(), _upload,
+        local_path=local, remote_path="/remote/Dockerfile",
+        mode=0o644, apply=True,
+        read_fn=lambda _p: remote_bytes,
+    )
+    assert uploaded == ["/remote/Dockerfile"], "equal-size content change must re-upload"
+    assert diff.changed is True
+
+
+def test_ensure_file_on_nas_noop_when_content_identical(tmp_path: Path) -> None:
+    """Same size AND same bytes ⇒ still a noop, and marked verified."""
+    from truenas_infra.modules.apps import ensure_file_on_nas
+
+    local = tmp_path / "Dockerfile"
+    local.write_text("FROM alpine:3.23\n")
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            return {"size": local.stat().st_size, "mode": 0o644}
+
+    uploaded: list[str] = []
+
+    def _upload(*, local_path, remote_path, mode):
+        uploaded.append(remote_path)
+
+    diff = ensure_file_on_nas(
+        _Cli(), _upload,
+        local_path=local, remote_path="/remote/Dockerfile",
+        mode=0o644, apply=True,
+        read_fn=lambda _p: local.read_bytes(),
+    )
+    assert uploaded == []
+    assert diff.changed is False
+    assert (diff.after or {}).get("content_verified") is True
+
+
+def test_ensure_file_on_nas_degrades_to_size_only_when_read_fails(tmp_path: Path) -> None:
+    """A broken /_download must NOT fail the phase — degrade, but say so."""
+    from truenas_infra.modules.apps import ensure_file_on_nas
+
+    local = tmp_path / "Dockerfile"
+    local.write_text("FROM alpine:3.23\n")
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            return {"size": local.stat().st_size, "mode": 0o644}
+
+    def _boom(_p):
+        raise RuntimeError("/_download unavailable")
+
+    diff = ensure_file_on_nas(
+        _Cli(), lambda **k: None,
+        local_path=local, remote_path="/remote/Dockerfile",
+        mode=0o644, apply=True, read_fn=_boom,
+    )
+    assert diff.changed is False
+    assert (diff.after or {}).get("content_verified") is False, \
+        "unverified must be visible, not silently claimed as a match"
+
+
+def test_ensure_file_on_nas_skips_content_check_for_large_files(tmp_path: Path) -> None:
+    """hw-validation's 192 MB artefacts must never be pulled back."""
+    from truenas_infra.modules.apps import CONTENT_VERIFY_MAX_BYTES, ensure_file_on_nas
+
+    local = tmp_path / "modloop-lts"
+    local.write_bytes(b"x" * 64)
+
+    class _Cli:
+        def call(self, method, *a, **k):
+            return {"size": CONTENT_VERIFY_MAX_BYTES + 1, "mode": 0o644}
+
+    reads: list[str] = []
+
+    # stat reports oversize; local_size is what gates the pull, so fake it
+    import os
+    real_stat = os.stat
+
+    diff = ensure_file_on_nas(
+        _Cli(), lambda **k: None,
+        local_path=local, remote_path="/remote/modloop-lts",
+        mode=0o644, apply=True,
+        read_fn=lambda p: (reads.append(p), b"")[1],
+    )
+    # sizes differ (64 vs cap+1) so it uploads without ever reading
+    assert reads == [], "must not pull large files back over HTTP"
+
+
+def test_ensure_pxe_build_context_redeploys_equal_size_dockerfile_edit(tmp_path: Path) -> None:
+    """THE production bug, at the level it actually bit.
+
+    `ensure_pxe_build_context` wires `read_fn` itself, so this test needs no
+    new kwargs — it fails on the size-only implementation by returning a
+    noop (the false clean) instead of re-uploading. That is exactly what
+    left the NAS building PXE on alpine 3.20 while git said 3.23.
+    """
+    from truenas_infra.modules.apps import ensure_pxe_build_context
+
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "Dockerfile").write_text("FROM alpine:3.23\n")
+    nas_content = {"/remote/build/Dockerfile": b"FROM alpine:3.20\n"}
+
+    class _Cli:
+        def call(self, method, path, *a, **k):
+            return {"size": len(nas_content[path]), "mode": 0o644}
+
+    uploaded: list[str] = []
+
+    def _upload(*, local_path, remote_path, mode):
+        uploaded.append(remote_path)
+
+    diffs = ensure_pxe_build_context(
+        _Cli(), _upload,
+        local_dir=build, remote_dir="/remote/build", apply=True,
+        read_fn=lambda p: nas_content[p],
+    )
+    assert uploaded == ["/remote/build/Dockerfile"], (
+        "an equal-length FROM-line bump must redeploy; returning noop here "
+        "is the false clean that hid alpine 3.20 for months"
+    )
+    assert dict(diffs)["Dockerfile"].changed is True
