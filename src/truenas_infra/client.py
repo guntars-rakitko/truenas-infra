@@ -68,6 +68,54 @@ class UploadError(RuntimeError):
     """Raised when /_upload fails or the backing job ends in FAILED state."""
 
 
+class DownloadError(RuntimeError):
+    """Raised when /_download fails or the backing job can't be started."""
+
+
+def read_remote_file(
+    cli: Any,
+    *,
+    host: str,
+    remote_path: str,
+    verify_ssl: bool = False,
+    timeout: float = 30.0,
+) -> bytes:
+    """Read `remote_path` off the NAS and return its bytes.
+
+    The mirror of `upload_file`: `core.download` starts a `filesystem.get`
+    job and hands back a one-shot `/_download/<job>?auth_token=…` URL; the
+    bytes travel over HTTPS, same as uploads travel over /_upload.
+
+    ⚠ Exists so `ensure_file_on_nas` can compare CONTENT rather than size.
+    Size-based idempotency silently missed same-length edits — see the
+    incident note on that function. Callers should bound how large a file
+    they are willing to pull; this helper does not.
+    """
+    log = structlog.get_logger("truenas_infra.client.download")
+    try:
+        job_id, url = cli.call(
+            "core.download", "filesystem.get", [remote_path],
+            Path(remote_path).name,
+        )
+    except Exception as exc:  # noqa: BLE001 — caller decides how to degrade
+        raise DownloadError(f"could not start download job for {remote_path}: {exc}") from exc
+
+    ctx = ssl.create_default_context()
+    if not verify_ssl:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    full = f"https://{host}{url}" if url.startswith("/") else url
+    try:
+        with urllib.request.urlopen(urllib.request.Request(full), context=ctx, timeout=timeout) as resp:
+            data = resp.read()
+    except Exception as exc:  # noqa: BLE001
+        raise DownloadError(f"/_download failed for {remote_path}: {exc}") from exc
+
+    log.debug("downloaded", path=remote_path, job_id=job_id, size=len(data))
+    return data
+
+
 def upload_file(
     cli: Any,
     *,
