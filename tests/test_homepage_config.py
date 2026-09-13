@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOMEPAGE_DIR = REPO_ROOT / "apps" / "homepage"
 
