@@ -1,8 +1,23 @@
-# Homepage Kubernetes integration — INTENTIONALLY EMPTY until kube-infra
-# stands up the clusters.
+# Homepage Kubernetes integration — INTENTIONALLY DISABLED, BY CHOICE.
 #
-# When ready, populate with:
-#   mode: cluster   # or disabled
-# and mount a kubeconfig with a read-only ServiceAccount (per kube-infra's
-# CLAUDE.md "Wiki maintenance" table). Homepage will then auto-discover
-# Ingress resources and add cards for each.
+# This is NOT "not yet". Both clusters have been live since 2026. Homepage's
+# `mode: cluster` would auto-discover Ingress/HTTPRoute objects and card them
+# automatically. We decline it for three reasons (design decision D4):
+#
+#   1. Declarative-only is this repo's doctrine. Cards are enumerated in
+#      services.yaml the same way Traefik routes live in routes.yaml and DNS
+#      lives in dns.yaml. Auto-discovery puts the dashboard out of sync with
+#      the YAML that is supposed to be the source of truth.
+#
+#   2. It needs a long-lived read-only ServiceAccount token per cluster. A
+#      90-day SA token lapsing unnoticed is exactly what cost 14 days of
+#      silent cluster-agent blindness in Aug 2026. One more expiring
+#      credential to rotate, for cards we can write by hand.
+#
+#   3. It would need the NAS to reach both API servers, widening what the
+#      dashboard container can talk to.
+#
+# If this is ever revisited, `cluster-agent-readonly` already exists at
+# kube-infra/flux-cd/infrastructure/configs/base/cluster-agent-rbac.yaml —
+# scoped to get/list/watch with secrets, pods/exec and eviction withheld.
+# Weigh the rotation burden before adopting it.
