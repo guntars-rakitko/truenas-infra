@@ -73,9 +73,7 @@ services:
       # Direct infra
       - "nas.w1.lv:10.10.5.10"
       # NAS Traefik (admin-plane fan-out)
-      - "traefik-nas.w1.lv:10.10.5.20"
       - "mc.w1.lv:10.10.5.20"
-      - "pxe.w1.lv:10.10.5.20"
       - "minio-prd.w1.lv:10.10.5.20"
       - "minio-dev.w1.lv:10.10.5.20"
       - "wiki.w1.lv:10.10.5.20"

@@ -25,11 +25,6 @@ http:
       service: meshcentral
       entryPoints: [websecure]
       tls: {}
-    pxe-ui:
-      rule: "Host(`pxe.w1.lv`)"
-      service: pxe-assets
-      entryPoints: [websecure]
-      tls: {}
     minio-prd-console:
       rule: "Host(`minio-prd.w1.lv`)"
       service: minio-prd-console
@@ -42,11 +37,6 @@ http:
       tls: {}
     # Traefik's own dashboard — NAS-side, distinct from any future
     # kube-infra Traefik (traefik-prd / traefik-dev).
-    traefik-dashboard:
-      rule: "Host(`traefik-nas.w1.lv`)"
-      service: api@internal
-      entryPoints: [websecure]
-      tls: {}
     # Internal wiki — MkDocs static site served by nginx on mgmt VLAN.
     # Content pushed from the wiki repo's tools/deploy.sh (rsync).
     wiki:
@@ -78,17 +68,6 @@ http:
       loadBalancer:
         servers:
           - url: "http://10.10.5.10:4480"
-    # ⚠ Was `netboot-ui` → :3000 until 2026-09-13. Nothing has EVER listened
-    # on :3000 since the netboot.xyz container was replaced by the custom
-    # `homelab-pxe` image (iPXE + dnsmasq + nginx, built from source), which
-    # serves TFTP :69/udp + HTTP :8080/tcp bound to 10.10.5.10 only — there is
-    # no netboot.xyz web UI to route to. pxe.w1.lv returned 502 for months.
-    # Nobody noticed because nothing probed it; the Homepage catalog rebuild
-    # added the first pxe.w1.lv card, and its siteMonitor went red immediately.
-    pxe-assets:
-      loadBalancer:
-        servers:
-          - url: "http://10.10.5.10:8080"
     minio-prd-console:
       loadBalancer:
         servers:

@@ -80,28 +80,12 @@
         # killed the :4430 bogus redirect. / returns 200 clean.
         siteMonitor: https://mc.w1.lv/
 
-    - PXE assets:
-        icon: mdi-network-outline
-        href: https://pxe.w1.lv/
-        description: "nginx index of netboot assets — Talos, BIOS flash, stress"
-        siteMonitor: https://pxe.w1.lv/
-
     - hw-validation stress:
         icon: mdi-pulse
         href: https://stress.w1.lv/
         description: "Stress-test reports + fleet pass/fail matrix"
         siteMonitor: https://stress.w1.lv/
 
-    - NAS Traefik:
-        icon: traefik.png
-        href: https://traefik-nas.w1.lv/dashboard/
-        description: "Mgmt-plane reverse proxy"
-        # /api/http/routers returns JSON via api@internal — always 200 when
-        # Traefik is up. /ping would need --ping=true in the compose.
-        siteMonitor: https://traefik-nas.w1.lv/api/http/routers
-        widget:
-          type: traefik
-          url: https://traefik-nas.w1.lv
 
 # ── Kubernetes ───────────────────────────────────────────────────────────────
 # LB IPs: prd 10.10.5.30, dev 10.10.5.40 (Cilium LB-IPAM on mgmt-vlan, same
@@ -133,14 +117,6 @@
         href: https://hubble-prd.w1.lv/
         description: "Cilium network flow observability"
 
-    # ⚠ href MUST carry /dashboard/ — the IngressRoute matches
-    # Host(`traefik-int-prd.w1.lv`) && (PathPrefix(`/dashboard`) ||
-    # PathPrefix(`/api`)). A bare / returns 404 from a healthy Traefik.
-    - Traefik admin prd:
-        icon: traefik.png
-        href: https://traefik-int-prd.w1.lv/dashboard/
-        description: "traefik-admin's own dashboard (despite the -int- name)"
-
     - Pocket-ID prd:
         icon: mdi-shield-key
         href: https://id-prd.w1.lv/
@@ -171,14 +147,6 @@
         icon: mdi-sitemap
         href: https://hubble-dev.w1.lv/
         description: "Cilium network flow observability"
-
-    # ⚠ href MUST carry /dashboard/ — the IngressRoute matches
-    # Host(`traefik-int-dev.w1.lv`) && (PathPrefix(`/dashboard`) ||
-    # PathPrefix(`/api`)). A bare / returns 404 from a healthy Traefik.
-    - Traefik admin dev:
-        icon: traefik.png
-        href: https://traefik-int-dev.w1.lv/dashboard/
-        description: "traefik-admin's own dashboard (despite the -int- name)"
 
     - Pocket-ID dev:
         icon: mdi-shield-key
