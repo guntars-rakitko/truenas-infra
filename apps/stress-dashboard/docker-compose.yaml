@@ -10,7 +10,7 @@
 # and templates/ via phase apps.
 services:
   stress-dashboard:
-    image: python:3.14-alpine@sha256:94457973ea8a27a799f0b8ea1fe3e3147fcbebaed63497a8af63b28195a08108
+    image: python:3.14-alpine@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc
     container_name: stress-dashboard
     restart: unless-stopped
     ports:
