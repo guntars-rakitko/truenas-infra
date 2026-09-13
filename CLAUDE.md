@@ -270,8 +270,11 @@ archived 2026-04-25). AIStor Free is free + royalty-free-licensed,
 single-node standalone (= exactly our two single-instance deployments),
 and full-featured for our needs (S3 API, SSE-S3, lifecycle expiration —
 only distributed/replication/tiering are Enterprise-gated, none of
-which we use). Pinned to `quay.io/minio/aistor/minio:RELEASE.2026-05-04T23-02-27Z`
-in `apps/minio-{prd,dev}/docker-compose.yaml`.
+which we use). Pinned (tag + digest) to `quay.io/minio/aistor/minio:RELEASE.2026-06-06T02-44-06Z`
+in `apps/minio-{prd,dev}/docker-compose.yaml`. ⚠ This said
+`RELEASE.2026-05-04T23-02-27Z` until 2026-09-13 — one release behind what the
+compose files actually run. Re-read the compose file before quoting a version
+here; this section is a mirror, not the source of truth.
 
 **A license file is required — even for the Free tier.** The "runs
 license-free" claim was wrong: AIStor gates S3 *data-plane* operations
