@@ -95,3 +95,18 @@ def test_every_probed_host_has_an_extra_hosts_entry() -> None:
     }
     missing = sorted(probed - pinned)
     assert missing == [], f"probed hosts absent from extra_hosts: {missing}"
+
+
+def test_traefik_dashboard_hrefs_carry_the_dashboard_path() -> None:
+    """Traefik dashboard IngressRoutes match on
+    `PathPrefix(/dashboard) || PathPrefix(/api)`, so a bare `/` href returns
+    404 from a perfectly healthy Traefik. Shipped broken on 2026-09-13 for
+    both traefik-int-* cards; caught by clicking, not by a test.
+    """
+    offenders = []
+    for group, card, body in _iter_cards():
+        href = str(body.get("href", ""))
+        host = urlparse(href).hostname or ""
+        if host.startswith(("traefik-int-", "traefik-nas")) and "/dashboard" not in href:
+            offenders.append(f"{group}/{card} -> {href}")
+    assert offenders == [], f"Traefik cards needing /dashboard/: {offenders}"

@@ -133,10 +133,13 @@
         href: https://hubble-prd.w1.lv/
         description: "Cilium network flow observability"
 
+    # ⚠ href MUST carry /dashboard/ — the IngressRoute matches
+    # Host(`traefik-int-prd.w1.lv`) && (PathPrefix(`/dashboard`) ||
+    # PathPrefix(`/api`)). A bare / returns 404 from a healthy Traefik.
     - Traefik admin prd:
         icon: traefik.png
-        href: https://traefik-int-prd.w1.lv/
-        description: "Cluster admin-plane proxy dashboard"
+        href: https://traefik-int-prd.w1.lv/dashboard/
+        description: "traefik-admin's own dashboard (despite the -int- name)"
 
     - Pocket-ID prd:
         icon: mdi-shield-key
@@ -169,10 +172,13 @@
         href: https://hubble-dev.w1.lv/
         description: "Cilium network flow observability"
 
+    # ⚠ href MUST carry /dashboard/ — the IngressRoute matches
+    # Host(`traefik-int-dev.w1.lv`) && (PathPrefix(`/dashboard`) ||
+    # PathPrefix(`/api`)). A bare / returns 404 from a healthy Traefik.
     - Traefik admin dev:
         icon: traefik.png
-        href: https://traefik-int-dev.w1.lv/
-        description: "Cluster admin-plane proxy dashboard"
+        href: https://traefik-int-dev.w1.lv/dashboard/
+        description: "traefik-admin's own dashboard (despite the -int- name)"
 
     - Pocket-ID dev:
         icon: mdi-shield-key
