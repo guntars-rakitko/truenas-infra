@@ -25,10 +25,12 @@ to predict the next incident.
    still electrically alive.
 4. **The remaining fault (slots 04/07) is consistent with the community's
    3.3 V rail theory** but is not independently proven on this unit.
-5. ⭐ **2026-09-14 changed the picture twice.** First **double** drop (both
-   repeat offenders at once) and a new failure mode — devices stayed
-   *enumerated at `0B`*, so ZFS held them `ONLINE` and **SUSPENDED the pool**
-   instead of degrading it. And it came after **47 days clean** (p = 0.0034 vs
+5. ⭐ **2026-09-14 — first DOUBLE drop, and it is a CASCADE.** Both repeat
+   offenders died **Mode A** (`CSTS=0xffffffff PCI_STATUS=0xffff`) **5 seconds
+   apart** (03:03:25 → 03:03:30), each **in its own historically-bad slot**
+   (`04:00.0`, `08:00.0`). The pool SUSPENDED rather than degraded simply
+   because two raidz1 members went — that is a pool-level consequence, **not a
+   third failure mode**. It came after **47 days clean** (p = 0.0034 vs
    baseline), 16 h after a TrueNAS 25.10.3.1 → 25.10.7 update. Interval
    improved; severity got worse.
 6. **Recovery doctrine confirmed under fire:** full power-off, ~30 s, power on
@@ -49,7 +51,8 @@ address (stable per physical slot) or the drive serial. Never to `nvmeN`.
 | 2026-07-19 03:09 | 04:00.0 | PM981a `…357` | `CSTS=0xffffffff PCI_STATUS=0xffff` | A |
 | 2026-07-22 03:03 | 04:00.0 | PM981a `…357` | `CSTS=0xffffffff PCI_STATUS=0xffff` | A |
 | 2026-07-29 02:07→02:10 | 08:00.0 | PM9A1 `…392` | 51 I/O timeouts → `Device not ready; aborting reset, CSTS=0x1` | **B** |
-| **2026-09-14 ~03:02→03:17** | **two at once** | **PM981a `…357` AND PM9A1 `…392`** | **not captured — see below** | **C (new)** |
+| **2026-09-14 03:03:25** | **04:00.0** | **PM981a `…357`** | `CSTS=0xffffffff PCI_STATUS=0xffff` + `D3cold→D0 inaccessible` | **A** |
+| **2026-09-14 03:03:30** | **08:00.0** | **PM9A1 `…392`** | `CSTS=0xffffffff PCI_STATUS=0xffff` + `D3cold→D0 inaccessible` | **A** |
 
 `…392` was physically reslotted 07 → 08 on 2026-07-06. It failed in **both**
 slots.
@@ -110,10 +113,59 @@ fault in the drive itself.
 
 ---
 
-## Mode C — double drop, pool SUSPENDED (1 event, 2026-09-14)
+## Mode C — NOT a new electrical mode: it is Mode A taking TWO members
 
-**New mode, and the first incident to take TWO drives at once.** Both were the
-established repeat offenders — `…357` (previously Jul 19, Jul 22) and `…392`
+⚠ **CORRECTED 2026-09-14 once the kernel log was recovered.** This section
+first said "new mode" because the capture had failed and the signature was
+unavailable. It is not a new mode. **Electrically both drives died Mode A**,
+same signature as Jul 19/22:
+
+```
+03:03:25  nvme2: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0xffff
+03:03:26  nvme 0000:04:00.0: Unable to change power state from D3cold to D0, device inaccessible
+03:03:26  nvme2: Disabling device after reset failure: -19
+03:03:30  nvme5: (identical, 0000:08:00.0)
+```
+
+**No preceding I/O timeouts** — the I/O errors follow the disable, they do not
+precede it. That is Mode A by the triage table, not Mode B.
+
+**"Mode C" is therefore a POOL-LEVEL presentation, not a device-level fault:
+it is what Mode A looks like when it takes two raidz1 members instead of one.**
+With one member gone the pool degrades and ZFS marks it `REMOVED`. With two,
+the pool **SUSPENDS** — and a suspended pool cannot update its own config, so
+ZFS freezes showing both as `ONLINE` while the stale block nodes report `0B`.
+The device-level difference is *none*; the difference is how many members went.
+
+Keep the table below: it is the right thing to check to recognise the state.
+Just do not read it as a third failure mechanism.
+
+### What the kernel log actually established
+
+1. ⭐ **NOT simultaneous — 5 seconds apart** (03:03:25 → 03:03:30). A
+   **cascade**, not one event striking two drives. Either the first drop
+   destabilised the rail further, or both were marginal and crossed threshold
+   moments apart. First evidence of this and it is new.
+2. ⭐ **Both failed in their OWN established slots** — `…357` in `04:00.0`
+   (its slot for Jul 19 + Jul 22) and `…392` in `08:00.0` (its slot since the
+   Jul 6 reslot, where it failed Jul 29). **No new slot was involved.** Both
+   known-bad pairings fired within five seconds.
+3. ⚠ **Real drop time is 03:03, not 03:17.** The earlier figure came from
+   downstream barman/WAL logs. `03:03` puts this in the documented nightly
+   write-burst window alongside Jun 26 `03:03`, Jul 19 `03:09`, Jul 22 `03:03`.
+4. 🆕 **`Unable to change power state from D3cold to D0, device inaccessible`**
+   — not present in any prior record. Most plausibly a *symptom* (the device
+   lost power, so the kernel cannot wake it from D3cold) rather than runtime-PM
+   causing the drop. Not claimed either way on n=1; capture it next time.
+5. ✅ **PS2 cap verified ACTIVE on all five pool drives at failure time**
+   (`Current value:0x00000002`) — it survived the TrueNAS update. Combined with
+   the kernel's own suggestion to *"Try `nvme_core.default_ps_max_latency_us=0
+   pcie_aspm=off pcie_port_pm=off`"* — all three already applied — this is
+   further confirmation that **no config change fixes this.**
+6. ❓ **AER counters still unread** for this incident. If ever found non-zero
+   they reopen the signal-integrity hypothesis ruled out on six weeks of zeros.
+
+Both were the established repeat offenders — `…357` (Jul 19, Jul 22) and `…392`
 (Jun 26, Jul 6, Jul 29). Every prior incident took exactly one.
 
 What made it different from A and B:
