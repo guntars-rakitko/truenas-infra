@@ -162,8 +162,15 @@ Just do not read it as a third failure mechanism.
    the kernel's own suggestion to *"Try `nvme_core.default_ps_max_latency_us=0
    pcie_aspm=off pcie_port_pm=off`"* — all three already applied — this is
    further confirmation that **no config change fixes this.**
-6. ❓ **AER counters still unread** for this incident. If ever found non-zero
-   they reopen the signal-integrity hypothesis ruled out on six weeks of zeros.
+6. 🚫 **AER for this incident is UNRECOVERABLE — do not go looking.**
+   Checked post-recovery: every `aer_dev_*` and `aer_rootport_total_err_*`
+   counter on every PCI device reads **zero**. That number is real and it is
+   **worthless for this incident**: AER counters live in sysfs and **reset on
+   reboot**. The box booted 03:40:23; the drop was 03:03:25. The "all zero"
+   therefore describes ~1 h 45 m of healthy post-recovery running, not the
+   event. A textbook false clean — a real measurement of the wrong window.
+   Only [[#140]]'s capture, which snapshots `08-pcie-aer-counters.txt` *at
+   incident time*, can answer this. Next drop, not this one.
 
 Both were the established repeat offenders — `…357` (Jul 19, Jul 22) and `…392`
 (Jun 26, Jul 6, Jul 29). Every prior incident took exactly one.
@@ -350,6 +357,22 @@ Read `04-dmesg-nvme-pcie.txt` first and classify:
 | No preceding timeouts; `CSTS=0xffffffff` | **A** | Power-like. Check `PCI_STATUS` (`0x10` vs `0xffff`) and `08-pcie-aer-counters.txt`. |
 | I/O timeouts first; `CSTS=0x1` on reset | **B** | Drive firmware hang. That drive is faulty. |
 | **Any** non-zero AER counter | — | New information — revisit the ruled-out signal-integrity hypothesis. |
+
+⏱ **AER IS VOLATILE — read it from the capture, never from the live box after a
+reboot.** `aer_dev_*` and `aer_rootport_total_err_*` are sysfs counters that
+**reset to zero on every boot**, and the documented recovery for this fault is a
+**full power cycle**. So by the time you can log in, the incident's AER is gone
+and the live counters describe only the post-recovery window. Proven on
+2026-09-14: all-zero at +1 h 45 m, which says nothing about the 03:03 drop.
+`08-pcie-aer-counters.txt` in the capture directory is the only valid source.
+
+ℹ️ **And for a Mode A drop, zero AER is the EXPECTED result, not a missing
+signal.** `CSTS=0xffffffff` / `PCI_STATUS=0xffff` / `D3cold→D0 inaccessible`
+means the device is electrically *gone* — and AER reports **link** errors, so a
+vanished device has no link left to report on. Signal-integrity degradation
+would instead show as correctable/uncorrectable counts on a device still
+present. **A Mode A drop WITH non-zero AER is the surprising, hypothesis-
+reopening case** — that is the thing to watch for, not zeros.
 
 **AER baseline as of 2026-08-02: all zero.** NVMe `error_count: 0`.
 
