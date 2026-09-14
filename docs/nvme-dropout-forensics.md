@@ -242,12 +242,42 @@ One capture per incident, gated by a `.incident-active` marker that clears
 when the pool returns to healthy. It does not send mail — TrueNAS's own
 `VolumeStatus` alert does that.
 
-⚠ **BROKEN FOR SUSPENDED POOLS (proven 2026-09-14).** `D=/mnt/tank/...` is on
-the pool being diagnosed. A SUSPENDED pool blocks all I/O including this
-script's own writes, so it captured **nothing** for the one incident where the
-kernel signature mattered most. It works for Modes A/B only because those leave
-the pool DEGRADED-but-writable. **Stage to local disk, copy to `/mnt/tank`
-afterwards.**
+⚠ **WAS BROKEN FOR SUSPENDED POOLS (proven 2026-09-14) — FIXED SAME DAY.**
+`D=/mnt/tank/...` was on the pool being diagnosed. A SUSPENDED pool blocks all
+I/O **uninterruptibly**, so the unconditional `mkdir -p` at the top did not
+fail, it **hung** — and cron spawned another hung copy every minute. It
+captured **nothing** for the one incident where the kernel signature mattered
+most. It worked for Modes A/B only because those leave the pool
+DEGRADED-but-writable.
+
+✅ **Fixed:** the script now stages to **`/var/log/nvme-diag`** (boot-pool, a
+different pool from tank, ~222 G free) and flushes to `/mnt/tank` only once the
+pool is healthy, every tank touch `timeout`-guarded.
+
+⚠ **The cron command was the deeper half of the bug** — fixing the script alone
+would have been inert. It used to run:
+
+```
+mkdir -p /mnt/tank/system/nvme-diag; cp -u ... ; bash /mnt/tank/.../capture.sh
+```
+
+…so cron blocked on tank *before* the script started, and executed the script
+**from** the suspended pool. It is now entirely local:
+
+```
+mkdir -p /var/log/nvme-diag; cp -u /home/truenas_admin/nvme-drop-capture.sh \
+  /var/log/nvme-diag/capture.sh; bash /var/log/nvme-diag/capture.sh
+```
+
+⚠ **Not `/tmp`** — it is tmpfs, and the documented recovery for this fault is a
+full **power cycle**, which would destroy the capture just taken.
+
+**Canonical source is now `scripts/nvme-drop-capture.sh` in this repo** (it
+previously existed only on the NAS), with control-flow tests in
+`tests/test_nvme_capture.py`. The regression guard
+`test_unhealthy_never_touches_archive` was verified to **fail** against the
+pre-fix script — the old "SELFTEST" only checked that dmesg/nvme/aer produce
+output and could never have caught a control-flow bug.
 
 ✅ **TrueNAS alerting itself worked** — `Pool tank state is SUSPENDED: One or
 more devices are faulted in response to IO failures` fired and reached the
