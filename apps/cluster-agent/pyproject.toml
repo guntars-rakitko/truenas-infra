@@ -16,7 +16,7 @@ description = "LLM-driven SRE assistant for homelab K8s clusters"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.137.1",
-    "uvicorn[standard]>=0.49.0",
+    "uvicorn[standard]>=0.53.0",
     "apscheduler>=3.11.2",
     "prometheus_client>=0.25.0",
     "httpx>=0.28.1",
