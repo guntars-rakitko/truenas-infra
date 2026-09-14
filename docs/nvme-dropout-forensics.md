@@ -25,6 +25,15 @@ to predict the next incident.
    still electrically alive.
 4. **The remaining fault (slots 04/07) is consistent with the community's
    3.3 V rail theory** but is not independently proven on this unit.
+5. ⭐ **2026-09-14 changed the picture twice.** First **double** drop (both
+   repeat offenders at once) and a new failure mode — devices stayed
+   *enumerated at `0B`*, so ZFS held them `ONLINE` and **SUSPENDED the pool**
+   instead of degrading it. And it came after **47 days clean** (p = 0.0034 vs
+   baseline), 16 h after a TrueNAS 25.10.3.1 → 25.10.7 update. Interval
+   improved; severity got worse.
+6. **Recovery doctrine confirmed under fire:** full power-off, ~30 s, power on
+   → pool `ONLINE`, `No known data errors`, no resilver. A warm reboot would
+   not have cleared it.
 
 ---
 
@@ -40,6 +49,7 @@ address (stable per physical slot) or the drive serial. Never to `nvmeN`.
 | 2026-07-19 03:09 | 04:00.0 | PM981a `…357` | `CSTS=0xffffffff PCI_STATUS=0xffff` | A |
 | 2026-07-22 03:03 | 04:00.0 | PM981a `…357` | `CSTS=0xffffffff PCI_STATUS=0xffff` | A |
 | 2026-07-29 02:07→02:10 | 08:00.0 | PM9A1 `…392` | 51 I/O timeouts → `Device not ready; aborting reset, CSTS=0x1` | **B** |
+| **2026-09-14 ~03:02→03:17** | **two at once** | **PM981a `…357` AND PM9A1 `…392`** | **not captured — see below** | **C (new)** |
 
 `…392` was physically reslotted 07 → 08 on 2026-07-06. It failed in **both**
 slots.
@@ -97,6 +107,72 @@ Characteristics:
 cannot answer register reads. A drive that responds with `CSTS=0x1` is
 powered, on the bus, and internally hung. This is a controller/firmware
 fault in the drive itself.
+
+---
+
+## Mode C — double drop, pool SUSPENDED (1 event, 2026-09-14)
+
+**New mode, and the first incident to take TWO drives at once.** Both were the
+established repeat offenders — `…357` (previously Jul 19, Jul 22) and `…392`
+(Jun 26, Jul 6, Jul 29). Every prior incident took exactly one.
+
+What made it different from A and B:
+
+| | Mode A / B | **Mode C** |
+|---|---|---|
+| Device in `/sys` | vanishes | **still enumerated** |
+| `lsblk` size | gone | **`0B`** |
+| ZFS member state | `REMOVED` / `FAULTED` | **`ONLINE`** |
+| Pool state | `DEGRADED` | **`SUSPENDED`** |
+
+Because both devices stayed *enumerated*, ZFS never marked them removed — it
+kept them `ONLINE` while every I/O failed. With two of five raidz1 members
+erroring, ZFS suspended the whole pool rather than continue.
+
+Observed counters at the time:
+
+```
+raidz1-0                                ONLINE     163     6     0
+  0954823a-…  (…357, then nvme2n1)      ONLINE   11.0K 1.62K     0
+  93587a1f-…  (…392, then nvme5n1)      ONLINE   10.9K 1.54K     0
+errors: 479 data errors
+```
+
+⭐ **`CKSUM = 0` on both drives was the load-bearing diagnostic.** Read/write
+errors mean *the device did not respond*; checksum errors would mean *it
+returned corrupted data*. Tens of thousands of the former and zero of the
+latter says the NAND was never touched — this was transport failure, not media
+failure. That single column is what made recovery predictable.
+
+And it was right: after the power cycle the pool imported `ONLINE` with
+**`errors: No known data errors`**. All 479 were transient I/O failures, not
+corruption. **No resilver was needed.** While suspended ZFS could not even list
+them (`List of errors unavailable: pool I/O is currently suspended`) — so a
+large error count on a SUSPENDED pool should not be read as data loss.
+
+### ⚠ The diagnostic capture did NOT fire, by construction
+
+`capture.sh` writes to `D=/mnt/tank/system/nvme-diag` — **on the pool that
+suspends.** When the pool is SUSPENDED all I/O blocks, including the capture's
+own `mkdir`. No incident directory was created and **no kernel signature was
+recorded**, which is why the mode column above says "not captured" and why this
+event cannot be classified A vs B.
+
+The capture worked for Modes A and B because those leave the pool `DEGRADED`
+and writable. It cannot work for the one case that matters most.
+
+**Fix: stage captures to local disk** (the boot pool / `/var/log` / tmpfs) and
+copy to `/mnt/tank` only once the pool is healthy again.
+
+### Blast radius (first time measured)
+
+MinIO accepted TCP on `:9000` but never answered — blocked on dead storage, so
+it read as a hang rather than an outage. Downstream: CNPG WAL archiving on
+`giks` went `ContinuousArchiving=False` (stuck retrying one segment, ~5 min per
+timeout), the CNPG retention job failed, and the `etcd-snapshot-dev` CronJob hit
+`BackoffLimitExceeded`. ⚠ `w1-db` reported `ContinuousArchiving=True`
+throughout — **a stale condition from before the outage**, not health. Postgres
+itself was never at risk: `pg_wal` reached 3.8 G against 121 G free.
 
 ---
 
@@ -166,6 +242,18 @@ One capture per incident, gated by a `.incident-active` marker that clears
 when the pool returns to healthy. It does not send mail — TrueNAS's own
 `VolumeStatus` alert does that.
 
+⚠ **BROKEN FOR SUSPENDED POOLS (proven 2026-09-14).** `D=/mnt/tank/...` is on
+the pool being diagnosed. A SUSPENDED pool blocks all I/O including this
+script's own writes, so it captured **nothing** for the one incident where the
+kernel signature mattered most. It works for Modes A/B only because those leave
+the pool DEGRADED-but-writable. **Stage to local disk, copy to `/mnt/tank`
+afterwards.**
+
+✅ **TrueNAS alerting itself worked** — `Pool tank state is SUSPENDED: One or
+more devices are faulted in response to IO failures` fired and reached the
+operator. Earlier notes in this file claiming alerting was broken refer to the
+Jun/Jul incidents; that is no longer true.
+
 Script lives at `/mnt/tank/system/nvme-diag/capture.sh`, staged from
 `/home/truenas_admin/nvme-drop-capture.sh`. (`cronjob.create` caps the
 command field at 1024 characters, and `/mnt/tank/system/*` is not writable by
@@ -186,6 +274,23 @@ Read `04-dmesg-nvme-pcie.txt` first and classify:
 ---
 
 ## Evidence bar — how long is long enough
+
+⭐ **UPDATE 2026-09-14 — the bar was CLEARED, and then it failed anyway.**
+Jul 29 → Sep 14 is **47 days clean**, against a baseline mean of 8.25 d:
+P(gap ≥ 47 | no change) = exp(−47/8.25) = **0.0034**. That is a 1-in-300 event
+under the null, so the failure *rate* genuinely changed after Jul 29 — this is
+the first real evidence any mitigation did anything. **But the fault did not go
+away, and when it returned it was WORSE** (two drives, pool SUSPENDED, vs one
+drive DEGRADED). Read it as: interval improved, severity did not. n = 1 on both
+claims.
+
+⚠ **Confound — a TrueNAS update landed 16.4 h before.** Boot environment
+`25.10.7` was created **2026-09-13 10:54 UTC** (previous BE `25.10.3.1`,
+2026-05-15), and the pool failed **2026-09-14 03:17 UTC**. A four-month version
+jump changes the kernel and therefore the NVMe driver and its power management.
+Suggestive, not proven, n = 1 — but it means the 47-day gap and the failure are
+**not** cleanly attributable to the same regime. Do not average this interval in
+with the others without noting the version change.
 
 Inter-incident gaps: **10, 13, 3, 7 days** (n = 4, mean ≈ 8.25 d). A 95 %
 confidence interval on that mean is roughly **[3.8, 30] days** — the MTBF is
