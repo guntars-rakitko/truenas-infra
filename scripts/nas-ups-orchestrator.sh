@@ -10,7 +10,8 @@
 # than finishing).
 #
 # Sequence (operator's desired flow):
-#   1) talosctl shutdown --force the 6 Talos nodes (both clusters, in parallel).
+#   1) talosctl shutdown --force EVERY node in both clusters, all in parallel
+#      (one invocation per node — see the note at the loop for why).
 #      --force skips ONLY Talos's API-dependent pod *drain* (CordonAndDrainNode),
 #      which burns a hardcoded 5-min DrainTimeout once etcd quorum is lost on a
 #      whole-rack outage. StopAllPods (graceful CRI SIGTERM + 30s ceiling) + fs
@@ -28,18 +29,37 @@
 #      required to trigger it. Dropping --force would re-add ~5 min per node to a
 #      battery-constrained shutdown. Do NOT remove it.
 #
+#      ⚠ ON MS-A2 THE CONCLUSION HOLDS BUT THE REASONS NARROW — do not re-derive
+#      it from the list above and conclude --force is unnecessary. Longhorn is
+#      dropped, so the three `instance-manager-*` PDBs vanish; and the msa2
+#      per-cluster overlays `$patch: delete` the three repo-owned PDBs (loki,
+#      pocket-id, coredns) precisely because minAvailable:1 on a 1-replica
+#      workload blocks EVERY eviction at n=1. What REMAINS is chart-level PDBs
+#      (cert-manager, metrics-server, traefik x3, kube-prometheus-stack x3) —
+#      open item 6 in `clusters/msa2-{prd,dev}/infrastructure.yaml`, still in
+#      place. Those alone re-create the hang. `talos-os/bootstrap.sh` keeps
+#      `--disable-eviction` on `kubectl drain` for the same reason.
+#
 #      Talos v1.13.7 verified: `shutdown --force` still exists with unchanged
 #      semantics ("force a node to shutdown without a cordon/drain"). Note this
 #      is a DIFFERENT command from `talosctl upgrade` (whose --preserve flag was
 #      DEPRECATED, not removed, in v1.13) — neither affects this path.
 #
 #      ⚠ $TCTL below is a SEPARATELY STAGED binary and does NOT track the nodes.
-#      It is v1.13.2. Verified working 2026-07-29: that client + the os:operator
-#      cred authenticates to a v1.13.7 node and returns cleanly (same-minor).
-#      All 6 nodes are on v1.13.7 as of 2026-07-29 (dev + prd both rolled).
 #      RE-VERIFY AFTER ANY NODE UPGRADE — nothing else would surface a break
 #      until a real power outage:
-#        /mnt/tank/system/talos/talosctl --talosconfig <cfg> -n <node> version
+#        sudo /mnt/tank/system/talos/talosctl --talosconfig <cfg> -n <node> version
+#
+#      ⚠ SKEW AS OF 2026-09-22: the staged binary is **v1.13.2** (mtime Jun 1) and
+#      both clusters are on **v1.14.0** (rolled 2026-09-19) — a FULL MINOR apart.
+#      The only pairing ever verified here was same-minor (v1.13.2 client against a
+#      v1.13.7 node, 2026-07-29). This is UNVERIFIED, not known-broken: re-stage via
+#      setup-talos-shutdown-orchestrator.sh (TALOSCTL_VERSION now defaults to
+#      v1.14.0) and run the version check above.
+#      ⚠ The credentials are NOT the problem — read from Doppler 2026-09-22 they are
+#      valid to May 2036. An earlier suspicion that they had expired came from the
+#      setup script documenting `--crt-ttl 720h`, which does not match what was
+#      actually minted; that comment is now corrected.
 #   2) poll each node's apid (:50000) until all are down (or a timeout backstop
 #      so the NAS never hangs forever).
 #   3) halt the NAS LAST → /sbin/shutdown -P now. That fires the #57 Init/Shutdown
@@ -67,9 +87,24 @@ DEV_CFG=/mnt/tank/system/talos/dev-shutdown.talosconfig
 PRD_CFG=/mnt/tank/system/talos/prd-shutdown.talosconfig
 LOG=/mnt/tank/system/nut/last-node-shutdown.log
 
-DEV_NODES="10.10.5.14,10.10.5.15,10.10.5.16"
-PRD_NODES="10.10.5.11,10.10.5.12,10.10.5.13"
-ALL_NODES="10.10.5.14 10.10.5.15 10.10.5.16 10.10.5.11 10.10.5.12 10.10.5.13"
+# ══ NODE INVENTORY — THE ONLY THING THAT CHANGES AT CUTOVER ════════════════
+# Space-separated. ⚠ ALL_NODES is DERIVED, not maintained by hand: the previous
+# version listed all six IPs a second time, so editing one list and not the other
+# would have left the poll watching nodes the shutdown never targeted (or worse,
+# reported "all down" while a node was still up).
+#
+# ⚠ THIS MUST SURVIVE A MIXED TOPOLOGY, NOT JUST THE END STATE. The audit
+# recommends destroying PRD first and DEV last, so there is a window where PRD is
+# one MS-A2 and DEV is still three Q170S1 nodes. Nothing below hardcodes a count.
+#
+# MS-A2 end state (each box takes its cluster's FIRST node IP):
+#   DEV_NODES="10.10.5.14"
+#   PRD_NODES="10.10.5.11"
+DEV_NODES="10.10.5.14 10.10.5.15 10.10.5.16"
+PRD_NODES="10.10.5.11 10.10.5.12 10.10.5.13"
+
+ALL_NODES="$DEV_NODES $PRD_NODES"
+NODE_COUNT=$(set -- $ALL_NODES; echo $#)
 
 TIMEOUT=300   # 5 min poll backstop so the NAS never hangs forever. Real drill
               # 2026-06-01: talosctl --force returned in 187s with nodes already
@@ -96,14 +131,34 @@ if [ ! -x "$TCTL" ]; then
   exit 0
 fi
 
-# 1) fire --force shutdown at both clusters in parallel
-"$TCTL" --talosconfig "$DEV_CFG" shutdown --force --nodes "$DEV_NODES" --endpoints "$DEV_NODES" >>"$LOG" 2>&1 &
-dev_pid=$!
-"$TCTL" --talosconfig "$PRD_CFG" shutdown --force --nodes "$PRD_NODES" --endpoints "$PRD_NODES" >>"$LOG" 2>&1 &
-prd_pid=$!
-wait "$dev_pid"; log "dev talosctl shutdown --force rc=$?"
-wait "$prd_pid"; log "prd talosctl shutdown --force rc=$?"
-log "shutdown --force delivered to all 6 nodes; polling apid until down."
+# 1) fire --force shutdown at every node, all in parallel.
+#
+# ⚠ ONE INVOCATION PER NODE, NOT ONE PER CLUSTER — changed 2026-09-22. The previous
+# version passed a comma-separated list (`--nodes .11,.12,.13`) as a single call.
+# That is fine when every listed node exists, but during the MS-A2 transition a
+# stale list will contain IPs of nodes that have been physically removed, and
+# talosctl's behaviour when part of a multi-node target is unreachable was never
+# verified here. If it aborts rather than proceeding, a stale list would mean the
+# LIVE node never receives the shutdown — silently, on battery.
+#
+# Per-node calls make that impossible: an unreachable IP costs exactly one failed
+# background job and one rc= line in the log. It also makes the log say WHICH node
+# failed instead of which cluster.
+pids=()
+for ip in $PRD_NODES; do
+  "$TCTL" --talosconfig "$PRD_CFG" shutdown --force --nodes "$ip" --endpoints "$ip" >>"$LOG" 2>&1 &
+  pids+=("$!|prd|$ip")
+done
+for ip in $DEV_NODES; do
+  "$TCTL" --talosconfig "$DEV_CFG" shutdown --force --nodes "$ip" --endpoints "$ip" >>"$LOG" 2>&1 &
+  pids+=("$!|dev|$ip")
+done
+
+for entry in "${pids[@]}"; do
+  pid=${entry%%|*}; rest=${entry#*|}; cl=${rest%%|*}; ip=${rest#*|}
+  wait "$pid"; log "$cl $ip shutdown --force rc=$?"
+done
+log "shutdown --force delivered to all ${NODE_COUNT} node(s); polling apid until down."
 
 # 2) poll until all nodes stop answering apid, or the timeout backstop
 start=$(date +%s)
@@ -111,9 +166,9 @@ while :; do
   up=0
   for ip in $ALL_NODES; do probe "$ip" && up=$((up+1)); done
   el=$(( $(date +%s) - start ))
-  log "  [${el}s] nodes still answering apid: ${up}/6"
+  log "  [${el}s] nodes still answering apid: ${up}/${NODE_COUNT}"
   [ "$up" -eq 0 ] && { log "all nodes down at ${el}s"; break; }
-  [ "$el" -ge "$TIMEOUT" ] && { log "TIMEOUT ${TIMEOUT}s reached (${up}/6 still up) — halting NAS anyway"; break; }
+  [ "$el" -ge "$TIMEOUT" ] && { log "TIMEOUT ${TIMEOUT}s reached (${up}/${NODE_COUNT} still up) — halting NAS anyway"; break; }
   sleep "$POLL"
 done
 

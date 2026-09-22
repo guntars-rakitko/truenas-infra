@@ -925,7 +925,8 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │    min/max, frequency, temperature).
   ├─ upsmon (master mode) — on LB runs SHUTDOWNCMD = the Path-B orchestrator
   │    `/mnt/tank/system/talos/nas-ups-orchestrator.sh`:
-  │      talosctl shutdown --force × 6 nodes → poll apid 0/6 → halt NAS LAST
+  │      talosctl shutdown --force × every node (one call PER NODE) →
+  │      poll apid until 0/N → halt NAS LAST
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
@@ -948,17 +949,44 @@ Loki / Pocket-ID, the CNPG `giks-primary`, and all three Longhorn
 `instance-manager-*`). So the drain hangs to timeout **even on a fully healthy
 cluster with quorum intact** — quorum loss is not required. Removing `--force`
 would add ~5 min per node to a battery-constrained shutdown. Verified on Talos
-v1.13.7: `shutdown --force` still exists, semantics unchanged. (Distinct from
+v1.13.7: `shutdown --force` still exists, semantics unchanged.
+
+⚠ **On the MS-A2 single-node clusters the conclusion HOLDS but the reasons
+NARROW — do not re-derive it from the list above and conclude `--force` is
+unnecessary.** Longhorn is dropped, so the three `instance-manager-*` PDBs
+vanish, and the msa2 overlays `$patch: delete` the three repo-owned PDBs (loki,
+pocket-id, coredns) precisely because `minAvailable: 1` on a 1-replica workload
+blocks **every** eviction at n=1. What remains is the **chart-level** PDBs
+(cert-manager, metrics-server, traefik ×3, kube-prometheus-stack ×3) — open item
+6 in `kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml`, still in
+place. Those alone re-create the hang. (Distinct from
 `talosctl upgrade`, whose `--preserve` flag was **deprecated — not removed** —
 in v1.13; it still parses and exits 0 with a warning. Unrelated to this path.)
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
-every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned
-binary (v1.13.2 as of 2026-07-29, while all 6 nodes moved to v1.13.7). Same-minor
-compatibility was **empirically confirmed** — that client plus the real
-`os:operator` credential authenticates to a v1.13.7 node and returns cleanly —
-but a future major/minor gap would break the UPS shutdown path **silently**,
-surfacing only during a real outage. One-line check after any node upgrade:
+every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary.
+Same-minor compatibility was **empirically confirmed** on 2026-07-29 (a v1.13.2
+client plus the real `os:operator` credential authenticating to a v1.13.7 node),
+but a major/minor gap would break the UPS shutdown path **silently**, surfacing
+only during a real outage.
+
+> ⚠ **THERE IS A FULL-MINOR GAP RIGHT NOW (measured 2026-09-22).** The staged
+> binary is still **v1.13.2** (mtime Jun 1); both clusters rolled to **v1.14.0**
+> on 2026-09-19. This is UNVERIFIED, not known-broken — the only pairing ever
+> tested here was same-minor. Re-stage with
+> `setup-talos-shutdown-orchestrator.sh` (its `TALOSCTL_VERSION` default is now
+> v1.14.0) and run the check below.
+>
+> ✅ **The CREDENTIALS are fine** — read from Doppler 2026-09-22 they are valid
+> `Jun 1 2026 → May 29 2036`. A suspicion that they had expired came from
+> `setup-talos-shutdown-orchestrator.sh` documenting `--crt-ttl 720h` (30 days),
+> which is NOT what was actually minted. ⚠ That comment was a landmine — the
+> MS-A2 rebuild mints a new PKI and forces a re-issue, and anyone following it
+> would have created a 30-day credential with **no rotation and no alert**
+> (verified: nothing in this repo rotates it, no kube-infra `prometheus-rules-*`
+> watches it). Corrected 2026-09-22 to 87600h, with the reasoning written down.
+
+One-line check after any node upgrade:
 
 ```sh
 /mnt/tank/system/talos/talosctl --talosconfig /mnt/tank/system/talos/dev-shutdown.talosconfig \
