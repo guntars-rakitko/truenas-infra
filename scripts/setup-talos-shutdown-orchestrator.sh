@@ -19,8 +19,35 @@
 #   cd ~/github/kube-infra/talos-os
 #   for cl in dev prd; do
 #     talosctl --talosconfig generated/$cl/talosconfig --nodes <one-node-ip> \
-#       config new --roles os:operator --crt-ttl 720h generated/$cl/nas-shutdown.talosconfig
+#       config new --roles os:operator --crt-ttl 87600h generated/$cl/nas-shutdown.talosconfig
 #   done
+#
+# ⚠ THE TTL ABOVE WAS `720h` (30 DAYS) UNTIL 2026-09-22, AND THAT WAS A LANDMINE.
+# The credentials actually deployed do not match it: read from Doppler on
+# 2026-09-22 they are `notBefore=Jun 1 2026 / notAfter=May 29 2036` — about TEN
+# YEARS. So whoever minted them did not follow this line, and the line sat here
+# waiting for the next person who would.
+#
+# Why that mattered: nothing rotates this credential (no scheduler, no job — unlike
+# `render-cluster-agent-kubeconfigs.sh`, which prints remaining lifetime) and nothing
+# ALERTS on it (verified: no `prometheus-rules-*.yaml` in kube-infra references it).
+# A 30-day credential minted from this comment would therefore have died silently
+# after a month, and the failure surfaces ONLY during a real power cut — the one
+# moment it cannot be discovered safely.
+#
+# ⚠ THE NEXT RE-ISSUE IS ALREADY SCHEDULED: the MS-A2 greenfield rebuild mints a new
+# PKI, which invalidates both of these configs. That is the moment this comment would
+# have been followed. It now says 87600h, matching what is actually deployed.
+#
+# The long TTL is DELIBERATE, and the reasoning is the opposite of the cluster-agent's
+# (which moved to 1 year after 90 days lapsed unnoticed): this is a BREAK-GLASS
+# credential whose entire job is to work during an unattended power failure. An
+# expiring credential on that path converts a survivable outage into data loss.
+# The blast radius is bounded by the role, not by time — `os:operator` can
+# shutdown/reboot/etcd-snapshot/read-logs and CANNOT reset, wipe, upgrade, read
+# secrets/PKI/config, apply config or mint creds. Configs are 0600 root-owned and
+# apid is firewalled to the NAS IP.
+# ⚠ If you ever shorten it, add an expiry alert IN THE SAME CHANGE.
 #   doppler secrets set TALOS_NAS_SHUTDOWN_CONFIG_DEV="$(base64 < generated/dev/nas-shutdown.talosconfig)" \
 #     --project infrastructure --config ops
 #   doppler secrets set TALOS_NAS_SHUTDOWN_CONFIG_PRD="$(base64 < generated/prd/nas-shutdown.talosconfig)" \
@@ -32,12 +59,23 @@
 #   TALOS_NAS_SHUTDOWN_CONFIG_DEV   base64 of the dev os:operator talosconfig
 #   TALOS_NAS_SHUTDOWN_CONFIG_PRD   base64 of the prd os:operator talosconfig
 #
-# Pin TALOSCTL_VERSION to the RUNNING cluster version (v1.13.2 today — the
-# cluster rolled back off v1.13.3; see kube-infra CLAUDE.md). One patch of
-# client/server skew is fine for the Shutdown RPC, but match it to be safe.
+# Pin TALOSCTL_VERSION to the RUNNING cluster version.
+#
+# ⚠ WAS v1.13.2, PINNED TO A CLUSTER STATE THAT NO LONGER EXISTS. That pin dated
+# from a rollback off v1.13.3; both clusters have since rolled to **v1.14.0**
+# (2026-09-19), leaving the staged binary a FULL MINOR behind. The orchestrator's
+# own header only ever claimed a SAME-MINOR pairing was verified, and it warns that
+# "nothing else would surface a break until a real power outage".
+#
+# ⚠ RE-STAGE THIS BINARY AFTER EVERY CLUSTER UPGRADE. Re-running this script is the
+# mechanism; nothing does it automatically and nothing alerts on the skew. Verify
+# read-only afterwards (needs root on the NAS — the configs are 0600):
+#   sudo /mnt/tank/system/talos/talosctl \
+#     --talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig \
+#     -n <node-ip> version
 set -euo pipefail
 
-TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.13.2}"
+TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.0}"   # ⚠ must match the RUNNING nodes — see note above
 
 : "${TRUENAS_HOST:?set TRUENAS_HOST (e.g. nas.w1.lv)}"
 : "${TRUENAS_API_KEY:?set TRUENAS_API_KEY from Doppler infrastructure/ops}"
