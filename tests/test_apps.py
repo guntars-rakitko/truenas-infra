@@ -57,7 +57,7 @@ def fake_clock(monkeypatch):
     return t
 
 
-def _pool_cli(status_fn):
+def _pool_cli(status_fn, *, pool=None):
     """cli double whose docker.status behaviour is supplied by `status_fn`.
 
     A callable, not a list: the wait loop polls an unbounded number of times,
@@ -65,7 +65,7 @@ def _pool_cli(status_fn):
     treats as a transient error, silently turning a status test into an error
     test.
     """
-    live = {"id": 1, "pool": None, "dataset": None}
+    live = {"id": 1, "pool": pool, "dataset": None}
     calls: list[str] = []
 
     def _respond(method, *args, **kwargs):
@@ -102,11 +102,54 @@ def test_ensure_docker_pool_raises_when_daemon_never_starts(fake_clock) -> None:
     msg = str(exc.value)
     assert "did not reach RUNNING within 60" in msg
     assert "'PENDING'" in msg, "must name the status it actually saw"
-    assert "re-run" in msg, (
-        "must warn that the pool is already persisted, so a re-run takes the "
-        "noop path and never waits again"
-    )
+    assert "of setting pool 'tank'" in msg, "must say WE set the pool"
     assert calls.count("docker.status") == 30, "60s at sleep(2) = 30 polls"
+
+
+def test_ensure_docker_pool_noop_path_raises_when_daemon_down(fake_clock) -> None:
+    """A correct pool with a dead daemon must NOT report a green noop.
+
+    `docker.update` persists the pool BEFORE the wait, so a run that set the
+    pool and then timed out leaves the config correct and the daemon dead —
+    and every later run lands on the noop path. While that path returned an
+    unconditional `Diff.noop`, the operator's instinctive re-run reported
+    success while app.create kept failing: a second false-clean sitting right
+    behind the timeout one.
+    """
+    from truenas_infra.modules.apps import ensure_docker_pool
+
+    cli, calls = _pool_cli(lambda: {"status": "STOPPED"}, pool="tank")
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_docker_pool(cli, pool_name="tank", apply=True, wait_s=60)
+
+    msg = str(exc.value)
+    assert "already configured" in msg and "nothing here disturbed it" in msg, (
+        "must NOT claim we set the pool — on this path we changed nothing, and "
+        "blaming our own write would send the operator down the wrong path"
+    )
+    assert "'STOPPED'" in msg
+    assert "docker.update" not in calls, "the noop path must never write"
+
+
+def test_ensure_docker_pool_noop_path_skips_check_on_dry_run() -> None:
+    """Dry-run must stay read-only and fast — no daemon wait, no failure.
+
+    ⚠ Deliberate asymmetry, not an oversight. `ensure_custom_app` never calls
+    app.create without `apply`, so the daemon is not a precondition for
+    anything a dry-run does. Making an inspection command block for wait_s and
+    then hard-fail on state it was only asked to report would be a worse bug
+    than the one being fixed. If this ever starts waiting, the suite hangs for
+    60s per dry-run test — which is exactly how this was noticed.
+    """
+    from truenas_infra.modules.apps import ensure_docker_pool
+
+    cli, calls = _pool_cli(lambda: {"status": "STOPPED"}, pool="tank")
+
+    diff = ensure_docker_pool(cli, pool_name="tank", apply=False, wait_s=60)
+
+    assert diff.changed is False
+    assert calls == ["docker.config"], "dry-run must not poll the daemon"
 
 
 def test_ensure_docker_pool_timeout_surfaces_last_error(fake_clock) -> None:
@@ -161,9 +204,14 @@ def test_ensure_docker_pool_noop_when_match() -> None:
     from truenas_infra.modules.apps import ensure_docker_pool
 
     live = {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"}
-    cli = _mk_cli([live])
+    # ⚠ The status response is required even though NOTHING changes. A correct
+    # pool does not imply a live daemon, so the noop path verifies too.
+    cli = _mk_cli([live, {"status": "RUNNING"}])
     diff = ensure_docker_pool(cli, pool_name="tank", apply=True)
     assert diff.changed is False
+    assert [c.args[0] for c in cli.call.call_args_list] == [
+        "docker.config", "docker.status",
+    ], "noop must still confirm the daemon — a green re-run has to mean something"
 
 
 # ─── load_apps_config ────────────────────────────────────────────────────────
@@ -490,6 +538,7 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path, shipped) -> None:
     cfg_path = _apps_yaml(tmp_path, "wiki", "traefik")
     cli = _mk_cli([
         {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},  # docker.config
+        {"status": "RUNNING"},                                  # docker.status
         [], {"id": "wiki"},                                     # app.query + app.create
         [], {"id": "traefik"},                                  # app.query + app.create
     ])
@@ -500,7 +549,7 @@ def test_run_configures_docker_pool_and_apps(tmp_path: Path, shipped) -> None:
     assert rc == 0
     names = [c.args[0] for c in cli.call.call_args_list]
     assert names == [
-        "docker.config",
+        "docker.config", "docker.status",
         "app.query", "app.create",
         "app.query", "app.create",
     ]
@@ -525,6 +574,7 @@ def test_run_skips_config_upload_for_app_absent_from_apps_yaml(
     cfg_path = _apps_yaml(tmp_path, "wiki")
     cli = _mk_cli([
         {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},
+        {"status": "RUNNING"},
         [], {"id": "wiki"},
     ])
 
@@ -551,6 +601,7 @@ def test_run_ships_tls_rotate_even_though_no_tls_app_exists(
     cfg_path = _apps_yaml(tmp_path, "wiki")
     cli = _mk_cli([
         {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},
+        {"status": "RUNNING"},
         [], {"id": "wiki"},
     ])
 
