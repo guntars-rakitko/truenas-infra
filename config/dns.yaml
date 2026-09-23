@@ -1,3 +1,10 @@
+# ⚠ `traefik-nas.w1.lv` REMOVED 2026-09-23 — it was STALE, not missing.
+# Every Traefik dashboard in the homelab was removed 2026-09-13; the router's
+# DNS was updated then, this file was not. The verify matrix has therefore been
+# reporting a permanent false failure for it ever since. `--api.dashboard=true`
+# is still set in the charts but nothing routes to it.
+# ⚠ `pxe.w1.lv` removed in the same change (PXE retired entirely) — it had a DNS
+# record and NO Traefik route, so it never resolved to anything useful either.
 # Declarative internal DNS records, applied to the MikroTik router.
 #
 # ⚠️  WIKI MIRROR: Adding/removing a record here ALSO requires updating:
@@ -27,35 +34,15 @@
 
 records:
   # ─── NAS mgmt plane (via Traefik) ───────────────────────────────────────
-  - name: mc.w1.lv
-    address: 10.10.5.20
-    comment: MeshCentral UI (via Traefik)
-  - name: pxe.w1.lv
-    address: 10.10.5.20
-    comment: Homelab PXE (homelab-pxe) HTTP assets (via Traefik)
   - name: minio-prd.w1.lv
     address: 10.10.5.20
     comment: MinIO prd console (via Traefik)
   - name: minio-dev.w1.lv
     address: 10.10.5.20
     comment: MinIO dev console (via Traefik)
-  - name: traefik-nas.w1.lv
-    address: 10.10.5.20
-    comment: NAS Traefik dashboard (distinct from kube-infra traefik-{prd,dev})
   - name: wiki.w1.lv
     address: 10.10.5.20
     comment: Internal wiki (MkDocs via Traefik → nginx on 10.10.5.10:8088)
-  - name: home.w1.lv
-    address: 10.10.5.20
-    comment: Homepage dashboard (via Traefik → 10.10.5.10:3001)
-  - name: amtctl.w1.lv
-    address: 10.10.5.20
-    comment: AMT power control dashboard (via Traefik → 10.10.5.10:8000)
-  - name: stress.w1.lv
-    address: 10.10.5.20
-    comment: hw-validation JSON report viewer (via Traefik → 10.10.5.10:8010)
-
-  # ─── NAS infra plane (direct) ───────────────────────────────────────────
   - name: nas.w1.lv
     address: 10.10.5.10
     comment: TrueNAS UI / API (direct, bootstrap path)

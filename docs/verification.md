@@ -17,7 +17,7 @@ serving everything it should, and nothing it shouldn't.
 
 | What | Command | Expected |
 |---|---|---|
-| Pool healthy | `ssh admin@10.10.5.10 zpool status tank` | `ONLINE`, 6 disks |
+| Pool healthy | `ssh admin@10.10.5.10 zpool status tank` | `ONLINE`, **3 disks** — rebuilt 5-wide → 3-wide raidz1 on 2026-09-23 |
 | All datasets present | `ssh admin@10.10.5.10 zfs list -r tank` | all 13 datasets |
 | SMART schedule | `midclt call smart.test.query` | 6 tasks, 1/disk |
 | Scrub schedule | `midclt call pool.scrub.query` | 1 task, weekly |
