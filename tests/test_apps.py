@@ -22,13 +22,22 @@ def test_ensure_docker_pool_sets_when_unset() -> None:
     from truenas_infra.modules.apps import ensure_docker_pool
 
     live = {"id": 1, "pool": None, "dataset": None}
-    cli = _mk_cli([live, {**live, "pool": "tank"}])
+    # ⚠ The third response is the daemon poll, and it is NOT optional. On
+    # apply, ensure_docker_pool polls `docker.status` until RUNNING, and its
+    # loop swallows every exception — including the StopIteration a short
+    # side-effect list raises. Without a RUNNING response the loop spun the
+    # full wait_s at time.sleep(2): this one test cost 60s of every suite run
+    # and asserted nothing about the wait. Feeding it exercises the real path.
+    cli = _mk_cli([live, {**live, "pool": "tank"}, {"status": "RUNNING"}])
 
     diff = ensure_docker_pool(cli, pool_name="tank", apply=True)
 
     assert diff.changed is True
     update = next(c for c in cli.call.call_args_list if c.args[0] == "docker.update")
     assert update.args[1]["pool"] == "tank"
+    assert [c.args[0] for c in cli.call.call_args_list] == [
+        "docker.config", "docker.update", "docker.status",
+    ], "must poll the daemon before returning — app.create fails without it"
 
 
 def test_ensure_docker_pool_noop_when_match() -> None:
@@ -310,136 +319,127 @@ def test_ensure_cronjob_updates_when_command_differs() -> None:
     assert update.args[2]["command"] == "/new/command"
 
 
-def test_run_configures_docker_pool_and_apps(tmp_path: Path) -> None:
+def _apps_yaml(tmp_path: Path, *names: str) -> Path:
+    """Write an apps.yaml with `names` enabled, each with a trivial compose."""
+    entries = []
+    for n in names:
+        d = tmp_path / "apps" / n
+        d.mkdir(parents=True, exist_ok=True)
+        compose = d / "docker-compose.yaml"
+        compose.write_text(f"services:\n  {n}:\n    image: alpine:3.22\n")
+        entries.append(
+            f"  - name: {n}\n"
+            f"    enabled: true\n"
+            f"    compose: {compose}\n"
+            f"    bind_ip: 10.10.5.10\n"
+        )
+    cfg = tmp_path / "apps.yaml"
+    cfg.write_text("apps:\n" + "".join(entries))
+    return cfg
+
+
+@pytest.fixture
+def shipped(monkeypatch):
+    """Record which file-shipping helpers run(), instead of executing them.
+
+    ⚠ These helpers build an `upload_file(...)` closure from
+    `ctx.config.truenas_host`, so leaving them real makes the test POST to
+    whatever that resolves to. The previous version of this test set the host
+    to the LIVE NAS (10.10.5.10) and relied on every file size-matching a
+    hand-maintained table to avoid an upload — a fixture that had to be
+    updated whenever any shipped file changed size, and which the 2026-09-13
+    content-verification change defeated anyway (a size match now triggers a
+    read). Patching is not a shortcut here; it is what makes the test about
+    run()'s DISPATCH rather than about file sizes on disk.
+    """
+    seen: list[str] = []
+    for name in (
+        "_ensure_wiki_config_via_ctx",
+        "_ensure_cluster_agent_config_via_ctx",
+        "_ensure_tls_rotate_via_ctx",
+        "_ensure_traefik_routes_via_ctx",
+    ):
+        monkeypatch.setattr(
+            "truenas_infra.modules.apps." + name,
+            (lambda n: lambda cli, ctx, log: seen.append(n))(name),
+        )
+    return seen
+
+
+def test_run_configures_docker_pool_and_apps(tmp_path: Path, shipped) -> None:
+    """Happy path: pool configured, then every enabled app created."""
     from truenas_infra.modules.apps import run
 
-    # Minimal compose
-    (tmp_path / "apps").mkdir()
-    (tmp_path / "apps" / "pxe").mkdir()
-    compose = tmp_path / "apps" / "pxe" / "docker-compose.yaml"
-    compose.write_text("services:\n  pxe:\n    image: alpine:3.20\n")
-
-    cfg_path = tmp_path / "apps.yaml"
-    cfg_path.write_text(
-        textwrap.dedent(
-            f"""
-            apps:
-              - name: pxe
-                enabled: true
-                compose: {compose}
-                bind_ip: 10.10.5.10
-            """
-        ).strip()
-    )
-
-    # Script + schematic already match (we provide matching sizes), so no
-    # filesystem.put upload is triggered — test doesn't need a live NAS.
-    from pathlib import Path as _P
-    script_size = _P("apps/pxe/talos-updater.sh").stat().st_size
-    schematic_size = _P("apps/pxe/schematic.yaml").stat().st_size
-
-    # Pre-compute the command ensure_cronjob expects so the mock returns an
-    # existing cronjob with NO drift (otherwise cronjob.update is called and
-    # we'd need another yielded response).
-    from truenas_infra.modules.apps import _talos_updater_cronjob_command
-    expected_cmd = _talos_updater_cronjob_command(
-        "/mnt/tank/system/apps-config/talos-updater/talos-updater.sh"
-    )
-    expected_schedule = {"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "*"}
-
-    # Menu-tree file sizes so the stat calls for boot.cfg + menu.ipxe +
-    # every menus/*.ipxe appear as already-uploaded (avoids live upload
-    # attempts during the test). Order must match ensure_pxe_menu_files:
-    # boot.cfg, menu.ipxe, then sorted submenus.
-    menu_tree_sizes = [
-        ("boot.cfg",  _P("apps/pxe/boot.cfg").stat().st_size),
-        ("menu.ipxe", _P("apps/pxe/menu.ipxe").stat().st_size),
-    ] + [
-        (p.name, p.stat().st_size)
-        for p in sorted(_P("apps/pxe/menus").glob("*.ipxe"))
-    ]
-    tls_export_size = _P("apps/tls/tls-export.sh").stat().st_size
-    tls_rotate_size = _P("apps/tls/tls-rotate.sh").stat().st_size
-    wiki_nginx_size = _P("apps/wiki/nginx.conf").stat().st_size
-    # Homepage declarative YAMLs (settings, services, bookmarks, widgets,
-    # docker, kubernetes). Order here must match sorted() in apps.py.
-    homepage_yaml_sizes = {
-        p.name: p.stat().st_size
-        for p in sorted(_P("apps/homepage").glob("*.yaml"))
-        if p.name != "docker-compose.yaml"
-    }
-    meshcentral_config_size = _P("apps/meshcentral/config.json").stat().st_size
-    # amtctl app code + config — helper globs apps/amtctl/** and uploads
-    # every file except docker-compose.yaml and Dockerfile.
-    amtctl_file_sizes = {}
-    for p in sorted(_P("apps/amtctl").rglob("*")):
-        if not p.is_file():
-            continue
-        if p.name in ("docker-compose.yaml", "Dockerfile"):
-            continue
-        amtctl_file_sizes[str(p.relative_to(_P("apps/amtctl")))] = p.stat().st_size
-
-    # Cronjob.query for tls-rotate — pre-shaped to match expected command
-    # so ensure_cronjob reports noop without needing a cronjob.update call.
-    from truenas_infra.modules.apps import _tls_rotate_cronjob_command
-    expected_tls_cmd = _tls_rotate_cronjob_command(
-        "/mnt/tank/system/tls/tls-rotate.sh"
-    )
-    expected_hourly = {"minute": "0", "hour": "*", "dom": "*", "month": "*", "dow": "*"}
-
+    cfg_path = _apps_yaml(tmp_path, "wiki", "traefik")
     cli = _mk_cli([
-        {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},  # docker.config (noop)
-        # Step 2a: wiki nginx.conf size-match → no upload (runs BEFORE apps loop
-        # because nginx bind-mounts the file, must exist before container starts).
-        {"size": wiki_nginx_size, "mode": 0o100644},            # filesystem.stat wiki nginx.conf
-        # Step 2a: homepage YAMLs (one stat per file, sorted alphabetically).
-        # docker-compose.yaml excluded by the helper.
-        *[
-            {"size": homepage_yaml_sizes[name], "mode": 0o100644}
-            for name in sorted(homepage_yaml_sizes)
-        ],
-        # Step 2a: meshcentral config.json size-match → no upload.
-        {"size": meshcentral_config_size, "mode": 0o100644},
-        # Step 2a: amtctl files (one stat per file, sorted rglob order).
-        *[
-            {"size": amtctl_file_sizes[path], "mode": 0o100644}
-            for path in sorted(amtctl_file_sizes)
-        ],
-        [],                                                      # app.query
-        {"id": "pxe"},                                   # app.create
-        {"size": script_size, "mode": 0o100755},                # filesystem.stat script
-        {"size": schematic_size, "mode": 0o100644},             # filesystem.stat schematic
-        [{                                                       # cronjob.query — no drift
-            "id": 1, "description": "talos-updater", "enabled": True,
-            "command": expected_cmd, "user": "root", "schedule": expected_schedule,
-        }],
-        # Menu-tree: boot.cfg, menu.ipxe, then every menus/*.ipxe in
-        # sorted order (matches ensure_pxe_menu_files).
-        *[
-            {"size": size, "mode": 0o100644}
-            for _name, size in menu_tree_sizes
-        ],
-        {"size": tls_export_size, "mode": 0o100755},            # filesystem.stat tls-export
-        {"size": tls_rotate_size, "mode": 0o100755},            # filesystem.stat tls-rotate
-        [{                                                       # cronjob.query tls-rotate
-            "id": 2, "description": "tls-rotate", "enabled": True,
-            "command": expected_tls_cmd, "user": "root", "schedule": expected_hourly,
-        }],
-        {"size": _P("apps/traefik/routes.yaml").stat().st_size,
-         "mode": 0o100644},                                      # filesystem.stat traefik routes
+        {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},  # docker.config
+        [], {"id": "wiki"},                                     # app.query + app.create
+        [], {"id": "traefik"},                                  # app.query + app.create
     ])
 
-    rc = run(
-        cli, _Ctx(apply=True), only=None,
-        config_path=cfg_path, pool_name="tank",
-    )
+    rc = run(cli, _Ctx(apply=True), only=None,
+             config_path=cfg_path, pool_name="tank")
 
     assert rc == 0
     names = [c.args[0] for c in cli.call.call_args_list]
-    assert "docker.config" in names
-    assert "app.create" in names
-    assert "filesystem.stat" in names
-    assert "cronjob.query" in names
+    assert names == [
+        "docker.config",
+        "app.query", "app.create",
+        "app.query", "app.create",
+    ]
+
+
+def test_run_skips_config_upload_for_app_absent_from_apps_yaml(
+    tmp_path: Path, shipped
+) -> None:
+    """THE 2026-09-23 regression: config uploads must follow apps.yaml.
+
+    The dispatch used to gate on `only` alone. `cfg` holds only ENABLED apps,
+    but nothing consulted it — so a retired app kept having its config
+    re-uploaded forever. Measured, not hypothetical: the first
+    `phase apps --apply` after the pool rebuild recreated four retired apps'
+    config directories on a pool rebuilt specifically to be rid of them.
+
+    Here `wiki` is enabled and `cluster-agent` is not, so exactly one of the
+    two config helpers may run.
+    """
+    from truenas_infra.modules.apps import run
+
+    cfg_path = _apps_yaml(tmp_path, "wiki")
+    cli = _mk_cli([
+        {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},
+        [], {"id": "wiki"},
+    ])
+
+    run(cli, _Ctx(apply=True), only=None, config_path=cfg_path, pool_name="tank")
+
+    assert "_ensure_wiki_config_via_ctx" in shipped
+    assert "_ensure_cluster_agent_config_via_ctx" not in shipped, \
+        "a config helper ran for an app that is not in apps.yaml"
+
+
+def test_run_ships_tls_rotate_even_though_no_tls_app_exists(
+    tmp_path: Path, shipped
+) -> None:
+    """TLS rotation is infrastructure, NOT an app — it must stay ungated.
+
+    ⚠ There is no "tls" entry in apps.yaml, so folding this into `_want()`
+    for consistency would make its predicate ALWAYS false and silently stop
+    cert rotation. The failure is invisible until the wildcard expires, and
+    re-issuing is rate-limited (5/week per exact identifier set). This test
+    exists to fail loudly if someone tidies that block.
+    """
+    from truenas_infra.modules.apps import run
+
+    cfg_path = _apps_yaml(tmp_path, "wiki")
+    cli = _mk_cli([
+        {"id": 1, "pool": "tank", "dataset": "tank/.ix-apps"},
+        [], {"id": "wiki"},
+    ])
+
+    run(cli, _Ctx(apply=True), only=None, config_path=cfg_path, pool_name="tank")
+
+    assert "_ensure_tls_rotate_via_ctx" in shipped
 
 
 # ─── ensure_file_on_nas ──────────────────────────────────────────────────────
@@ -557,87 +557,6 @@ def test_ensure_file_on_nas_dry_run_does_not_upload(tmp_path: Path) -> None:
     assert uploads == []
 
 
-# ─── ensure_talos_updater (automated via filesystem.put) ─────────────────────
-
-
-def test_ensure_talos_updater_uploads_script_and_registers_short_cronjob(tmp_path: Path) -> None:
-    """End-to-end: schematic + script uploaded, short cronjob registered.
-
-    The cronjob command MUST fit in TrueNAS's 1024-char limit; this is the
-    whole reason we pivoted away from the inline-script approach.
-    """
-    from truenas_infra.modules.apps import ensure_talos_updater
-
-    script = tmp_path / "talos-updater.sh"
-    script.write_bytes(b"#!/bin/sh\necho talos\n")
-    schematic = tmp_path / "schematic.yaml"
-    schematic.write_bytes(b"customization: {}\n")
-
-    from truenas_api_client.exc import ClientException
-
-    def _cli_sequence():
-        # filesystem.stat for script → missing
-        yield ClientException("missing")
-        # filesystem.stat for schematic → missing
-        yield ClientException("missing")
-        # cronjob.query → none
-        yield []
-        # cronjob.create → new
-        yield {"id": 42, "description": "talos-updater"}
-
-    seq = _cli_sequence()
-    cli = MagicMock()
-    def _call(*a, **k):
-        v = next(seq)
-        if isinstance(v, Exception):
-            raise v
-        return v
-    cli.call.side_effect = _call
-
-    uploads: list = []
-    def fake_upload(**kw):
-        uploads.append(kw)
-
-    diffs = ensure_talos_updater(
-        cli, fake_upload,
-        script_path=script,
-        schematic_path=schematic,
-        remote_dir="/mnt/tank/system/apps-config/talos-updater",
-        apply=True,
-    )
-
-    # Two uploads happened: script (0o755) and schematic (0o644).
-    assert len(uploads) == 2
-    modes = {u["remote_path"]: u["mode"] for u in uploads}
-    assert modes["/mnt/tank/system/apps-config/talos-updater/talos-updater.sh"] == 0o755
-    assert modes["/mnt/tank/system/apps-config/talos-updater/schematic.yaml"] == 0o644
-
-    # A cronjob was created with a SHORT command that just invokes the script.
-    create = next(c for c in cli.call.call_args_list if c.args[0] == "cronjob.create")
-    payload = create.args[1]
-    assert payload["description"] == "talos-updater"
-    assert len(payload["command"]) <= 1024, "cronjob.command must fit TrueNAS's limit"
-    assert "/mnt/tank/system/apps-config/talos-updater/talos-updater.sh" in payload["command"]
-    # Output must be captured to a log file (TrueNAS doesn't retain cron
-    # stdout/stderr in a queryable way; a log next to the script is how
-    # the operator debugs failures).
-    assert "talos-updater.log" in payload["command"]
-    assert "2>&1" in payload["command"]
-    # The command MUST be wrapped in `/bin/bash -c "..."`. TrueNAS's
-    # `cronjob.run` path doesn't invoke a shell before exec'ing the
-    # command, so top-level `>>` / `2>&1` tokens are treated as literal
-    # argv entries and the redirect silently doesn't happen. Wrapping in
-    # `/bin/bash -c` makes bash interpret the redirect.
-    assert payload["command"].startswith("/bin/bash -c "), (
-        f"command must start with /bin/bash -c, got: {payload['command']!r}"
-    )
-    assert payload["schedule"]["hour"] == "3"
-
-    # diffs is a list/tuple with per-artifact results for logging.
-    assert len(diffs) == 3  # script, schematic, cronjob
-    assert all(d.changed for d in diffs)
-
-
 # ─── TLS rotate cronjob ──────────────────────────────────────────────────────
 
 
@@ -709,207 +628,6 @@ def test_ensure_tls_rotate_uploads_both_scripts_and_registers_hourly_cronjob(
     assert payload["schedule"]["hour"] == "*"
     assert "/mnt/tank/system/tls/tls-rotate.sh" in payload["command"]
     assert len(diffs) == 3  # export + rotate + cronjob
-
-
-def _stat_missing_chown_ok(method, *args, **kwargs):
-    """Mock side-effect: raise ClientException('missing') for filesystem.stat
-    (simulates file-not-on-NAS → triggers upload), succeed silently for
-    filesystem.chown and everything else. Used by the pxe-menu tests."""
-    from truenas_api_client.exc import ClientException
-    if method == "filesystem.stat":
-        raise ClientException("missing")
-    return None
-
-
-def test_ensure_pxe_menu_files_uploads_full_menu_tree(tmp_path: Path) -> None:
-    """phase apps uploads the Homelab PXE menu tree — boot.cfg, menu.ipxe
-    (our hand-written menu, not an upstream-extracted one), and every
-    *.ipxe file under apps/pxe/menus/ — all flat under /pxe/tftp/ (TFTP root).
-
-    After each upload it chowns the file to uid/gid 1000 (nbxyz) so the
-    container's dnsmasq --tftp-secure can serve it. No custom.ipxe upload
-    — the Custom-URL indirection is retired now that our menu.ipxe handles
-    Talos / BIOS / etc. directly."""
-    from truenas_infra.modules.apps import ensure_pxe_menu_files
-
-    boot_cfg = tmp_path / "boot.cfg"
-    boot_cfg.write_bytes(b"#!ipxe\nset site_name Homelab\n")
-    menu_ipxe = tmp_path / "menu.ipxe"
-    menu_ipxe.write_bytes(b"#!ipxe\n:main\nmenu Homelab\nchoose x\n")
-    submenus_dir = tmp_path / "menus"
-    submenus_dir.mkdir()
-    (submenus_dir / "talos.ipxe").write_bytes(b"#!ipxe\nchain ...\n")
-    (submenus_dir / "bios.ipxe").write_bytes(b"#!ipxe\nsanboot ...\n")
-
-    cli = MagicMock()
-    cli.call.side_effect = _stat_missing_chown_ok
-
-    uploads: list = []
-    def fake_upload(**kw):
-        uploads.append(kw)
-
-    diffs = ensure_pxe_menu_files(
-        cli, fake_upload,
-        boot_cfg_path=boot_cfg,
-        menu_ipxe_path=menu_ipxe,
-        submenus_dir=submenus_dir,
-        tftp_dir="/mnt/tank/system/pxe/tftp",
-        apply=True,
-    )
-
-    # 4 uploads: boot.cfg + menu.ipxe + 2 sub-menus, all 0o644, all flat
-    # under tftp_dir (sub-menus are NOT placed in a menus/
-    # subdirectory remotely — iPXE chains them via relative path from
-    # menu.ipxe so they must live alongside it).
-    assert len(uploads) == 4
-    paths = {u["remote_path"]: u["mode"] for u in uploads}
-    assert paths == {
-        "/mnt/tank/system/pxe/tftp/boot.cfg":   0o644,
-        "/mnt/tank/system/pxe/tftp/menu.ipxe":  0o644,
-        "/mnt/tank/system/pxe/tftp/talos.ipxe": 0o644,
-        "/mnt/tank/system/pxe/tftp/bios.ipxe":  0o644,
-    }
-    assert all(d.changed for d in diffs)
-
-    # Every uploaded file must be followed by a filesystem.chown to 1000:1000
-    # so dnsmasq --tftp-secure can read it. Count chown calls against the 4
-    # uploads.
-    chown_calls = [c for c in cli.call.call_args_list
-                   if c.args and c.args[0] == "filesystem.chown"]
-    assert len(chown_calls) == 4
-    chowned_paths = {c.args[1]["path"] for c in chown_calls}
-    assert chowned_paths == set(paths.keys())
-    for c in chown_calls:
-        assert c.args[1] == {"path": c.args[1]["path"], "uid": 1000, "gid": 1000}
-
-
-def test_ensure_pxe_menu_files_skips_chown_when_file_already_matches(tmp_path: Path) -> None:
-    """Idempotency: if ensure_file_on_nas reports noop (size+mode match),
-    don't bother with a filesystem.chown — the file already exists and
-    ownership was presumably set on the original create. This keeps
-    repeated `phase apps --apply` runs fast."""
-    from truenas_infra.modules.apps import ensure_pxe_menu_files
-
-    boot_cfg = tmp_path / "boot.cfg"
-    boot_cfg.write_bytes(b"#!ipxe\n")
-    menu_ipxe = tmp_path / "menu.ipxe"
-    menu_ipxe.write_bytes(b"#!ipxe\n")
-    submenus_dir = tmp_path / "menus"
-    submenus_dir.mkdir()
-
-    # Return a stat that matches the local files → ensure_file_on_nas
-    # produces noop diffs, nothing uploaded, no chown.
-    cli = MagicMock()
-    def _stat_matches(method, *args, **kwargs):
-        if method == "filesystem.stat":
-            # The real stat payload includes mode + size; mode 0o100644
-            # is "regular file with 0o644 perms" (stat(2) st_mode format).
-            path = args[0]
-            size = (tmp_path / Path(path).name).stat().st_size
-            return {"size": size, "mode": 0o100644}
-        return None
-    cli.call.side_effect = _stat_matches
-
-    uploads: list = []
-    diffs = ensure_pxe_menu_files(
-        cli, lambda **kw: uploads.append(kw),
-        boot_cfg_path=boot_cfg,
-        menu_ipxe_path=menu_ipxe,
-        submenus_dir=submenus_dir,
-        tftp_dir="/mnt/tank/system/pxe/tftp",
-        apply=True,
-    )
-
-    assert len(uploads) == 0, "size+mode match → no upload"
-    assert all(d.action == "noop" for d in diffs)
-    # No chown calls when files are already correct.
-    chown_calls = [c for c in cli.call.call_args_list
-                   if c.args and c.args[0] == "filesystem.chown"]
-    assert len(chown_calls) == 0
-
-
-def test_ensure_pxe_menu_files_missing_submenus_dir_skips_submenus(tmp_path: Path) -> None:
-    """If the submenus directory doesn't exist, upload boot.cfg + menu.ipxe
-    only — don't raise. This keeps phase apps working for operators who
-    haven't checked out the submenu tree (e.g. bare-clone CI)."""
-    from truenas_infra.modules.apps import ensure_pxe_menu_files
-
-    boot_cfg = tmp_path / "boot.cfg"
-    boot_cfg.write_bytes(b"#!ipxe\n")
-    menu_ipxe = tmp_path / "menu.ipxe"
-    menu_ipxe.write_bytes(b"#!ipxe\n")
-    submenus_dir = tmp_path / "menus-does-not-exist"
-
-    cli = MagicMock()
-    cli.call.side_effect = _stat_missing_chown_ok
-
-    uploads: list = []
-    diffs = ensure_pxe_menu_files(
-        cli, lambda **kw: uploads.append(kw),
-        boot_cfg_path=boot_cfg,
-        menu_ipxe_path=menu_ipxe,
-        submenus_dir=submenus_dir,
-        tftp_dir="/mnt/tank/system/pxe/tftp",
-        apply=True,
-    )
-
-    assert len(uploads) == 2
-    assert len(diffs) == 2
-
-
-def test_ensure_talos_updater_all_noop_when_state_matches(tmp_path: Path) -> None:
-    """Re-running: all three artifacts already match → all noop."""
-    from truenas_infra.modules.apps import (
-        _talos_updater_cronjob_command,
-        ensure_talos_updater,
-    )
-
-    script = tmp_path / "talos-updater.sh"
-    script.write_bytes(b"#!/bin/sh\necho talos\n")
-    schematic = tmp_path / "schematic.yaml"
-    schematic.write_bytes(b"customization: {}\n")
-
-    remote_dir = "/mnt/tank/system/apps-config/talos-updater"
-    # Construct the existing cronjob with the EXACT fields ensure_cronjob
-    # compares against — otherwise it'll think the job has drifted and try
-    # to call cronjob.update.
-    expected_cmd = _talos_updater_cronjob_command(f"{remote_dir}/{script.name}")
-    expected_schedule = {"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "*"}
-    existing_cronjob = {
-        "id": 42, "description": "talos-updater", "enabled": True,
-        "command": expected_cmd, "user": "root", "schedule": expected_schedule,
-    }
-
-    def _cli_sequence():
-        # filesystem.stat for script → matches size
-        yield {"size": script.stat().st_size, "mode": 0o100755}
-        # filesystem.stat for schematic → matches size
-        yield {"size": schematic.stat().st_size, "mode": 0o100644}
-        # cronjob.query → existing, no drift
-        yield [existing_cronjob]
-
-    seq = _cli_sequence()
-    cli = MagicMock()
-    cli.call.side_effect = lambda *a, **k: next(seq)
-
-    uploads: list = []
-    def fake_upload(**kw):
-        uploads.append(kw)
-
-    diffs = ensure_talos_updater(
-        cli, fake_upload,
-        script_path=script,
-        schematic_path=schematic,
-        remote_dir=remote_dir,
-        apply=True,
-    )
-
-    assert uploads == []
-    assert all(not d.changed for d in diffs)
-    # Should NOT have called cronjob.create or cronjob.update.
-    names = [c.args[0] for c in cli.call.call_args_list]
-    assert "cronjob.create" not in names
-    assert "cronjob.update" not in names
 
 
 # ─── ensure_file_on_nas: CONTENT vs size (regression for the 2026-09-13 bug) ──
@@ -1024,124 +742,3 @@ def test_ensure_file_on_nas_skips_content_check_for_large_files(tmp_path: Path) 
     )
     # sizes differ (64 vs cap+1) so it uploads without ever reading
     assert reads == [], "must not pull large files back over HTTP"
-
-
-def test_ensure_pxe_build_context_redeploys_equal_size_dockerfile_edit(tmp_path: Path) -> None:
-    """THE production bug, at the level it actually bit.
-
-    `ensure_pxe_build_context` wires `read_fn` itself, so this test needs no
-    new kwargs — it fails on the size-only implementation by returning a
-    noop (the false clean) instead of re-uploading. That is exactly what
-    left the NAS building PXE on alpine 3.20 while git said 3.23.
-    """
-    from truenas_infra.modules.apps import ensure_pxe_build_context
-
-    build = tmp_path / "build"
-    build.mkdir()
-    (build / "Dockerfile").write_text("FROM alpine:3.23\n")
-    nas_content = {"/remote/build/Dockerfile": b"FROM alpine:3.20\n"}
-
-    class _Cli:
-        def call(self, method, path, *a, **k):
-            return {"size": len(nas_content[path]), "mode": 0o644}
-
-    uploaded: list[str] = []
-
-    def _upload(*, local_path, remote_path, mode):
-        uploaded.append(remote_path)
-
-    diffs = ensure_pxe_build_context(
-        _Cli(), _upload,
-        local_dir=build, remote_dir="/remote/build", apply=True,
-        read_fn=lambda p: nas_content[p],
-    )
-    assert uploaded == ["/remote/build/Dockerfile"], (
-        "an equal-length FROM-line bump must redeploy; returning noop here "
-        "is the false clean that hid alpine 3.20 for months"
-    )
-    assert dict(diffs)["Dockerfile"].changed is True
-
-
-# ─── build-context change must trigger a rebuild (2026-09-13 layer-3 bug) ────
-
-def _pxe_run_ctx(tmp_path: Path, *, apply: bool):
-    """Minimal ctx/cfg doubles for exercising apps.run()'s pxe path."""
-    class _Cfg:
-        truenas_host = "nas.test"
-        truenas_api_key = "k"
-        truenas_verify_ssl = False
-    class _Ctx:
-        config = _Cfg()
-    c = _Ctx()
-    c.apply = apply
-    return c
-
-
-def test_build_context_change_triggers_redeploy(monkeypatch, tmp_path: Path) -> None:
-    """Dockerfile edit + unchanged compose ⇒ MUST force app.redeploy.
-
-    This is the bug: `ensure_custom_app` diffs the rendered compose, which
-    only references the build path, so a Dockerfile edit leaves it noop and
-    nothing ever rebuilds. Measured live — the NAS kept serving the
-    alpine-3.20 ipxe.efi after the 3.24 Dockerfile landed.
-    """
-    from truenas_infra.modules import apps as m
-
-    calls: list[tuple] = []
-
-    class _Cli:
-        def call(self, method, *a, **k):
-            calls.append((method, a))
-            return None
-
-    m_log = type("L", (), {"info": lambda *a, **k: None,
-                           "warning": lambda *a, **k: None})()
-    ctx = _pxe_run_ctx(tmp_path, apply=True)
-    m._redeploy_app_for_build_context(_Cli(), ctx, m_log, "pxe")
-
-    assert ("app.redeploy", ("pxe",)) in calls, \
-        "a changed build context must force a rebuild"
-
-
-def test_build_context_change_dry_run_does_not_redeploy(tmp_path: Path) -> None:
-    """Dry-run must announce the rebuild, never perform it."""
-    from truenas_infra.modules import apps as m
-
-    calls: list[tuple] = []
-    logged: list[str] = []
-
-    class _Cli:
-        def call(self, method, *a, **k):
-            calls.append((method, a))
-            return None
-
-    class _Log:
-        def info(self, event, **k): logged.append(event)
-        def warning(self, event, **k): logged.append(event)
-
-    ctx = _pxe_run_ctx(tmp_path, apply=False)
-    m._redeploy_app_for_build_context(_Cli(), ctx, _Log(), "pxe")
-
-    assert calls == [], "dry-run must not call app.redeploy"
-    assert "app_rebuild_would_trigger" in logged, \
-        "dry-run must still SAY a rebuild is needed — silence is how this hid"
-
-
-def test_build_context_helper_reports_change(tmp_path: Path) -> None:
-    """The helper must return True when a file changed, else the caller
-    has nothing to act on (which is how the bug survived)."""
-    from truenas_infra.modules.apps import ensure_pxe_build_context
-
-    build = tmp_path / "build"
-    build.mkdir()
-    (build / "Dockerfile").write_text("FROM alpine:3.24\n")
-
-    class _Cli:
-        def call(self, method, path, *a, **k):
-            raise RuntimeError("missing")  # ⇒ treated as create
-
-    diffs = ensure_pxe_build_context(
-        _Cli(), lambda **k: None,
-        local_dir=build, remote_dir="/remote/build", apply=True,
-    )
-    assert any(d.changed for _, d in diffs) is True
