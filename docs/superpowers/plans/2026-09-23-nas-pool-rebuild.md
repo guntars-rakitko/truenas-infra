@@ -3,7 +3,8 @@
 > **For agentic workers:** this is an OPERATIONAL runbook against live hardware, not a code plan. It is executed by the **main session with the operator present**, never by a subagent — CLAUDE.md § *Subagents are READ-ONLY on live clusters and appliances*. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Rebuild `tank` from a 5-wide RAIDZ1 to a 3-wide RAIDZ1, dropping ~1.17 TB of
-disposable backup data, removing four retired apps, and shrinking PXE from 15 G to 610 M —
+disposable backup data, retiring **six** apps (pxe, meshcentral, amtctl, homepage,
+stress-dashboard, iperf3) —
 while preserving the only irreplaceable thing on the box: a restorable copy of the **live
 GIKS v1 production database**.
 
@@ -103,7 +104,7 @@ and 990 EVO Plus both appear on the failing side). The power table is the real t
 | `/mnt/tank/system/talos/` | 53 M | ⚠ UPS orchestrator + talosctl + both `os:operator` configs |
 | `/mnt/tank/system/tls/` | 140 K | ⚠ wildcard cert — see the LE rate-limit warning |
 | `/mnt/tank/system/apps-config/` | 293 M | app state; most is reproducible but copying all of it is cheaper than deciding |
-| `/mnt/tank/system/pxe/http/talos/` | 610 M | the only PXE content being kept |
+| ~~`/mnt/tank/system/pxe/http/talos/`~~ | — | ⚠ **NOT preserved — PXE is removed entirely, see Task 9** |
 
 ### Destroy (~1.17 TB)
 
@@ -128,10 +129,16 @@ and 990 EVO Plus both appear on the failing side). The power table is the real t
 - **homepage** (230 K) — cosmetic dashboard.
 - **hw-validation** PXE assets (218 M) + `stress-results` dataset — Phase A scaffolding that
   never ran, whose `amtctl → PXE` trigger does not exist on the new hardware.
+- ⚠ **`stress-dashboard`** — FOUND 2026-09-23, not in the original retire list. It bind-mounts
+  `/mnt/tank/system/stress-results:/data:rw`, the dataset this plan deletes. Left in place it
+  would restore pointing at a path that no longer exists.
+- ⚠ **`iperf3`** — FOUND 2026-09-23, same omission. Its only purpose is hw-validation's
+  `net-mgmt` / `net-data` iperf3 pairs (`hw-validation/README.md`), and hw-validation is
+  retired. An always-on listener with no consumer.
 - **bios-config** PXE assets (679 K) — ASUS Q170S1 BIOS-as-code, "obsolete for AMD".
-- **PXE `extras`** (15 G) — ubuntu-desktop/server ×3, systemrescue, gparted, clonezilla,
-  shredos. ⚠ Keep a note that this removes the only netboot path; confirm how an MS-A2 gets
-  re-imaged before relying on its absence.
+- **PXE — ENTIRELY** (15.8 G + the whole service). Decision revised 2026-09-23 from
+  "keep Talos images only" to full removal. See **Task 9** for the cross-repo work and
+  § *Why PXE goes completely* for the reasoning.
 
 ### Keep as-is
 
@@ -154,6 +161,48 @@ each cover that for ~3% of the data. Take them.
 
 ⚠ They are **fulls only, no log chain** — so they restore to their own timestamp, not to an
 arbitrary point. That is the trade being made knowingly.
+
+---
+
+## Why PXE goes completely
+
+Decision revised 2026-09-23, after checking what the cached images actually are.
+
+**The cached images are built for the wrong hardware.** Schematic
+`daef782be84917c1a01cd56bb73b9ad8057e6d746b0a0c7d34e34d03fb858d43`, read from
+factory.talos.dev, contains exactly three extensions:
+
+| extension | status on MS-A2 |
+|---|---|
+| `siderolabs/intel-ucode` | ⚠ **Intel-only — the MS-A2 is AMD** |
+| `siderolabs/iscsi-tools` | ⚠ Longhorn-only — Longhorn is dropped |
+| `siderolabs/util-linux-tools` | ⚠ Longhorn-only — Longhorn is dropped |
+
+All three are wrong for the new build. "Keep PXE" was therefore never the free option — it
+meant authoring a new AMD schematic, keeping `apps/pxe/schematic.yaml` byte-identical to
+`kube-infra/talos-os/schematic.yaml`, and re-verifying a boot path on hardware that has never
+PXE-booted.
+
+**PXE is not used for upgrades.** `talosctl upgrade` pulls the installer from the registry.
+PXE serves exactly two scenarios: initial install, and re-imaging a dead box. With **two**
+nodes and **no BMC/IPMI/AMT** on the MS-A2, both require standing at the machine — where a
+USB stick is equivalent.
+
+**It fails where it would be wanted most.** PXE depends on the NAS. In a full-estate rebuild
+the NAS is part of the rebuild; a USB stick is not.
+
+**The cache is not what guarantees a correct image.** `factory.talos.dev` builds on demand
+from the schematic. The schematic is the source of truth and lives in
+`kube-infra/talos-os/schematic.yaml`. ⚠ A local cache is a second copy that can drift — and
+`config/talos.yaml` documents that a previous mirror list *did* drift, still listing
+`nut-client` months after it was stripped and `gvisor` which was never in the schematic.
+
+**What replaces it:** a runbook paragraph — open factory.talos.dev, paste the schematic,
+download the ISO, write the stick. ⚠ **Do this once BEFORE the old estate is torn down**, so
+the procedure is proven rather than theoretical.
+
+⚠ **Accepted loss:** the iPXE version-picker menu (boot any of 5 cached Talos versions) and
+the `install-wipe` menu entry. `talosctl upgrade --image` covers rollback without re-imaging.
 
 ---
 
@@ -254,7 +303,6 @@ reports via `mc stat`. ⚠ Four unverified files are four hypotheses.
 mkdir -p ~/nas-rescue
 scp -r truenas_admin@nas.w1.lv:/mnt/tank/system/tls          ~/nas-rescue/
 scp -r truenas_admin@nas.w1.lv:/mnt/tank/system/apps-config  ~/nas-rescue/
-scp -r truenas_admin@nas.w1.lv:/mnt/tank/system/pxe/http/talos ~/nas-rescue/pxe-talos
 du -sh ~/nas-rescue/*
 ```
 
@@ -389,7 +437,8 @@ scp -r ~/nas-rescue/tls truenas_admin@nas.w1.lv:/mnt/tank/system/
 ./manage.sh phase apps --apply
 ```
 
-⚠ Remove `meshcentral`, `amtctl` and `homepage` from `config/apps.yaml` **before** this runs,
+⚠ Remove `meshcentral`, `amtctl`, `homepage`, `stress-dashboard`, `iperf3` and `pxe` from
+`config/apps.yaml` **before** this runs,
 or they will be faithfully redeployed. Their per-app Doppler keys (`AMT_USER`, `AMT_PASSWORD`,
 the `HOMEPAGE_VAR_*` mappings) should be dropped from `_DOPPLER_KEYS_PER_APP` in
 `src/truenas_infra/modules/apps.py` in the same change — CLAUDE.md warns that a key listed
@@ -407,15 +456,10 @@ there but absent in Doppler makes `phase apps` fail loud.
 ⚠ Order matters and is documented in CLAUDE.md. ⚠ `setup-minio-encryption.sh` SKIPs cleanly
 if KMS is not yet configured — a skip is not a success; re-run it once KMS is live.
 
-- [ ] **Step 4: Restore the PXE Talos assets**
+- [ ] **Step 4: (removed — PXE is not restored)**
 
-```bash
-scp -r ~/nas-rescue/pxe-talos truenas_admin@nas.w1.lv:/mnt/tank/system/pxe/http/talos
-```
-
-⚠ Do NOT restore `extras/`, `hw-validation/` or `bios-config/`. Prune the iPXE menu
-(`apps/pxe/pxe-genmenu.sh` auto-lists from `extras/{utils,distros,live}/*.iso`, so an empty
-tree yields an empty menu) and drop the now-dead `hw-validation.ipxe` entry from `tftp/`.
+⚠ The original plan restored `pxe/http/talos`. PXE is now removed entirely; nothing is
+restored here and `tank/system/pxe` is not recreated. See Task 9.
 
 - [ ] **Step 5: Push the GIKS v1 rescue set back**
 
@@ -539,6 +583,254 @@ Then deploy the wiki — `CLAUDE.md` is auto-synced to `docs/projects/truenas-in
 
 ---
 
+---
+
+## Task 9: Remove PXE entirely — three repos
+
+⚠ **Do this AFTER Task 8 verifies the rebuild**, not during. The pool rebuild already
+destroys the PXE data; this task removes the *service, config and router options* so nothing
+is left advertising a boot path that no longer exists.
+
+⚠ **Prerequisite, and it is not optional:** prove the USB install path **before** the old
+estate is torn down. Open `factory.talos.dev`, paste
+`kube-infra/talos-os/schematic.yaml` (with `amd-ucode` for the MS-A2), download the ISO,
+write a stick, and boot something from it. A replacement procedure that has never been run is
+not a replacement.
+
+### 9a — `truenas-infra`
+
+- [ ] **Step 1: Remove the app and its config**
+
+```bash
+cd ~/github/truenas-infra
+git rm -r apps/pxe/
+git rm config/talos.yaml docs/pxe-operator.md docs/talos-updater-setup.md docs/bios-apply-pxe-setup.md
+```
+
+Then edit:
+- `config/apps.yaml` — delete the `- name: pxe` entry (lines ~20-24)
+- `config/dns.yaml` — delete the `pxe.w1.lv` record (→ 10.10.5.20)
+- `config/storage.yaml` — delete the `tank/system/pxe` dataset
+- `src/truenas_infra/modules/apps.py` — remove `load_talos_config()` and the pxe `cronjob.command`
+  wiring that passes `config/talos.yaml`'s four keys as env vars
+- `tests/test_apps.py`, `tests/test_verify.py` — remove the PXE cases
+- `docs/verification.md` — remove the PXE rows ⚠ (also fix the "Pool healthy … 6 disks" row
+  per Task 8 Step 3)
+
+- [ ] **Step 2: ✅ RESOLVED — `pxe.w1.lv` has no Traefik route**
+
+Enumerated 2026-09-23: `apps/traefik/routes.yaml` defines seven routes (mc, minio-prd,
+minio-dev, wiki, home, amtctl, stress) and **none of them is `pxe.w1.lv`**. The DNS record
+has been pointing at 10.10.5.20 with nothing behind it. Only the DNS side needs removing —
+see **9c Step 2**.
+
+- [ ] **Step 3: Apply**
+
+```bash
+./manage.sh phase apps          # DRY RUN — expect pxe to disappear from the plan
+./manage.sh phase apps --apply
+./manage.sh phase dns --apply
+```
+
+⚠ Verify the container is actually gone, not merely absent from config:
+```bash
+ssh truenas_admin@nas.w1.lv "sudo -n midclt call app.query" | grep -i pxe || echo "  ✅ no pxe app"
+```
+
+### 9b — `mikrotik-infra` ⚠ the router will NOT converge by itself
+
+- [ ] **Step 1: Edit `configs/fleet.yaml`**
+
+Remove the three PXE keys from the mgmt network:
+
+```yaml
+# before
+- {subnet: 10.10.5.0/24,  gateway: 10.10.5.1,  dns: 10.10.0.1,
+   pxe: true, pxe_bootfile: ipxe.efi, pxe_next_server: 10.10.5.10}
+# after
+- {subnet: 10.10.5.0/24,  gateway: 10.10.5.1,  dns: 10.10.0.1}
+```
+
+…and delete the three option keys below the `networks:` block:
+
+```yaml
+option_set_name: pxe-boot
+option_name: pxe-bootfile
+option_value: "'ipxe.efi'"
+```
+
+- [ ] **Step 2: Edit `configs/templates/01-router.rsc.j2`**
+
+Delete the two unconditional emits (lines 16-17):
+```
+/ip dhcp-server option add code=67 name={{ fleet.dhcp.option_name }} value="{{ fleet.dhcp.option_value }}"
+/ip dhcp-server option sets add name={{ fleet.dhcp.option_set_name }} options={{ fleet.dhcp.option_name }}
+```
+…and the three `net.pxe`-conditional fragments on the `dhcp-server network add` line.
+
+⚠ Steps 1 and 2 must land together — the template dereferences `fleet.dhcp.option_name`
+unconditionally, so removing only the fleet.yaml keys makes rendering fail.
+
+- [ ] **Step 3: ⚠⚠ REMOVE THE LIVE OPTIONS BY HAND — the tooling cannot**
+
+`tools/apply_fleet.py` delta mode is **additive-only**. Its own docstring:
+*"extras are legitimately preserved, MISSING never is."* So deleting the config removes the
+**intent** but leaves the RB5009 still advertising `next-server=10.10.5.10` and
+`boot-file-name=ipxe.efi` forever.
+
+The alternative — `--mode full-reset` — **reboots the RB5009, the only router in the house**.
+Not worth it for three properties. Remove them manually, in this order (the network
+references the option-set, so the reference goes first):
+
+```
+/ip dhcp-server network set [find address=10.10.5.0/24] !boot-file-name !dhcp-option-set !next-server
+/ip dhcp-server option sets remove [find name=pxe-boot]
+/ip dhcp-server option remove [find name=pxe-bootfile]
+```
+
+⚠ Use a single SSH ControlMaster session — RouterOS trips `login-failure-limit` on rapid
+repeat logins and returns `Permission denied` for 1–5 minutes even with correct credentials.
+
+- [ ] **Step 4: Prove the router and the config agree**
+
+```bash
+cd ~/github/mikrotik-infra && ./manage.sh   # audit
+```
+
+Expected: **green**, with no live-only extras for `dhcp-server option` / `network`.
+⚠ A green audit *before* Step 3 would be the additive-only blind spot, not success — run the
+audit only after the manual removal.
+
+- [ ] **Step 5: Confirm a client still gets a lease**
+
+```bash
+ssh <router> '/ip dhcp-server lease print where server=mgmt-dhcp'
+```
+⚠ The mgmt DHCP server itself must keep working — only the boot fields are going.
+
+### 9c — Traefik routes + DNS records
+
+⚠ These cover **all six** retirements, not just PXE. Left behind they are hostnames that
+resolve to a proxy with nothing behind them — which fails as a timeout, not a clear error.
+
+- [ ] **Step 1: Delete four Traefik routes** — `apps/traefik/routes.yaml`
+
+| route | service | verdict |
+|---|---|---|
+| `Host(\`mc.w1.lv\`)` | meshcentral | ❌ delete |
+| `Host(\`home.w1.lv\`)` | homepage | ❌ delete |
+| `Host(\`amtctl.w1.lv\`)` | amtctl | ❌ delete |
+| `Host(\`stress.w1.lv\`)` | stress-dashboard | ❌ delete |
+| `Host(\`minio-prd.w1.lv\`)` | minio-prd-console | ✅ keep |
+| `Host(\`minio-dev.w1.lv\`)` | minio-dev-console | ✅ keep |
+| `Host(\`wiki.w1.lv\`)` | wiki | ✅ keep |
+
+⚠ **`pxe.w1.lv` has NO Traefik route** — confirmed 2026-09-23 by enumerating the file. The
+DNS record has been pointing at 10.10.5.20 with nothing serving it. That resolves the
+open question flagged in 9a Step 2: the record is dangling, so only the DNS side needs work.
+
+Traefik drops from 7 routes to 3. ⚠ Update its `config/apps.yaml` description too —
+"mgmt-plane reverse proxy (mc/pxe/minio-*/traefik-nas)" names two hosts that no longer exist.
+
+- [ ] **Step 2: Delete the retired-app DNS records** — `config/dns.yaml`
+
+```
+mc.w1.lv        10.10.5.20   MeshCentral UI
+pxe.w1.lv       10.10.5.20   ⚠ dangling — no route ever existed
+home.w1.lv      10.10.5.20   Homepage dashboard
+amtctl.w1.lv    10.10.5.20   AMT power control dashboard
+stress.w1.lv    10.10.5.20   hw-validation report viewer
+```
+
+- [ ] **Step 3: ⚠ Decide the six node AMT records**
+
+`config/dns.yaml` carries `kub-{prd,dev}-0{1,2,3}.w1.lv`, all commented **"AMT (mgmt NIC)"**.
+The MS-A2 has no AMT, so the *purpose* is gone for all six — but the *names* are not
+symmetric:
+
+- `kub-prd-02/03` and `kub-dev-02/03` — ❌ **delete.** Those nodes cease to exist.
+- ⚠ `kub-prd-01` and `kub-dev-01` — **decide, do not delete by reflex.** The MS-A2 boxes take
+  those IPs and keep those cluster names (`ETCD_NODE_1: 10.10.5.11` / `10.10.5.14`). The
+  records may be worth **re-pointing and re-commenting** as plain node addresses rather than
+  removed. ⚠ Deleting them silently is the wrong default — something may resolve them.
+
+- [ ] **Step 4: Apply, and note this tool DOES converge**
+
+```bash
+cd ~/github/truenas-infra && ./manage.sh phase apps --apply    # traefik picks up routes.yaml
+cd ~/github/mikrotik-infra && ./manage.sh                      # DNS sync
+```
+
+✅ **Unlike the DHCP path, DNS removal works.** `tools/sync_dns.py` computes
+`to_remove = [r for name, r in managed_live.items() if name not in managed_desired]`
+(line 203) and emits `/ip dns static remove [find name=…]` (line 254). Deleting a record
+from `dns.yaml` really does delete it from the router.
+
+⚠ **But only for records it owns.** The idempotency key is the exact comment
+`managed-by-claude`; records with any other comment (or none) are *preserved and reported,
+never removed*. Before trusting the sync, confirm the records being deleted actually carry
+it:
+
+```bash
+ssh <router> '/ip dns static print detail where name~"mc.w1.lv|pxe.w1.lv|home.w1.lv|amtctl.w1.lv|stress.w1.lv"'
+```
+
+⚠ Any of those lacking `comment=managed-by-claude` must be removed by hand — same as the
+DHCP options in 9b Step 3.
+
+> ⚠ **Two tools in the same repo, two different behaviours — do not generalise either.**
+> `sync_dns.py` is **convergent** (adds *and* removes). `apply_fleet.py` delta is
+> **additive-only** (*"extras are legitimately preserved, MISSING never is"*). Assuming the
+> fleet behaviour for DNS would leave you hand-deleting records that were already gone;
+> assuming the DNS behaviour for DHCP leaves the router advertising a dead boot server
+> forever. 9b Step 3 exists precisely because of that asymmetry.
+
+- [ ] **Step 5: Verify nothing dangles**
+
+```bash
+for h in mc pxe home amtctl stress; do printf "%-8s " "$h"; dig +short $h.w1.lv | head -1 || true; echo; done
+for h in wiki minio-prd minio-dev traefik-nas nas; do printf "%-12s " "$h"; dig +short $h.w1.lv | head -1; done
+```
+
+Expected: the first five return nothing; the survivors still resolve.
+⚠ Check the survivors too — a botched sync that removes too much reads identically to a
+successful one if you only look at what you meant to delete.
+
+### 9d — docs across repos
+
+- [ ] `truenas-infra/CLAUDE.md` — Planned Services table (PXE/TFTP row), § Network
+      (`.10` description), § File Structure, and the § Wiki maintenance matrix rows for
+      `apps/pxe/pxe-download.sh` and `docs/bios-apply-pxe-setup.md`
+- [ ] `mikrotik-infra/CLAUDE.md` — § PXE Boot (delete), the `.10` and `.20` IP descriptions,
+      the related-repos row calling truenas-infra the "PXE server", and the § manage.sh line
+      mentioning PXE. ⚠ Its § PXE Boot already documents that the router fallback never
+      worked (M-H3) — that whole discussion goes with it.
+- [ ] `kube-infra` — ⚠ keep `talos-os/schematic.yaml`; it is now the **only** copy, which
+      removes the byte-identical sync hazard rather than creating one. Update it for AMD
+      (`amd-ucode`, drop `iscsi-tools` + `util-linux-tools`) and record the new schematic ID.
+- [ ] `wiki` — `docs/runbooks/pxe-operator.md` and `docs/runbooks/bios-apply-pxe-setup.md` are
+      auto-synced from truenas-infra; removing the sources orphans them. Remove the entries
+      from `wiki/sync-map.yaml`, delete the pages, and prune `pxe.w1.lv` from
+      `docs/architecture/hostnames.md` + `docs/reference/links.md`. Then:
+      `cd ~/github/wiki && ./tools/deploy.sh --verify`
+- [ ] `bios-config` — ⚠ already "obsolete for AMD" per the MS-A2 audit. Out of scope here;
+      retire it in its own change rather than by implication.
+
+### 9e — verification
+
+- [ ] **No orphan DNS:** `dig +short pxe.w1.lv` returns nothing (or NXDOMAIN)
+- [ ] **No orphan boot advertisement:** a fresh DHCP lease on VLAN 5 carries no
+      `next-server` / `boot-file-name`
+- [ ] **The replacement works:** a USB stick written from the AMD schematic boots a machine
+      into Talos maintenance mode ⚠ — proven, not assumed
+- [ ] **No orphan hostnames:** the five retired records return nothing from `dig`, and the
+      survivors (`wiki`, `minio-prd`, `minio-dev`, `traefik-nas`, `nas`) still resolve —
+      ⚠ check both halves, not just what you meant to delete
+- [ ] **Traefik serves exactly three routes** and its dashboard at `traefik-nas.w1.lv` is up
+- [ ] **Nothing else regressed:** `./manage.sh phase verify` on truenas-infra, and the wiki
+      deploys clean
+
+
 ## Abort points
 
 | After | If this fails | Do |
@@ -548,15 +840,32 @@ Then deploy the wiki — `CLAUDE.md` is auto-synced to `docs/projects/truenas-in
 | Task 5 Step 3 | a serial is missing | **STOP.** A drive did not survive the power cycle — this is the 3.3 V fault, and the pool has not been created yet, so nothing is lost. |
 | Task 5 Step 4 | pool creation drops a drive | Power-cycle fully, re-verify serials, retry once. Twice means a drive is bad. |
 | Task 8 Step 1 | v1's chain has not resumed | Do **not** delete the laptop rescue copies. Fix the `BACKUP ... TO URL` target first. |
+| Task 9 prerequisite | the USB install path has not been proven | **STOP.** Do not remove PXE until its replacement has actually booted a machine. |
+| Task 9b Step 3 | the manual RouterOS removal errors | Leave the options in place — they are inert once the NAS stops answering. ⚠ Do NOT reach for `--mode full-reset` to force it; that reboots the only router in the house. |
 
 ---
 
 ## Self-review
 
+**Survivors, stated explicitly so the retire list is falsifiable:** after this plan the NAS
+runs **five** apps — `minio-prd`, `minio-dev`, `traefik`, `wiki`, `cluster-agent` — down from
+eleven. `plex` and `qbittorrent` remain declared but `enabled: false` with empty datasets;
+⚠ decide whether to drop the entries entirely rather than carrying dead config.
+⚠ `traefik`'s own description ("mgmt-plane reverse proxy for mc/pxe/minio-*/traefik-nas") goes
+stale here — two of its four routes are being deleted. Prune `routes.yaml` and the matching
+`config/dns.yaml` records for `mc.w1.lv` and `pxe.w1.lv` in the same change.
+
 **Coverage:** every item in the measured inventory is either preserved (Tasks 1–3),
 destroyed by Task 5, or explicitly retired with a reason. The operator's five decisions —
 no MinIO backup preservation, fresh DB backup instead, retire meshcentral/amtctl/homepage,
-PXE Talos-only, per-env MinIO kept, 3× 1 TB raidz1 — are all reflected.
+PXE removed **entirely** (revised 2026-09-23 from Talos-only), per-env MinIO kept,
+3× 1 TB raidz1 — are all reflected.
+
+**⚠ The PXE removal's load-bearing finding:** `tools/apply_fleet.py` delta mode is
+additive-only (*"extras are legitimately preserved, MISSING never is"*), so deleting the
+router config removes the intent but **not** the live options. Task 9b Step 3 removes them by
+hand rather than reaching for `--mode full-reset`, which reboots the only router in the house.
+A green audit run *before* that manual step would be the blind spot, not success.
 
 **Known unknowns, surfaced rather than assumed:**
 - whether the MS-A2 can be re-imaged without the PXE `extras` tree — flagged in § Retire,
