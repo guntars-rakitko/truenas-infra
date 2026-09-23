@@ -40,6 +40,123 @@ def test_ensure_docker_pool_sets_when_unset() -> None:
     ], "must poll the daemon before returning — app.create fails without it"
 
 
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """Drive ensure_docker_pool's wait loop off a fake clock.
+
+    `time.sleep` advances the clock instead of blocking, so a 60s wait costs
+    nothing and the poll COUNT is exact rather than wall-clock dependent.
+    ⚠ Do not swap this for a tiny real `wait_s`: with sleep stubbed to a no-op
+    the loop spins as fast as the CPU allows, so the number of polls — and
+    therefore how many mock responses it eats — varies per machine.
+    """
+    import truenas_infra.modules.apps as m
+    t = {"now": 0.0}
+    monkeypatch.setattr(m.time, "monotonic", lambda: t["now"])
+    monkeypatch.setattr(m.time, "sleep", lambda s: t.__setitem__("now", t["now"] + s))
+    return t
+
+
+def _pool_cli(status_fn):
+    """cli double whose docker.status behaviour is supplied by `status_fn`.
+
+    A callable, not a list: the wait loop polls an unbounded number of times,
+    and a short list would raise StopIteration INSIDE the try — which the loop
+    treats as a transient error, silently turning a status test into an error
+    test.
+    """
+    live = {"id": 1, "pool": None, "dataset": None}
+    calls: list[str] = []
+
+    def _respond(method, *args, **kwargs):
+        calls.append(method)
+        if method == "docker.config":
+            return live
+        if method == "docker.update":
+            return {**live, "pool": "tank"}
+        if method == "docker.status":
+            return status_fn()
+        raise AssertionError(f"unexpected call {method!r}")
+
+    cli = MagicMock()
+    cli.call.side_effect = _respond
+    return cli, calls
+
+
+def test_ensure_docker_pool_raises_when_daemon_never_starts(fake_clock) -> None:
+    """A wait that gives up must FAIL, not return a success Diff.
+
+    The regression: this loop had no `else`, so a daemon that never came up
+    fell through to `Diff.update(...)` — run() then called app.create, which
+    failed with 'No pool configured for Docker', the exact error the wait
+    exists to prevent. The operator saw a green `docker_pool_ensured` followed
+    by an unexplained app-create failure.
+    """
+    from truenas_infra.modules.apps import ensure_docker_pool
+
+    cli, calls = _pool_cli(lambda: {"status": "PENDING"})
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_docker_pool(cli, pool_name="tank", apply=True, wait_s=60)
+
+    msg = str(exc.value)
+    assert "did not reach RUNNING within 60" in msg
+    assert "'PENDING'" in msg, "must name the status it actually saw"
+    assert "re-run" in msg, (
+        "must warn that the pool is already persisted, so a re-run takes the "
+        "noop path and never waits again"
+    )
+    assert calls.count("docker.status") == 30, "60s at sleep(2) = 30 polls"
+
+
+def test_ensure_docker_pool_timeout_surfaces_last_error(fake_clock) -> None:
+    """Errors during the wait are swallowed, but the LAST one must survive.
+
+    A persistently failing docker.status and a merely slow daemon are
+    indistinguishable once the exception is discarded — which is what
+    `except Exception: pass` did. Only the timeout message can tell them apart.
+    """
+    from truenas_infra.modules.apps import ensure_docker_pool
+
+    def _boom():
+        raise ConnectionRefusedError("daemon socket not up")
+
+    cli, _ = _pool_cli(_boom)
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_docker_pool(cli, pool_name="tank", apply=True, wait_s=10)
+
+    msg = str(exc.value)
+    assert "never returned a status" in msg
+    assert "daemon socket not up" in msg, "the last error must reach the operator"
+
+
+def test_ensure_docker_pool_tolerates_transient_errors_then_succeeds(fake_clock) -> None:
+    """Swallowing errors DURING the wait is correct — the daemon is restarting.
+
+    Proves the fix did not make a normal restart fatal: two refused connections
+    followed by RUNNING is a success, and no stale error leaks into anything.
+    """
+    from truenas_infra.modules.apps import ensure_docker_pool
+
+    seq = iter([ConnectionRefusedError("no socket"),
+                ConnectionRefusedError("no socket"),
+                {"status": "RUNNING"}])
+
+    def _flaky():
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    cli, calls = _pool_cli(_flaky)
+
+    diff = ensure_docker_pool(cli, pool_name="tank", apply=True, wait_s=60)
+
+    assert diff.changed is True
+    assert calls.count("docker.status") == 3
+
+
 def test_ensure_docker_pool_noop_when_match() -> None:
     from truenas_infra.modules.apps import ensure_docker_pool
 

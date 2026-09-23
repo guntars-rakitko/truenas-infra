@@ -284,6 +284,8 @@ def ensure_docker_pool(
     If we change the pool, also wait for the docker daemon to reach RUNNING
     state — otherwise subsequent `app.create` calls fail with
     'No pool configured for Docker'.
+
+    Raises `RuntimeError` if the daemon never reaches RUNNING within `wait_s`.
     """
     live = cli.call("docker.config")
     if live.get("pool") == pool_name:
@@ -294,15 +296,46 @@ def ensure_docker_pool(
     updated = cli.call("docker.update", {"pool": pool_name})
 
     # Wait for the daemon to be RUNNING.
+    #
+    # ⚠ The `else` is load-bearing. Until 2026-09-23 this loop had none, so a
+    # daemon that never came up fell straight through to a SUCCESS Diff — and
+    # run() went on to app.create, which failed with 'No pool configured for
+    # Docker', the exact error this wait exists to prevent. The operator saw a
+    # green `docker_pool_ensured` immediately followed by an unexplained
+    # app-create failure. Same shape as commit_network_changes() in network.py:
+    # a bounded wait must say so when it gives up.
+    #
+    # Errors DURING the wait stay swallowed on purpose — the daemon is genuinely
+    # restarting and will refuse connections for a while. But the last one is
+    # kept rather than discarded, because on timeout it is the only thing that
+    # distinguishes "slow daemon" from "the API has been failing for 60s".
     deadline = time.monotonic() + wait_s
+    last_status: str | None = None
+    last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
             status = cli.call("docker.status")
-            if status.get("status") == "RUNNING":
+            last_error = None
+            last_status = (status or {}).get("status")
+            if last_status == "RUNNING":
                 break
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 — transient during restart
+            last_error = exc
         time.sleep(2)
+    else:
+        seen = (
+            f"last reported status {last_status!r}" if last_status
+            else "the daemon never returned a status"
+        )
+        why = f"; last error: {last_error!r}" if last_error is not None else ""
+        raise RuntimeError(
+            f"Docker daemon did not reach RUNNING within {wait_s}s of setting "
+            f"pool {pool_name!r} ({seen}{why}). Refusing to continue — "
+            "app.create would fail with 'No pool configured for Docker'.\n"
+            "⚠ The pool setting IS already persisted, so a re-run takes the "
+            "noop path and will NOT wait again: check the daemon directly "
+            "(midclt call docker.status) rather than trusting a green re-run."
+        )
 
     return Diff.update(before=live, after=updated)
 
