@@ -4,47 +4,69 @@
 pool:
   name: tank
   topology:
-    # Beelink ME Mini layout (post-RMA install, 2026-05):
-    # 5-wide RAIDZ1 across the 5x 1TB NVMe drives. Slot 4 holds the
-    # 256GB boot drive (PM981) which is managed by the TrueNAS installer
-    # as `boot-pool` — NOT part of tank, not listed here.
+    # ⚠ REBUILT 2026-09-23: 5-wide RAIDZ1 → 3-wide RAIDZ1. ZFS cannot remove a
+    # device from a raidz vdev (expansion landed in OpenZFS 2.3; shrinking never
+    # did), so this was destroy-and-recreate. Plan + rationale:
+    # docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md
     #
-    # Physical slot map (operator's labeling — see operator plan file for
-    # serial-level detail and selection rationale):
-    #   slot 1 → PM981a 1TB → tank
-    #   slot 2 → PM981a 1TB → tank
-    #   slot 3 → PM981a 1TB → tank
-    #   slot 4 → PM981 256GB → boot-pool (TrueNAS installer manages)
-    #   slot 5 → PM9A1 1TB → tank  (S6H2NF0WC37390 = nvme4n1)
-    #   slot 8 → PM9A1 1TB → tank  (S6H2NF0WC37392 = nvme5n1 — see reslot note)
-    #   slot 6 → EMPTY (…392 moved out of here 2026-07-06 — see below)
+    # Going 5 → 3 drives is itself a 3.3V-rail mitigation: it removes two
+    # drives' worth of peak SIMULTANEOUS current, which is the documented root
+    # cause (docs/nvme-dropout-forensics.md). The PS2 figures below were
+    # MEASURED per drive on 2026-09-23, not taken from datasheets.
     type: RAIDZ1
-    # Tank devnames resolved 2026-05-15 via disk.query against the live
-    # post-install NAS, RE-CONFIRMED 2026-07-06 after the PM9A1 reslot below.
-    # nvme3n1 is the 256GB PM981 boot drive (managed by the TrueNAS installer
-    # as boot-pool) — intentionally NOT in tank.
-    #   nvme0n1  PM981a-H7  S/N S4GSNF0N301379   1TB  tank
-    #   nvme1n1  PM981a-H1  S/N S4GRNX0NA00357   1TB  tank
-    #   nvme2n1  PM981a-H1  S/N S4GRNX1RB33857   1TB  tank
-    #   nvme3n1  PM981 256GB S/N S444NX0N496890  256GB  boot-pool (excluded)
-    #   nvme4n1  PM9A1      S/N S6H2NF0WC37390   1TB  tank  (slot 5)
-    #   nvme5n1  PM9A1      S/N S6H2NF0WC37392   1TB  tank  (slot 8 — reslotted)
     #
-    # ⚠ HARDWARE INCIDENT 2026-07-06 — the PM9A1 S6H2NF0WC37392 hard-dropped off
-    # the PCIe bus under load (CSTS=0xffffffff, SMART-clean) twice; physically
-    # RESLOTTED from slot 6 → slot 8 + `zpool clear` + full scrub = 0 errors,
-    # no re-drop (likely a marginal M.2 contact fixed by the reseat — MONITOR).
-    # The reslot re-enumerated the two PM9A1s, so nvme4n1↔nvme5n1 serials are
-    # the REVERSE of the pre-2026-07-06 mapping. This table + slot map above are
-    # the CURRENT live truth (verified via disk.query). SAFETY: when replacing a
-    # PM9A1, match by SERIAL, not slot — …392 (the previously-faulty unit) is
-    # nvme5n1 in slot 8; …390 (healthy) is nvme4n1 in slot 5.
+    # ══ LIVE MAP, verified 2026-09-23 after the swap ═══════════════════════
+    #   nvme0n1  Samsung 980 1TB  S/N S649NF1R820750Y   931.51 GiB  tank  PS2 2.19W
+    #   nvme1n1  SM961 (MZVKW1T0HMLH) S/N S34DNX0JA02364 953.87 GiB tank  PS2 4.40W
+    #   nvme2n1  PM981 256GB      S/N S444NX0N496890    238.47 GiB  boot-pool (EXCLUDED)
+    #   nvme3n1  PM981a -000H7    S/N S4GSNF0N301379    953.87 GiB  tank  PS2 3.50W
+    #
+    # ⚠ THE TANK DISKS ARE NOT CONTIGUOUS — nvme2n1 (boot) sits between them.
+    # ⚠ ENUMERATION CHANGED IN THE REBUILD: boot was nvme3n1 before, nvme2n1 now.
+    # Match by SERIAL, never by device name. (Same trap as the 25.10.7 upgrade,
+    # which swapped nvme1/nvme2 — see CLAUDE.md § Version Policy.)
+    #
+    # ⚠ MIXED CAPACITY: the 980 is 931.51 GiB, the other two 953.87 GiB. A raidz
+    # vdev sizes to its SMALLEST member, so ~22 GiB is stranded on each of the
+    # larger two (~45 GiB total). Expect ~1.75 TB usable, not 1.8.
+    #
+    # ⚠ MIXED MODELS is deliberate, not an oversight: three different firmware
+    # families and power curves in one vdev. Accepted because drive availability
+    # won over homogeneity. Combined PS2 draw is 10.09 W (2.19 + 4.40 + 3.50)
+    # against ~8.87 W for the lowest-power trio — a 14% difference on a box that
+    # just went from five drives to three, so not decisive.
+    # ⚠ If a drive ever fails here, RECORD WHICH ONE. On a mixed vdev that
+    # attribution is the only thing that teaches anything.
+    #
+    # ══ REMOVED 2026-09-23, and where they went ════════════════════════════
+    #   S4GRNX1RB33857  PM981a-H1  → MS-A2 prd, system+apps   (0% used, 42 unsafe)
+    #   S4GRNX0NA00357  PM981a-H1  → MS-A2 dev, system+apps   (⚠ 26,065 h, 74.8 TB
+    #                                 written, 2% used — SMART-clean, which
+    #                                 corroborates the July drops being Mode A
+    #                                 / platform rail rather than the drive)
+    #   S6H2NF0WC37390  PM9A1      → MS-A2 prd, Postgres      (0 err-log entries,
+    #                                 15 unsafe — the cleanest drive measured)
+    #   S6H2NF0WC37392  PM9A1      → MS-A2 dev, Postgres
+    #     🚫 ⚠ THIS DRIVE HAS A MODE-B HISTORY. docs/nvme-dropout-forensics.md
+    #     records an I/O-timeout cascade ending in `Device not ready; aborting
+    #     reset, CSTS=0x1` — the controller ALIVE AND ANSWERING, i.e. a drive
+    #     firmware hang, NOT a power event — and the fault FOLLOWED IT ACROSS A
+    #     PHYSICAL RESLOT. SMART reads perfectly clean (2% used, 0 media errors,
+    #     0 err-log entries), which is EXPECTED: SMART cannot see a firmware
+    #     hang. A clean table is not exoneration.
+    #     ⚠ Weak corroboration in the 2026-09-23 data: 51 unsafe shutdowns on
+    #     342 power cycles, versus its twin's 15 on 751 — five times the
+    #     hard-reset rate with half the cycles.
+    #     Operator decision 2026-09-23: used on DEV, knowingly, as the lowest-
+    #     stakes placement. If dev's Postgres hangs with that dmesg signature,
+    #     it is this drive — not the MS-A2.
+    #
+    # ⚠ The 2026-07-06 reslot note that used to live here described a 5-wide
+    # pool that no longer exists. Its lesson survives above: match by serial.
     disks:
-      - nvme0n1
-      - nvme1n1
-      - nvme2n1
-      - nvme4n1
-      - nvme5n1
+      - nvme0n1   # Samsung 980      S649NF1R820750Y
+      - nvme1n1   # SM961            S34DNX0JA02364
+      - nvme3n1   # PM981a -000H7    S4GSNF0N301379
   ashift: 12
   # Disabled 2026-07-22 (Beelink ME Mini 3.3V-rail mitigation): with autotrim
   # ON, file deletes issue TRIM/deallocate bursts that spike simultaneous NVMe

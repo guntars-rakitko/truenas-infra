@@ -20,78 +20,60 @@ git + Doppler.
 
 ---
 
-## ⚠ Drive selection — REVISED 2026-09-23
+## ✅ Drive allocation — FINAL, measured 2026-09-23
 
-Operator decision: **only `S4GSNF0N301379` stays**; all four other tank members come out and
-two drawer drives go in.
+All seven drives were health-checked and wiped individually via USB passthrough on
+`10.10.10.19` before allocation. **Every drive passed SMART with zero media errors**; the
+differences below are wear history and power draw, not health.
 
-| role | model | serial | note |
-|---|---|---|---|
-| ✅ new tank | PM981a `-000H7` | `S4GSNF0N301379` | characterised; PS2 cap known (8.00→3.50 W) |
-| ✅ new tank | **SM961 1 TB** | *(record on install)* | ⚠ **power table UNKNOWN** — see § below |
-| ✅ new tank | **Samsung 980 1 TB** | *(record on install)* | ⚠ **power table UNKNOWN** — see § below |
-| boot-pool | PM981 256 GB | `S444NX0N496890` | untouched, installer-managed |
-| ⏏ out | PM981a `-000H1` | `S4GRNX0NA00357` | dropped twice (Jul 19/22, Mode A) |
-| ⏏ out | PM981a `-000H1` | `S4GRNX1RB33857` | clean — **keep as the spare** |
-| ⏏ out | PM9A1 | `S6H2NF0WC37390` | healthy — MS-A2 candidate |
-| 🚫 out | PM9A1 | `S6H2NF0WC37392` | **faulty, never reuse** |
+| serial | model | used | written | hours | unsafe | PS2 | → |
+|---|---|---|---|---|---|---|---|
+| `S649NF1R820750Y` | Samsung 980 | 1% | 9.99 TB | 1,275 | 59 | **2.19 W** | **NAS** |
+| `S34DNX0JA02364` | SM961 MLC | 1% | 47.2 TB | 6,151 | 149 | **4.40 W** | **NAS** |
+| `S4GSNF0N301379` | PM981a `-H7` | **0%** | 7.37 TB | 3,320 | 64 | **3.50 W** | **NAS** |
+| `S444NX0N496890` | PM981 256G | 1% | 4.32 TB | 3,581 | 78 | 3.50 W | *boot-pool* |
+| `S6H2NF0WC37390` | PM9A1 | 2% | 16.8 TB | 6,399 | **15** | 3.18 W | **prd — Postgres** |
+| `S4GRNX1RB33857` | PM981a `-H1` | **0%** | 8.13 TB | 4,026 | 42 | 3.50 W | **prd — system+apps** |
+| `S6H2NF0WC37392` | PM9A1 | 2% | 18.8 TB | 8,579 | ⚠ 51 | 3.18 W | ⚠ **dev — Postgres** |
+| `S4GRNX0NA00357` | PM981a `-H1` | 2% | ⚠ 74.8 TB | ⚠ 26,065 | 58 | 3.50 W | **dev — system+apps** |
 
-3 × 1 TB raidz1 → **~1.8 TB usable**, the stated target.
+### Why identical drives in dev and prd
 
-🚫 **`S6H2NF0WC37392` must never be reused — not here, not in an MS-A2.** It is the **Mode B**
-failure in `docs/nvme-dropout-forensics.md`: an I/O-timeout cascade ending in
-`Device not ready; aborting reset, CSTS=0x1` — the controller **alive and answering**, i.e. a
-drive firmware hang rather than a power event — and **the fault followed it across a physical
-reslot**. It is the one drive in this box attributable to the drive rather than the platform.
+Operator decision, and it is the strongest argument in the allocation: **same model, same
+firmware, same power curve in both boxes means dev actually VALIDATES prd** rather than
+approximating it. Dev exists as the compensating control for prd having no node-level HA; a
+dev that behaves differently at the storage layer compensates for less than it appears to.
+⚠ This outranked per-box power optimisation, which was the earlier (weaker) framing.
 
-✅ **`S4GRNX1RB33857` has no incident history** — keep it as the cold spare rather than
-shelving it indiscriminately. If a new drive misbehaves during bring-up, it is the known-good
-1 TB replacement already in hand.
+### ⚠ The dev Postgres drive is the Mode-B unit, knowingly
 
-### ⚠⚠ MANDATORY before pool creation: characterise the two new drives
+`S6H2NF0WC37392` carries the firmware-hang history (`CSTS=0x1`, controller alive and
+answering; fault followed a physical reslot). SMART reads perfectly clean — **expected, since
+SMART cannot see a firmware hang** — with weak corroboration in 51 unsafe shutdowns on 342
+cycles against its twin's 15 on 751.
 
-The estate's rail mitigation is a **per-model** udev rule (`90-nvme-ps2-cap`) that pins each
-drive to PS2. CLAUDE.md records what that buys, model by model — PM981a **8.00 → 3.50 W**,
-PM9A1 **8.49 → 3.18 W**. ⚠ **Nobody has ever read the power table on an SM961 or a 980 in this
-estate.** PS2 on those parts may be a different wattage, or not an operational state at all.
+Placed on **dev**, the lowest-stakes slot available. ⚠ If it hangs, dev's Postgres needs a
+Barman restore or a DataMigrator re-run rather than a reinstall — hours, not data loss.
+**Watch for `Device not ready; aborting reset, CSTS=0x1` with the drive still enumerated.**
+That signature means this drive, not the MS-A2.
 
-This box's defining fault is the shared 3.3 V rail sagging under **simultaneous peak current**,
-and the new peak is the sum of three curves — two of them currently unknown. Reading them is
-minutes of work and it must happen **before** `phase pool --apply`, because pool creation is
-the highest-current moment in this entire plan (the forensics record drops happening *"during
-the very first sustained write (initial ZFS pool creation)"*).
+### ⚠ Which drive holds Postgres is PROVISIONAL until benched
 
-```bash
-# per new drive, once physically installed:
-sudo nvme id-ctrl -H /dev/nvmeXn1 | grep -iE "^ps |Relative|Max Power|Non-Operational"
-sudo nvme get-feature /dev/nvmeXn1 -f 0x02      # confirm the cap actually applied
-```
+The operator's reasoning for PM9A1-as-database is "more modern, more IO". ⚠ For Postgres the
+metric is **fsync latency at QD1**, not IOPS, and those diverge. The only measurement taken —
+PM9A1 4.0–4.2 ms vs PM981a 1.38 ms — was confounded three ways (power throttling, Gen3 x1,
+the 3.3 V fault) and was retracted. **Confounded means unknown, not reversed.**
 
-Record for each drive: **the lowest OPERATIONAL state and its wattage**, and whether PS2 is
-that state. CLAUDE.md's own buying rule is *"lowest operational power state ≤ ~1.5–2 W"*.
+✅ **Agreed 2026-09-23: remeasure first, as step one of MS-A2 bring-up.** The `fio` test in
+`kube-infra/docs/msa2-hardware-day.md` § 1a runs before Talos is installed, so the role
+assignment is not locked until then. If the numbers disagree with the datasheet, swap the
+roles — the drives stay in the same box either way, so nothing else changes.
+⚠ Do NOT bench over USB. The bridge imposes its own flush semantics; that is precisely what
+contaminated the retracted measurement.
 
-⚠ **If PS2 is not an operational state on a drive, the udev rule silently does nothing for it**
-— `nvme set-feature -f 0x02` would either error or select a non-operational state the
-controller will not hold under load. Verify with `get-feature`, not by assuming the rule ran.
-⚠ **Do not judge these drives on "DRAM-less."** The 980 is DRAM-less/HMB, but CLAUDE.md
-explicitly warns that heuristic is contradicted by the community's own data (DRAM-less P310
-and 990 EVO Plus both appear on the failing side). The power table is the real test.
+### 🚫 Nothing was disposed of
 
-### What is NOT known about these two drives, stated plainly
-
-- **No fsync measurement exists for either.** ⚠ The audit's `SM961 3.44 ms/flush` figure is
-  for the **256 GB `MZVPW256HEGL`** in the prd nodes — a different part. Do not transfer it;
-  that is the same cross-part inference that invalidated the NAS PM9A1 ranking.
-  For a bulk-sequential backup target this matters far less than it would for Postgres, so it
-  is not a blocker — but it is unmeasured, not good.
-- **No thermal history.** The SM961 is a Polaris-controller MLC part and runs warm; the ME
-  mini has six M.2 slots in a small chassis. Watch `nvme smart-log` temperatures through the
-  first scrub.
-- **Mixed models in one vdev** is a deliberate acceptance, not an oversight: three different
-  power curves, three different firmware families, three different failure modes. Homogeneity
-  would have been the safer default; the operator has chosen availability of drives over it.
-  ⚠ Record which drive fails first if one does — with a mixed vdev, that attribution is the
-  only way to learn anything.
+All seven drives are in service. There is no cold spare — a replacement means buying one.
 
 ## Inventory — measured 2026-09-23
 
