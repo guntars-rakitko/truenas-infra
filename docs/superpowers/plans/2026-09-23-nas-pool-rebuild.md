@@ -593,8 +593,34 @@ Then edit:
 - `config/apps.yaml` — delete the `- name: pxe` entry (lines ~20-24)
 - `config/dns.yaml` — delete the `pxe.w1.lv` record (→ 10.10.5.20)
 - `config/storage.yaml` — delete the `tank/system/pxe` dataset
-- `src/truenas_infra/modules/apps.py` — remove `load_talos_config()` and the pxe `cronjob.command`
-  wiring that passes `config/talos.yaml`'s four keys as env vars
+- ⚠⚠ **`src/truenas_infra/modules/apps.py` — SCOPE CORRECTED 2026-09-23, this is NOT a small
+  edit.** The plan said "remove `load_talos_config()` and the pxe cronjob wiring". Measured:
+  **18 top-level functions / ~1,136 lines** of a 1,828-line module reference retired apps —
+  `ensure_talos_updater` (202 lines), five `_ensure_pxe_*_via_ctx` helpers,
+  `ensure_pxe_menu_files`, `ensure_pxe_build_context`, `_ensure_stress_dashboard_*`,
+  `_ensure_homepage_*`, `_ensure_meshcentral_*`, `_ensure_amtctl_*`, plus their call sites in
+  `run()`.
+  ⚠ Several of those matches are shared infrastructure that merely MENTIONS a retired app in
+  a comment or dispatch branch — `ensure_custom_app`, `ensure_file_on_nas`, `run`,
+  `_ensure_cluster_agent_config_via_ctx`. Those must NOT be removed. A regex sweep over the
+  retired names will delete working code.
+  ⚠ Removing the helpers without their call sites **breaks the module import**, so it cannot
+  be done incrementally in small commits — it is one atomic change.
+  **Attempted and REVERTED 2026-09-23**: too large to land safely at the tail of the rebuild.
+  It deserves its own PR with the diff actually reviewed, not folded into a cleanup list.
+  ✅ The dead wiring is INERT meanwhile — `talos_updater_cronjob_ensured` and
+  `pxe_download_cronjob_ensured` both report `action=noop changed=False`, so nothing is
+  created and nothing breaks.
+
+> ⚠ **BEFORE TOUCHING THIS MODULE: the test suite has 5 PRE-EXISTING failures.** Verified
+> 2026-09-23 by checking out `ad3080f` (the commit before the rebuild) and re-running — they
+> fail identically there, so they are NOT rebuild damage:
+> `test_apps.py::test_run_configures_docker_pool_and_apps` (AttributeError),
+> `test_network.py::test_run_creates_vlans_and_commits` (AttributeError), and three
+> `test_verify.py` cases (StopIteration — exhausted mock side-effect lists).
+> ⚠ Anyone refactoring `apps.py` needs this baseline, or they will attribute a pre-existing
+> failure to their own change — or worse, dismiss a real regression as "one of the known
+> ones". 230 pass.
 - `tests/test_apps.py`, `tests/test_verify.py` — remove the PXE cases
 - `docs/verification.md` — remove the PXE rows ⚠ (also fix the "Pool healthy … 6 disks" row
   per Task 8 Step 3)
