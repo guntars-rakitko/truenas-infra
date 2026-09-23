@@ -1005,17 +1005,38 @@ def run(
     # missing, so we pre-upload those too. Apps like traefik (directory
     # mount with graceful empty handling), meshcentral (self-mkdir on first
     # run), minio-{prd,dev} (uses env vars) don't need pre-ordering.
-    if only in (None, "wiki"):
+    # ⚠ FIXED 2026-09-23 — these used to gate on `only` ALONE, never on whether
+    # the app is actually enabled in apps.yaml. `cfg` holds only ENABLED apps,
+    # but the dispatch ignored it, so a retired app kept having its config
+    # uploaded forever.
+    #
+    # ⚠ THIS WAS NOT THEORETICAL. After the pool rebuild removed six apps from
+    # apps.yaml, the very next `phase apps --apply` RECREATED all four of
+    # amtctl/homepage/meshcentral/stress-dashboard's config directories, plus
+    # the pxe and talos-updater script trees — on a pool that had just been
+    # rebuilt specifically to be rid of them. The cronjobs pointing at those
+    # trees survived in TrueNAS config on boot-pool and would have fired:
+    # talos-updater nightly at 03:00, and pxe-download on Sunday at 02:30,
+    # re-downloading the 15 GB of ISOs the rebuild had deliberately deleted.
+    #
+    # Gating on `_want()` makes the module self-correcting: remove an app from
+    # apps.yaml and its config stops being uploaded, with no code change.
+    _enabled = {a.name for a in cfg.apps}
+
+    def _want(name: str) -> bool:
+        return only in (None, name) and name in _enabled
+
+    if _want("wiki"):
         _ensure_wiki_config_via_ctx(cli, ctx, log)
-    if only in (None, "homepage"):
+    if _want("homepage"):
         _ensure_homepage_config_via_ctx(cli, ctx, log)
-    if only in (None, "meshcentral"):
+    if _want("meshcentral"):
         _ensure_meshcentral_config_via_ctx(cli, ctx, log)
-    if only in (None, "amtctl"):
+    if _want("amtctl"):
         _ensure_amtctl_config_via_ctx(cli, ctx, log)
-    if only in (None, "stress-dashboard"):
+    if _want("stress-dashboard"):
         _ensure_stress_dashboard_config_via_ctx(cli, ctx, log)
-    if only in (None, "cluster-agent"):
+    if _want("cluster-agent"):
         _ensure_cluster_agent_config_via_ctx(cli, ctx, log)
     # PXE build context MUST land before `app.create` for the `pxe` app:
     # the compose spec uses `build: /mnt/tank/system/apps-config/pxe/build`,
@@ -1026,7 +1047,7 @@ def run(
     # files stay in the post-create block — those are read at runtime via
     # live bind-mounts and don't need to exist at container-create time.
     pxe_build_context_changed = False
-    if only in (None, "pxe"):
+    if _want("pxe"):
         pxe_build_context_changed = _ensure_pxe_build_context_via_ctx(cli, ctx, log)
 
     for spec in cfg.apps:
@@ -1049,14 +1070,20 @@ def run(
     # 3. Talos PXE auto-updater: upload script + schematic to the NAS via
     # filesystem.put, then register a short cronjob that invokes the
     # on-disk script (well under TrueNAS's 1024-char cronjob.command cap).
-    if only in (None, "talos-updater"):
+    # ⚠ Gated on `pxe`, NOT on a "talos-updater" app — there is no such app in
+    # apps.yaml. This updater exists solely to feed the PXE boot tree, so when
+    # pxe is retired it has nothing to feed and must not run. Before 2026-09-23
+    # it was ungated and kept re-uploading its script + schematic and
+    # re-registering a nightly 03:00 cronjob onto a pool the rebuild had just
+    # cleared of PXE.
+    if _want("pxe"):
         _ensure_talos_updater_via_ctx(cli, ctx, log)
 
     # 4. Homelab PXE — remaining file uploads. Build context was already
     # uploaded in step 2a (pre-app-create); these are read at runtime by
     # the running pxe container via live bind-mounts (TFTP menu tree,
     # download scripts, optional bios-apply/hw-validation artifacts).
-    if only in (None, "pxe"):
+    if _want("pxe"):
         _ensure_pxe_menu_files_via_ctx(cli, ctx, log)
         _ensure_pxe_scripts_via_ctx(cli, ctx, log)
         _ensure_pxe_bios_apply_img_via_ctx(cli, ctx, log)
@@ -1066,13 +1093,17 @@ def run(
     # and registers the hourly cronjob. Depends on phase tls having already
     # issued the wildcard cert (the scripts assume /etc/certificates/
     # w1-wildcard.{crt,key} exist).
+    # ⚠ DELIBERATELY NOT GATED ON `_want()`. There is no "tls" app in
+    # apps.yaml, so `_want("tls")` would ALWAYS be False and cert rotation
+    # would silently stop — the wildcard cert would expire with no signal.
+    # This is infrastructure, not an app. Leave it on `only`.
     if only in (None, "tls"):
         _ensure_tls_rotate_via_ctx(cli, ctx, log)
 
     # 6. Traefik routes.yaml — uploaded to the container's file-provider
     # directory. Traefik file-watches and hot-reloads on change, no app
     # redeploy needed for route edits.
-    if only in (None, "traefik"):
+    if _want("traefik"):
         _ensure_traefik_routes_via_ctx(cli, ctx, log)
 
     # (Wiki nginx.conf was already uploaded in step 2a, before the apps
