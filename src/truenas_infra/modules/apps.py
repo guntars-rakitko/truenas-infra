@@ -276,39 +276,27 @@ def load_apps_config(path: Path) -> AppsConfig:
 # ─── ensure_docker_pool ──────────────────────────────────────────────────────
 
 
-def ensure_docker_pool(
-    cli: Any, *, pool_name: str, apply: bool, wait_s: float = 60,
-) -> Diff:
-    """Ensure TrueNAS Docker/Apps is configured to use `pool_name` as storage.
+def _wait_for_docker_running(
+    cli: Any, *, pool_name: str, wait_s: float, after_update: bool,
+) -> None:
+    """Poll `docker.status` until RUNNING. Raise `RuntimeError` if it never is.
 
-    If we change the pool, also wait for the docker daemon to reach RUNNING
-    state — otherwise subsequent `app.create` calls fail with
-    'No pool configured for Docker'.
+    ⚠ The `else` is load-bearing. Until 2026-09-23 this loop had none, so a
+    daemon that never came up fell straight through to a SUCCESS Diff — and
+    run() went on to app.create, which failed with 'No pool configured for
+    Docker', the exact error this wait exists to prevent. The operator saw a
+    green `docker_pool_ensured` immediately followed by an unexplained
+    app-create failure. Same shape as commit_network_changes() in network.py:
+    a bounded wait must say so when it gives up.
 
-    Raises `RuntimeError` if the daemon never reaches RUNNING within `wait_s`.
+    Errors DURING the wait stay swallowed on purpose — the daemon is genuinely
+    restarting and will refuse connections for a while. But the last one is
+    kept rather than discarded, because on timeout it is the only thing that
+    distinguishes "slow daemon" from "the API has been failing for 60s".
+
+    `after_update` only shapes the message: whether we just set the pool, or
+    found it already set and are checking a daemon nobody here disturbed.
     """
-    live = cli.call("docker.config")
-    if live.get("pool") == pool_name:
-        return Diff.noop(live)
-    if not apply:
-        return Diff.update(before=live, after={**live, "pool": pool_name})
-
-    updated = cli.call("docker.update", {"pool": pool_name})
-
-    # Wait for the daemon to be RUNNING.
-    #
-    # ⚠ The `else` is load-bearing. Until 2026-09-23 this loop had none, so a
-    # daemon that never came up fell straight through to a SUCCESS Diff — and
-    # run() went on to app.create, which failed with 'No pool configured for
-    # Docker', the exact error this wait exists to prevent. The operator saw a
-    # green `docker_pool_ensured` immediately followed by an unexplained
-    # app-create failure. Same shape as commit_network_changes() in network.py:
-    # a bounded wait must say so when it gives up.
-    #
-    # Errors DURING the wait stay swallowed on purpose — the daemon is genuinely
-    # restarting and will refuse connections for a while. But the last one is
-    # kept rather than discarded, because on timeout it is the only thing that
-    # distinguishes "slow daemon" from "the API has been failing for 60s".
     deadline = time.monotonic() + wait_s
     last_status: str | None = None
     last_error: Exception | None = None
@@ -318,25 +306,67 @@ def ensure_docker_pool(
             last_error = None
             last_status = (status or {}).get("status")
             if last_status == "RUNNING":
-                break
+                return
         except Exception as exc:  # noqa: BLE001 — transient during restart
             last_error = exc
         time.sleep(2)
-    else:
-        seen = (
-            f"last reported status {last_status!r}" if last_status
-            else "the daemon never returned a status"
-        )
-        why = f"; last error: {last_error!r}" if last_error is not None else ""
-        raise RuntimeError(
-            f"Docker daemon did not reach RUNNING within {wait_s}s of setting "
-            f"pool {pool_name!r} ({seen}{why}). Refusing to continue — "
-            "app.create would fail with 'No pool configured for Docker'.\n"
-            "⚠ The pool setting IS already persisted, so a re-run takes the "
-            "noop path and will NOT wait again: check the daemon directly "
-            "(midclt call docker.status) rather than trusting a green re-run."
-        )
 
+    seen = (
+        f"last reported status {last_status!r}" if last_status
+        else "the daemon never returned a status"
+    )
+    why = f"; last error: {last_error!r}" if last_error is not None else ""
+    what = (
+        f"of setting pool {pool_name!r}" if after_update
+        else f"— pool {pool_name!r} was already configured, so nothing here "
+             f"disturbed it; the daemon is down on its own"
+    )
+    raise RuntimeError(
+        f"Docker daemon did not reach RUNNING within {wait_s}s {what} "
+        f"({seen}{why}). Refusing to continue — app.create would fail with "
+        "'No pool configured for Docker'."
+    )
+
+
+def ensure_docker_pool(
+    cli: Any, *, pool_name: str, apply: bool, wait_s: float = 60,
+) -> Diff:
+    """Ensure TrueNAS Docker/Apps is configured to use `pool_name` as storage.
+
+    On apply, also wait for the docker daemon to reach RUNNING — otherwise
+    subsequent `app.create` calls fail with 'No pool configured for Docker'.
+
+    Raises `RuntimeError` if the daemon never reaches RUNNING within `wait_s`.
+    """
+    live = cli.call("docker.config")
+
+    if live.get("pool") == pool_name:
+        # ⚠ The pool being set does NOT mean the daemon is up, and this path is
+        # how you find that out the hard way. `docker.update` persists the pool
+        # BEFORE the wait below, so a run that set the pool and then timed out
+        # leaves the config correct and the daemon dead — and every later run
+        # lands here. Until 2026-09-23 this returned an unconditional green
+        # noop, so the operator's instinctive re-run reported success while
+        # app.create kept failing. Verifying here is what makes a re-run
+        # meaningful rather than reassuring.
+        #
+        # Dry-run is deliberately exempt: `ensure_custom_app` never calls
+        # app.create without `apply`, so the daemon is not a precondition for
+        # anything a dry-run does — and an inspection command should not block
+        # for wait_s or hard-fail on state it was only asked to report.
+        if apply:
+            _wait_for_docker_running(
+                cli, pool_name=pool_name, wait_s=wait_s, after_update=False,
+            )
+        return Diff.noop(live)
+
+    if not apply:
+        return Diff.update(before=live, after={**live, "pool": pool_name})
+
+    updated = cli.call("docker.update", {"pool": pool_name})
+    _wait_for_docker_running(
+        cli, pool_name=pool_name, wait_s=wait_s, after_update=True,
+    )
     return Diff.update(before=live, after=updated)
 
 
