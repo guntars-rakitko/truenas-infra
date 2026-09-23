@@ -564,11 +564,17 @@ def test_run_creates_vlans_and_commits(tmp_path: Path, monkeypatch) -> None:
         [], {"id": "vlan10", "name": "vlan10"},
         [], {"id": "vlan15", "name": "vlan15"},
         [], {"id": "vlan20", "name": "vlan20"},
-        # commit (rollback=False, no checkin)
-        None,
         # network.configuration.config + update (gateway differs)
+        # ⚠ BEFORE the commit, not after. run() step 4 sets the gateway first
+        # because interface.commit reconfigures the kernel stack and drops the
+        # operator's WebSocket; the client's retry needs a default gateway for
+        # return packets over WG. Setting it after commit times out and strands
+        # the NAS with a static IP and no route (2026-05-15 fresh install).
+        # This fixture had the pre-fix order and so never reached commit at all.
         net_global,
         updated_global,
+        # commit (rollback=False, no checkin)
+        None,
         # system.general.config (noop — already bound to 10.10.5.10)
         ui_live,
     ])
@@ -590,9 +596,9 @@ def test_run_creates_vlans_and_commits(tmp_path: Path, monkeypatch) -> None:
         "interface.query", "interface.create",  # vlan10
         "interface.query", "interface.create",  # vlan15
         "interface.query", "interface.create",  # vlan20
-        "interface.commit",
-        "network.configuration.config",
+        "network.configuration.config",         # gateway BEFORE commit
         "network.configuration.update",
+        "interface.commit",
         "system.general.config",
     ]
     assert "interface.checkin" not in main_calls

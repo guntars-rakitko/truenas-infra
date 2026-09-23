@@ -157,15 +157,17 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        # apps (8 of them now — amtctl added)
-        [{"name": "pxe", "state": "RUNNING"}],
+        # apps — ⚠ one entry per ENABLED app in config/apps.yaml, in order.
+        # verify derives its list from that file (since 2026-09-23), so adding
+        # or removing an app there changes how many cli.call()s happen here.
+        # A short list shows up as StopIteration from the mock's side_effect,
+        # which is what this fixture did for months after apps were added
+        # without updating it.
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
-        [{"name": "meshcentral", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
-        [{"name": "homepage", "state": "RUNNING"}],
-        [{"name": "amtctl", "state": "RUNNING"}],
+        [{"name": "cluster-agent", "state": "RUNNING"}],
         # cert expiry
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])

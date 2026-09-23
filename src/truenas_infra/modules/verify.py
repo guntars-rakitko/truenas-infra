@@ -49,6 +49,25 @@ def check_service(cli: Any, *, service_name: str) -> CheckResult:
     )
 
 
+def _enabled_app_names() -> tuple[str, ...]:
+    """Enabled app names from config/apps.yaml, in declaration order.
+
+    ⚠ Returns () if the file is unreadable rather than raising — a verify run
+    should report what it can rather than abort. A missing apps.yaml surfaces
+    as "no app checks ran", which is visible in the summary count.
+    """
+    try:
+        import yaml as _y
+        from pathlib import Path as _P
+        raw = _y.safe_load(_P("config/apps.yaml").read_text(encoding="utf-8")) or {}
+        return tuple(
+            a["name"] for a in (raw.get("apps") or [])
+            if a.get("enabled", True) and a.get("name")
+        )
+    except Exception:
+        return ()
+
+
 def check_app(cli: Any, *, app_name: str) -> CheckResult:
     apps = cli.call("app.query", [["name", "=", app_name]])
     if not apps:
@@ -236,18 +255,17 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_service(cli, service_name="nfs"),
         check_service(cli, service_name="cifs"),
         check_service(cli, service_name="ups"),
-        # Every Custom App we deploy in phase apps gets a state check.
-        # Order matches config/apps.yaml.
-        check_app(cli, app_name="pxe"),
-        check_app(cli, app_name="minio-prd"),
-        check_app(cli, app_name="minio-dev"),
-        check_app(cli, app_name="meshcentral"),
-        check_app(cli, app_name="traefik"),
-        check_app(cli, app_name="wiki"),
-        check_app(cli, app_name="homepage"),
-        check_app(cli, app_name="amtctl"),
-        check_app(cli, app_name="stress-dashboard"),
-        check_app(cli, app_name="iperf3"),
+        # Every ENABLED Custom App gets a state check.
+        #
+        # ⚠ DERIVED FROM config/apps.yaml SINCE 2026-09-23 — this used to be a
+        # hardcoded list with the comment "Order matches config/apps.yaml".
+        # It did not. It had drifted to list six apps that no longer exist
+        # (pxe, meshcentral, homepage, amtctl, stress-dashboard, iperf3) while
+        # OMITTING cluster-agent, which is actually deployed. So the matrix
+        # reported six false "app not installed" failures and silently skipped
+        # the one app it should have been watching.
+        # Deriving it means the check cannot drift from the declaration again.
+        *(check_app(cli, app_name=n) for n in _enabled_app_names()),
         # TLS + DNS checks (phase 3 added these)
         check_cert_expiry(cli, cert_name="w1-wildcard"),
     ]
@@ -266,17 +284,24 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
     # Host headers go through Traefik (mc/pxe/minio-prd/minio-dev) or direct
     # (nas/traefik-nas/s3-prd/s3-dev). All must present a cert whose SAN
     # covers the host.
+    # ⚠ TRIMMED 2026-09-23. This list was hardcoded and had drifted the same way
+    # the app list had: it still probed mc / pxe / traefik-nas / home / amtctl /
+    # stress, whose DNS records were removed with their apps, so every run
+    # reported "nodename nor servname provided" failures for hosts that are
+    # SUPPOSED to be gone. ⚠ traefik-nas had been dead since 2026-09-13, when
+    # every Traefik dashboard was removed — a permanent false failure nobody
+    # chased because it looked like just another red line.
+    #
+    # ⚠ Deliberately NOT derived from dns.yaml: that file carries records for
+    # things with no HTTPS listener (node AMT addresses, switches, the router),
+    # and probing those would trade false failures for different false failures.
+    # Keep it explicit and short — one entry per host that genuinely terminates
+    # TLS — and prune it when an app is retired.
     for host, port in [
         ("nas.w1.lv", 443),
-        ("mc.w1.lv", 443),
-        ("pxe.w1.lv", 443),
         ("minio-prd.w1.lv", 443),
         ("minio-dev.w1.lv", 443),
-        ("traefik-nas.w1.lv", 443),
         ("wiki.w1.lv", 443),
-        ("home.w1.lv", 443),
-        ("amtctl.w1.lv", 443),
-        ("stress.w1.lv", 443),
         ("s3-prd.w1.lv", 9000),
         ("s3-dev.w1.lv", 9000),
     ]:
