@@ -27,12 +27,28 @@ if [ ! -x "$EXPORT_SCRIPT" ]; then
 fi
 
 # Run export — capture exit code (0=noop, 10=changed).
-if "$EXPORT_SCRIPT"; then
+#
+# ⚠ CAPTURE $? IMMEDIATELY. Until 2026-09-23 this read:
+#     if "$EXPORT_SCRIPT"; then ... exit 0; fi
+#     rc=$?
+# `$?` after a completed `if` block is the status of the IF COMPOUND, which is
+# always 0 — not the script's. So a successful rotation (exit 10, "cert
+# changed") fell through to the else path, read rc=0, failed the `-ne 10` test,
+# logged the self-contradictory "tls-export.sh failed with exit=0" and RETURNED
+# WITHOUT REDEPLOYING.
+#
+# ⚠ THE REDEPLOY HAD THEREFORE NEVER RUN. The cert rotated on disk while
+# Traefik and MinIO kept serving the previous one until something else
+# restarted them — which on a real LE renewal means serving an EXPIRING cert
+# with a completely non-obvious cause. Found during the 2026-09-23 pool
+# rebuild, when the log line appeared right after a known-good export.
+"$EXPORT_SCRIPT"
+rc=$?
+if [ "$rc" -eq 0 ]; then
     log "no cert change; no redeploys needed"
     exit 0
 fi
-# Exit was non-zero. Only 10 means "updated"; anything else is a real error.
-rc=$?
+# Non-zero. Only 10 means "updated"; anything else is a real error.
 if [ "$rc" -ne 10 ]; then
     log "tls-export.sh failed with exit=$rc — not redeploying"
     exit "$rc"

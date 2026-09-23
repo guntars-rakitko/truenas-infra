@@ -122,82 +122,21 @@ datasets:
 
   - name: tank/system
     kind: parent
-  - name: tank/system/pxe
-    kind: parent
-    # Subdirs tftp/ and http/ are not separate datasets — just regular
-    # subdirectories under tank/system/pxe. apps/pxe/docker-compose.yaml
-    # bind-mounts them as /srv/tftp and /srv/http.
-    #
-    # The legacy `config/` and `assets/` subdirs from the pre-rebuild
-    # netboot.xyz era remain on disk until manually cleaned; they're not
-    # referenced by anything the current stack uses.
+    # ⚠ SEVEN DATASETS REMOVED 2026-09-23 with the retired apps — pxe,
+    # apps-config/{pxe,talos-updater,meshcentral,homepage,amtctl} and
+    # stress-results. Recreating a dataset only to delete it later is churn,
+    # so they are gone from the declaration rather than created-then-pruned.
+    # Rationale per app: docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md
+    # § Retire entirely. ⚠ meshcentral + amtctl exist only to KVM into Q170S1
+    # nodes over AMT, and the MS-A2 has no IPMI/BMC/vPro/AMT at all.
   - name: tank/system/apps-config
     kind: parent
   - name: tank/system/apps-config/nut
-  - name: tank/system/apps-config/talos-updater
-  - name: tank/system/apps-config/meshcentral
   - name: tank/system/apps-config/traefik
   - name: tank/system/apps-config/wiki
     # Static MkDocs build + nginx.conf mounted read-only into the `wiki`
     # Custom App. Content pushed from the operator laptop via the wiki
     # repo's `tools/deploy.sh` (rsync over SSH).
-  - name: tank/system/apps-config/homepage
-    # Declarative YAML configs (services, bookmarks, widgets, settings,
-    # docker, kubernetes) mounted read-only into the `homepage` app at
-    # /app/config. Uploaded from apps/homepage/*.yaml by phase apps.
-  - name: tank/system/apps-config/amtctl
-    # AMT control sidecar — bind-mount target for code (amt.py, main.py,
-    # web/index.html) + config (nodes.yaml) + persistent venv. Populated
-    # by _ensure_amtctl_config_via_ctx in modules/apps.py.
-  - name: tank/system/apps-config/pxe
-    # PXE container build context (apps/pxe/build/** uploaded by phase
-    # apps) + pxe-cache.sh + pxe-cache.log. docker-compose.yaml's
-    # build.context points at /mnt/tank/system/apps-config/pxe/build
-    # so the Dockerfile is resolvable when TrueNAS runs the build.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.
-  - name: tank/system/stress-results
-    # NFS export target for the hw-validation PXE image. Each test run
-    # lands a {hostname}-{iso8601}.json report. Read by a (future)
-    # dashboard that renders a per-node pass/fail matrix. Served over
-    # the mgmt VLAN (NIC1) so reports still land even when NIC2
-    # (I226-V, which is ITSELF one of the validation subjects) is
-    # broken — a scenario we've already hit on kub-dev-02.
-
-# Storage tasks.
-scrub:
-  schedule: "0 4 * * 0"   # Sunday 04:00
-
-smart:
-  short_test:
-    schedule: "0 2 * * 0"        # Sunday 02:00
-    disks: all
-  long_test:
-    schedule: "0 3 1-7 * 0"      # First Sunday of the month, 03:00
-    disks: all
-
-snapshots:
-  # Per-environment recursive snapshots: one task per env covers all
-  # K8s-tracked datasets atomically. Today that's just velero (after
-  # longhorn was removed 2026-04-27 — closes kube-infra #26); the
-  # recursive task auto-picks-up future siblings if added.
-  - dataset: tank/kube/prd
-    recursive: true
-    schedule: "0 1 * * *"         # daily 01:00
-    retention_days: 14
-  - dataset: tank/kube/dev
-    recursive: true
-    schedule: "0 1 * * *"
-    retention_days: 7
-  - dataset: tank/media
-    recursive: true
-    schedule: "0 5 * * 0"         # weekly Sun 05:00
-    retention_weeks: 4
-  - dataset: tank/shared/general
-    schedule: "0 2 * * *"
-    retention_days: 14
-  - dataset: tank/system
-    recursive: true
-    schedule: "30 2 * * *"
-    retention_days: 7
