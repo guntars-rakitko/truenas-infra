@@ -17,12 +17,22 @@
 #     Then: ./manage.sh phase apps --apply && cd ~/github/wiki && ./tools/deploy.sh --verify
 
 apps:
-  - name: pxe
-    enabled: true
-    compose: apps/pxe/docker-compose.yaml
-    bind_ip: 10.10.5.10
-    description: "Homelab PXE — iPXE + dnsmasq(TFTP) + nginx(HTTP), built from source"
-
+  # ⚠ SIX APPS RETIRED 2026-09-23 with the pool rebuild — pxe, meshcentral,
+  # amtctl, homepage, iperf3, stress-dashboard. Reasons per app in
+  # docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md § Retire entirely.
+  #
+  # ⚠ meshcentral + amtctl existed ONLY to KVM into the Q170S1 nodes over
+  # Intel AMT. The MS-A2 has no IPMI/BMC/vPro/AMT at all, so they have no
+  # function on the new estate — not "unused for now", but unusable.
+  # ⚠ iperf3 and stress-dashboard were both hw-validation dependents;
+  # stress-dashboard bind-mounted /mnt/tank/system/stress-results, a dataset
+  # this rebuild deletes, so it would have restored pointing at nothing.
+  # ⚠ pxe is removed ENTIRELY (not Talos-only) — its cached images were built
+  # for schematic daef782b… which carries intel-ucode on an AMD box, plus two
+  # Longhorn-only extensions. See the plan's § Why PXE goes completely.
+  #
+  # SURVIVORS: minio-prd, minio-dev, traefik, wiki, cluster-agent (+ plex and
+  # qbittorrent, both enabled:false with empty datasets).
   - name: minio-prd
     enabled: true
     compose: apps/minio-prd/docker-compose.yaml
@@ -35,12 +45,6 @@ apps:
     bind_ip: 10.10.15.10
     description: "S3 backend for dev Velero backups"
 
-  - name: meshcentral
-    enabled: true
-    compose: apps/meshcentral/docker-compose.yaml
-    bind_ip: 10.10.5.10
-    description: "Remote management + AMT KVM for the K8s nodes"
-
   - name: traefik
     enabled: true
     compose: apps/traefik/docker-compose.yaml
@@ -52,30 +56,6 @@ apps:
     compose: apps/wiki/docker-compose.yaml
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies wiki.w1.lv here
     description: "Static internal wiki (MkDocs build served by nginx, pushed from wiki repo)"
-
-  - name: homepage
-    enabled: true
-    compose: apps/homepage/docker-compose.yaml
-    bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies home.w1.lv here
-    description: "Service-catalog dashboard (Homepage), declarative YAML-only"
-
-  - name: iperf3
-    enabled: true
-    compose: apps/iperf3/docker-compose.yaml
-    bind_ip: 10.10.5.10
-    description: "Always-on iperf3 server for hw-validation net-mgmt / net-data tests"
-
-  - name: amtctl
-    enabled: true
-    compose: apps/amtctl/docker-compose.yaml
-    bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts amtctl.w1.lv
-    description: "Intel AMT power control + status dashboard for K8s nodes"
-
-  - name: stress-dashboard
-    enabled: true
-    compose: apps/stress-dashboard/docker-compose.yaml
-    bind_ip: 10.10.5.10                        # mgmt VLAN — Traefik fronts stress.w1.lv
-    description: "hw-validation JSON report viewer (reads /mnt/tank/system/stress-results)"
 
   - name: cluster-agent
     enabled: true                              # Task 23: container live 2026-05-25

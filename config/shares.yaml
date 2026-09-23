@@ -7,11 +7,21 @@
 nfs:
   service:
     enable: true
-    # Service listens on prd data, dev data, AND mgmt sub-iface IPs.
-    # Mgmt (10.10.5.10) is added so the hw-validation PXE image can
-    # drop report.json on stress-results even when NIC2 (I226-V) is
-    # broken — NIC2 is itself one of the validation subjects, so the
-    # report-delivery path must not depend on it.
+    # ⚠ NFS HAS NO SHARES AS OF 2026-09-23. The only export was
+    # `stress-results`, the hw-validation report target, retired with
+    # hw-validation in the pool rebuild (its amtctl→PXE trigger does not
+    # exist on the MS-A2, and the repo was never past Phase A scaffolding).
+    # The Longhorn NFS exports went earlier, 2026-04-27 → MinIO S3.
+    #
+    # ⚠ `enable: true` and the bindip list are LEFT AS-IS deliberately: the
+    # service binding is declarative config that costs nothing while idle, and
+    # turning it off is a separate decision from removing the last share.
+    # If NFS is genuinely never coming back, set enable:false in its own change
+    # so the intent is reviewable rather than implied by an empty share list.
+    #
+    # The mgmt IP (10.10.5.10) was in this list ONLY so the hw-validation PXE
+    # image could deliver reports when NIC2 — itself a validation subject — was
+    # broken. That reason is gone with hw-validation.
     bindip:
       - 10.10.5.10
       - 10.10.10.10
@@ -21,21 +31,6 @@ nfs:
     # Longhorn switched to MinIO S3 BackupTarget (kube-infra #26).
     # NAS-side share + underlying dataset both deleted at the same
     # time via the TrueNAS API.
-    - name: stress-results
-      path: /mnt/tank/system/stress-results
-      networks: [10.10.5.0/24]
-      # hw-validation runs as root in a netboot live shell. Initially
-      # mapped to nobody/nogroup as a cosmetic preference, but the
-      # dataset's default ownership (root:wheel, mode 0755) then rejects
-      # writes with EACCES — the declarative datasets module has no
-      # owner/mode field to paper over it. Map root → root instead; the
-      # mgmt-VLAN ACL (10.10.5.0/24 only) is our security boundary per
-      # the hw-validation plan's non-goal #4 (same posture as longhorn-*
-      # exports). Reports land as root, which is fine for read-only
-      # consumption by a future dashboard.
-      maproot_user: root
-      maproot_group: wheel
-
 smb:
   service:
     enable: true
