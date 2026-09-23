@@ -617,15 +617,12 @@ Then edit:
 - `docs/verification.md` — remove the PXE rows ⚠ (also fix the "Pool healthy … 6 disks" row
   per Task 8 Step 3)
 
-- [ ] **Step 2: Check for a Traefik route**
+- [ ] **Step 2: ✅ RESOLVED — `pxe.w1.lv` has no Traefik route**
 
-```bash
-grep -rn "pxe" apps/traefik/routes.yaml
-```
-
-⚠ `config/dns.yaml` points `pxe.w1.lv` at **10.10.5.20 (Traefik)**, but a grep of
-`routes.yaml` on 2026-09-23 found **no matching route**. Either the route lives elsewhere or
-the DNS record has been dangling. Resolve which before deleting only one of the two.
+Enumerated 2026-09-23: `apps/traefik/routes.yaml` defines seven routes (mc, minio-prd,
+minio-dev, wiki, home, amtctl, stress) and **none of them is `pxe.w1.lv`**. The DNS record
+has been pointing at 10.10.5.20 with nothing behind it. Only the DNS side needs removing —
+see **9c Step 2**.
 
 - [ ] **Step 3: Apply**
 
@@ -711,7 +708,95 @@ ssh <router> '/ip dhcp-server lease print where server=mgmt-dhcp'
 ```
 ⚠ The mgmt DHCP server itself must keep working — only the boot fields are going.
 
-### 9c — docs across repos
+### 9c — Traefik routes + DNS records
+
+⚠ These cover **all six** retirements, not just PXE. Left behind they are hostnames that
+resolve to a proxy with nothing behind them — which fails as a timeout, not a clear error.
+
+- [ ] **Step 1: Delete four Traefik routes** — `apps/traefik/routes.yaml`
+
+| route | service | verdict |
+|---|---|---|
+| `Host(\`mc.w1.lv\`)` | meshcentral | ❌ delete |
+| `Host(\`home.w1.lv\`)` | homepage | ❌ delete |
+| `Host(\`amtctl.w1.lv\`)` | amtctl | ❌ delete |
+| `Host(\`stress.w1.lv\`)` | stress-dashboard | ❌ delete |
+| `Host(\`minio-prd.w1.lv\`)` | minio-prd-console | ✅ keep |
+| `Host(\`minio-dev.w1.lv\`)` | minio-dev-console | ✅ keep |
+| `Host(\`wiki.w1.lv\`)` | wiki | ✅ keep |
+
+⚠ **`pxe.w1.lv` has NO Traefik route** — confirmed 2026-09-23 by enumerating the file. The
+DNS record has been pointing at 10.10.5.20 with nothing serving it. That resolves the
+open question flagged in 9a Step 2: the record is dangling, so only the DNS side needs work.
+
+Traefik drops from 7 routes to 3. ⚠ Update its `config/apps.yaml` description too —
+"mgmt-plane reverse proxy (mc/pxe/minio-*/traefik-nas)" names two hosts that no longer exist.
+
+- [ ] **Step 2: Delete the retired-app DNS records** — `config/dns.yaml`
+
+```
+mc.w1.lv        10.10.5.20   MeshCentral UI
+pxe.w1.lv       10.10.5.20   ⚠ dangling — no route ever existed
+home.w1.lv      10.10.5.20   Homepage dashboard
+amtctl.w1.lv    10.10.5.20   AMT power control dashboard
+stress.w1.lv    10.10.5.20   hw-validation report viewer
+```
+
+- [ ] **Step 3: ⚠ Decide the six node AMT records**
+
+`config/dns.yaml` carries `kub-{prd,dev}-0{1,2,3}.w1.lv`, all commented **"AMT (mgmt NIC)"**.
+The MS-A2 has no AMT, so the *purpose* is gone for all six — but the *names* are not
+symmetric:
+
+- `kub-prd-02/03` and `kub-dev-02/03` — ❌ **delete.** Those nodes cease to exist.
+- ⚠ `kub-prd-01` and `kub-dev-01` — **decide, do not delete by reflex.** The MS-A2 boxes take
+  those IPs and keep those cluster names (`ETCD_NODE_1: 10.10.5.11` / `10.10.5.14`). The
+  records may be worth **re-pointing and re-commenting** as plain node addresses rather than
+  removed. ⚠ Deleting them silently is the wrong default — something may resolve them.
+
+- [ ] **Step 4: Apply, and note this tool DOES converge**
+
+```bash
+cd ~/github/truenas-infra && ./manage.sh phase apps --apply    # traefik picks up routes.yaml
+cd ~/github/mikrotik-infra && ./manage.sh                      # DNS sync
+```
+
+✅ **Unlike the DHCP path, DNS removal works.** `tools/sync_dns.py` computes
+`to_remove = [r for name, r in managed_live.items() if name not in managed_desired]`
+(line 203) and emits `/ip dns static remove [find name=…]` (line 254). Deleting a record
+from `dns.yaml` really does delete it from the router.
+
+⚠ **But only for records it owns.** The idempotency key is the exact comment
+`managed-by-claude`; records with any other comment (or none) are *preserved and reported,
+never removed*. Before trusting the sync, confirm the records being deleted actually carry
+it:
+
+```bash
+ssh <router> '/ip dns static print detail where name~"mc.w1.lv|pxe.w1.lv|home.w1.lv|amtctl.w1.lv|stress.w1.lv"'
+```
+
+⚠ Any of those lacking `comment=managed-by-claude` must be removed by hand — same as the
+DHCP options in 9b Step 3.
+
+> ⚠ **Two tools in the same repo, two different behaviours — do not generalise either.**
+> `sync_dns.py` is **convergent** (adds *and* removes). `apply_fleet.py` delta is
+> **additive-only** (*"extras are legitimately preserved, MISSING never is"*). Assuming the
+> fleet behaviour for DNS would leave you hand-deleting records that were already gone;
+> assuming the DNS behaviour for DHCP leaves the router advertising a dead boot server
+> forever. 9b Step 3 exists precisely because of that asymmetry.
+
+- [ ] **Step 5: Verify nothing dangles**
+
+```bash
+for h in mc pxe home amtctl stress; do printf "%-8s " "$h"; dig +short $h.w1.lv | head -1 || true; echo; done
+for h in wiki minio-prd minio-dev traefik-nas nas; do printf "%-12s " "$h"; dig +short $h.w1.lv | head -1; done
+```
+
+Expected: the first five return nothing; the survivors still resolve.
+⚠ Check the survivors too — a botched sync that removes too much reads identically to a
+successful one if you only look at what you meant to delete.
+
+### 9d — docs across repos
 
 - [ ] `truenas-infra/CLAUDE.md` — Planned Services table (PXE/TFTP row), § Network
       (`.10` description), § File Structure, and the § Wiki maintenance matrix rows for
@@ -731,13 +816,17 @@ ssh <router> '/ip dhcp-server lease print where server=mgmt-dhcp'
 - [ ] `bios-config` — ⚠ already "obsolete for AMD" per the MS-A2 audit. Out of scope here;
       retire it in its own change rather than by implication.
 
-### 9d — verification
+### 9e — verification
 
 - [ ] **No orphan DNS:** `dig +short pxe.w1.lv` returns nothing (or NXDOMAIN)
 - [ ] **No orphan boot advertisement:** a fresh DHCP lease on VLAN 5 carries no
       `next-server` / `boot-file-name`
 - [ ] **The replacement works:** a USB stick written from the AMD schematic boots a machine
       into Talos maintenance mode ⚠ — proven, not assumed
+- [ ] **No orphan hostnames:** the five retired records return nothing from `dig`, and the
+      survivors (`wiki`, `minio-prd`, `minio-dev`, `traefik-nas`, `nas`) still resolve —
+      ⚠ check both halves, not just what you meant to delete
+- [ ] **Traefik serves exactly three routes** and its dashboard at `traefik-nas.w1.lv` is up
 - [ ] **Nothing else regressed:** `./manage.sh phase verify` on truenas-infra, and the wiki
       deploys clean
 
