@@ -117,7 +117,7 @@ device-name comparison would have looked like a missing drive when nothing was w
 | Device | Beelink ME Mini (post-RMA "v2" unit — 16 GB, no eMMC). ⚠ **The 3.3V-rail defect is NOT fixed on this unit.** Beelink's post-2025-09-08 inductor change was supposed to cure it; it did not — the NVMe drops recurred 2026-07-19 and 2026-07-22 (both the same drive `S4GRNX0NA00357` in slot 04, at ~03:00 UTC under the nightly write burst). Root cause is the shared 3.3V M.2 rail sagging under peak *simultaneous* NVMe current (community-corroborated; an external 90 W PSU + added regulator did not help upstream). Mitigations are software probability-reducers, NOT a cure — see § NVMe 3.3V-rail mitigations. Note: this unit has a **flat PCIe topology** (each NVMe on its own ADL-N PCH root port, no ASM2824 switch), so the ASM2824 link-training erratum does not apply here. |
 | CPU | Intel N150 (4 E-cores, no HT) |
 | RAM | 16 GB LPDDR5 (soldered; reads as 16.0 GB via `system.info` — earlier "12 GB" spec was wrong) |
-| Storage | 6× M.2 NVMe slots — 1× 256 GB PM981 boot (`nvme3n1`, S/N `S444NX0N496890`) + 5× 1 TB NVMe in RAIDZ1 tank (`nvme0n1`+`nvme1n1`+`nvme2n1` = 3× PM981a, `nvme4n1`+`nvme5n1` = 2× PM9A1). Slot 4 is PCIe 3.0 x2 (boot); slots 1, 2, 3, 5, 6 are PCIe 3.0 x1 |
+| Storage | 6× M.2 NVMe slots, **4 populated since the 2026-09-23 rebuild** — 1× 256 GB PM981 boot (`nvme2n1`, S/N `S444NX0N496890`) + **3× 1 TB in RAIDZ1 tank**: `nvme0n1` Samsung 980 (`S649NF1R820750Y`), `nvme1n1` SM961 (`S34DNX0JA02364`), `nvme3n1` PM981a-H7 (`S4GSNF0N301379`). ⚠ **Enumeration changed in the rebuild** — boot was `nvme3n1`, is now `nvme2n1`, and the tank disks are NOT contiguous. Match by **serial**, never device name. ⚠ **Mixed capacity**: the 980 is 931.51 GiB vs 953.87 for the other two, and a raidz vdev sizes to its smallest member → ~45 GiB stranded, **1.75 TB usable**. Two slots now EMPTY, which is itself a rail mitigation (see below) |
 | NIC1 | Intel **I226-V** 2.5G (`igc` driver, `enp1s0`, MAC `78:55:36:07:25:93`) — data, tagged trunk carrying VLANs 10 / 15 / 20 (sub-interfaces 10.10.10.10 / 10.10.15.10 / 10.10.20.10) |
 | NIC2 | Intel **I226-V** 2.5G (`igc` driver, `enp2s0`, MAC `78:55:36:07:25:92`) — management, untagged VLAN 5 (10.10.5.10) |
 | OS | TrueNAS Community Edition 25.10.7 (codename Goldeye) |
@@ -137,7 +137,7 @@ Connected to CRS310:
 - `ether7` — tagged trunk, VLANs 10/15/20 (data, NIC1)
 - `ether8` — untagged, VLAN 5 (management, NIC2)
 
-Service-to-interface binding is enforced in TrueNAS. Kube backup targets are MinIO S3, which binds only on the data-VLAN IPs (`.10.10` / `.15.10`); Plex + SMB bind only on `.20.10`. So home devices cannot reach Kube backup targets even though NIC1 is physically shared. Note on NFS: the old Longhorn NFS exports were **decommissioned 2026-04-27** (Longhorn → MinIO S3 `longhorn` bucket, kube-infra #26). The NFS service does still listen on all three sub-IPs (`.5.10` / `.10.10` / `.15.10` — see `config/shares.yaml § nfs.service.bindip`), but the **only live NFS export is `/mnt/tank/system/stress-results`**, ACL-scoped to the mgmt VLAN (`10.10.5.0/24`) for the hw-validation PXE image. `.5.10` is in the bindip so that report path survives even when NIC2 is one of the validation subjects being stress-broken.
+Service-to-interface binding is enforced in TrueNAS. Kube backup targets are MinIO S3, which binds only on the data-VLAN IPs (`.10.10` / `.15.10`); Plex + SMB bind only on `.20.10`. So home devices cannot reach Kube backup targets even though NIC1 is physically shared. Note on NFS: the old Longhorn NFS exports were **decommissioned 2026-04-27** (Longhorn → MinIO S3 `longhorn` bucket, kube-infra #26). ⚠ **As of 2026-09-23 NFS has NO shares at all.** `stress-results` was the last one and went with hw-validation in the pool rebuild. The service is still enabled and still binds all three sub-IPs (`config/shares.yaml § nfs.service.bindip`) — left that way deliberately, because turning NFS off is a separate decision that should be reviewable in its own change rather than implied by an empty share list.
 
 ---
 
@@ -146,19 +146,26 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | Service | Purpose | Browser URL / endpoint |
 |---|---|---|
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
-| MeshCentral | AMT KVM into K8s nodes | https://mc.w1.lv/ (via Traefik) |
-| PXE directory index | Browse cached distro/utility assets | http://10.10.5.10:8080/ (nginx autoindex, no auth) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO prd S3 API | Velero backup store | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
 | MinIO dev S3 API | Velero backup store | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
-| Traefik dashboard | Proxy ops view | https://traefik-nas.w1.lv/dashboard/ |
-| NFS export (hw-validation) | `/mnt/tank/system/stress-results` — the **only** live NFS export (Longhorn NFS decommissioned 2026-04-27 → MinIO S3 `longhorn` bucket, kube-infra #26) | 10.10.5.10 (mgmt VLAN, ACL `10.10.5.0/24`; service also binds `.10.10`/`.15.10`) |
-| PXE / TFTP server | custom iPXE 1.21.1+ built from source (apps/pxe/) — USB_HCD_USBIO fix for Intel Q170. Dynamic menu auto-listed from /mnt/tank/system/pxe/http/extras/{utils,distros,live}/*.iso by apps/pxe/pxe-genmenu.sh. Operator runbook: `docs/pxe-operator.md` | 10.10.5.10:69/udp (TFTP), :8080 (HTTP assets) |
 | cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
+
+> ⚠ **RETIRED 2026-09-23 with the pool rebuild** — MeshCentral, amtctl, PXE
+> (server + directory index), homepage, iperf3 and stress-dashboard, plus the
+> `stress-results` NFS export. **NFS now has no shares at all.**
+> ⚠ MeshCentral and amtctl existed ONLY to KVM into the Q170S1 nodes over Intel
+> AMT, and the MS-A2 has **no IPMI / BMC / vPro / AMT** — they are unusable on
+> the new estate, not merely unused.
+> ⚠ The Traefik dashboard row was ALREADY stale: every Traefik dashboard in the
+> homelab was removed **2026-09-13**, so `traefik-nas.w1.lv` has not existed
+> since then. It sat here for ten days and caused a permanent false failure in
+> the verify matrix.
+> Surviving apps: **minio-prd, minio-dev, traefik, wiki, cluster-agent.**
 
 All browser-facing services serve a valid Let's Encrypt `*.w1.lv` cert.
 See `docs/tls-runbook.md` for rotation + recovery.
@@ -186,7 +193,7 @@ Decision tree — **apply every time you add an HTTPS endpoint on this network**
      mgmt-VLAN Traefik.
 
 Hostname convention: `<role>.w1.lv` for singletons, `<role>-<env>.w1.lv`
-for multi-instance (minio-prd, traefik-nas), `<role>-<NN>` for per-box
+for multi-instance (minio-prd, minio-dev), `<role>-<NN>` for per-box
 (kub-prd-01). All lowercase, hyphen-separated.
 
 ---
@@ -196,20 +203,35 @@ for multi-instance (minio-prd, traefik-nas), `<role>-<NN>` for per-box
 Live design — source of truth is `config/storage.yaml` (consumed by
 `modules/{pool,datasets,storage_tasks}.py`). Summary:
 
-- **Pool `tank`** — single 5-wide **RAIDZ1** vdev across the 5× 1 TB NVMe
-  drives (3× PM981a + 2× PM9A1), `ashift=12`, **`autotrim=off`** (disabled
-  2026-07-22 — TRIM bursts spike 3.3V-rail current; see § NVMe 3.3V-rail
-  mitigations; enforced by `pool.py::ensure_autotrim`). The 256 GB
-  PM981 (slot 4) is the TrueNAS-installer-managed `boot-pool`, not part of
-  `tank`. ⚠ When replacing a PM9A1, match by **serial, not slot** — the
-  2026-07-06 reslot reversed the nvme4/nvme5 enumeration (see the reslot
-  note in `storage.yaml`).
+- **Pool `tank`** — single **3-wide RAIDZ1** vdev (rebuilt 2026-09-23 from
+  5-wide), `ashift=12`, **`autotrim=off`** (disabled 2026-07-22 — TRIM bursts
+  spike 3.3V-rail current; see § NVMe 3.3V-rail mitigations; enforced by
+  `pool.py::ensure_autotrim`). **1.75 TB usable.** The 256 GB PM981 is the
+  TrueNAS-installer-managed `boot-pool`, not part of `tank`.
+  ⚠ **ZFS cannot remove a device from a raidz vdev** (expansion landed in
+  OpenZFS 2.3; shrinking never did) — 5→3 was destroy-and-recreate. Plan and
+  full rationale: `docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md`.
+  ⚠ Going 5→3 is itself a **3.3V-rail mitigation**: it removes two drives'
+  worth of peak *simultaneous* current, which is the documented root cause.
+  Measured PS2 draw is now **10.09 W** across three drives (980 2.19 W +
+  SM961 4.40 W + PM981a 3.50 W); the figures were measured per drive on
+  2026-09-23, not taken from datasheets.
+  ⚠ **Mixed models in one vdev is deliberate** — three firmware families and
+  power curves, accepted because drive availability won over homogeneity.
+  **If a drive fails here, RECORD WHICH ONE**: on a mixed vdev that
+  attribution is the only thing that teaches anything.
+  ⚠ When replacing a drive, match by **serial, not slot** — the 25.10.7
+  upgrade swapped nvme1/nvme2 and the rebuild moved boot from nvme3 to nvme2.
+  First scrub on the new vdev: `repaired 0B in 00:00:17 with 0 errors`.
+  ⚠ That is NOT evidence the rail fault is resolved — 7 GB in 17 s with temps
+  unmoved is nowhere near the forensics' **42-day** statistical bar.
 - **Dataset defaults** — `compression=lz4`, `atime=off`, `xattr=sa`,
   `recordsize=128K` (Velero datasets override to `1M`).
 - **Dataset tree** (env-first): `tank/kube/{prd,dev}/velero` (Longhorn
   datasets **removed 2026-04-27** — Longhorn → MinIO S3, kube-infra #26),
   `tank/media/{plex,torrent}`, `tank/shared/general`, and `tank/system/*`
-  (pxe, apps-config/*, tls, stress-results).
+  (apps-config/{nut,traefik,wiki}, tls). ⚠ `pxe` and `stress-results` were
+  removed 2026-09-23 with their apps.
 - **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
   `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
 - **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
