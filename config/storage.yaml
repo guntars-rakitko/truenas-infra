@@ -92,6 +92,11 @@ datasets:
     kind: parent
   - name: tank/kube/prd
     kind: parent
+  # ⚠ MISNAMED — this is MinIO's WHOLE /data for prd (apps/minio-prd), holding EVERY bucket:
+  # longhorn, postgres-backups, etcd-snapshots, loki-chunks, pocket-id-litestream, mssql-backups
+  # (incl. the GIKS v1 box) … and `velero`, the smallest of them. Never read "the velero dataset"
+  # as "Velero's backups" in a destructive command. Rename → tank/kube/prd/minio: #152 (after
+  # the MS-A2 cutover).
   - name: tank/kube/prd/velero
     recordsize: 1M
   # tank/kube/prd/longhorn dataset removed 2026-04-27: Longhorn switched
@@ -100,6 +105,7 @@ datasets:
   # NFS-exported dataset). Closes kube-infra issue #26.
   - name: tank/kube/dev
     kind: parent
+  # ⚠ MISNAMED — same as prd above: MinIO's whole /data for dev, every bucket. Rename: #152.
   - name: tank/kube/dev/velero
     recordsize: 1M
   # tank/kube/dev/longhorn dataset removed 2026-04-27, same as prd above.
