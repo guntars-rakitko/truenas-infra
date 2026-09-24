@@ -226,8 +226,10 @@ Live design — source of truth is `config/storage.yaml` (consumed by
   ⚠ That is NOT evidence the rail fault is resolved — 7 GB in 17 s with temps
   unmoved is nowhere near the forensics' **42-day** statistical bar.
 - **Dataset defaults** — `compression=lz4`, `atime=off`, `xattr=sa`,
-  `recordsize=128K` (Velero datasets override to `1M`).
-- **Dataset tree** (env-first): `tank/kube/{prd,dev}/velero` (Longhorn
+  `recordsize=128K` (the MinIO data datasets, misnamed `…/velero`, override to `1M`).
+- **Dataset tree** (env-first): `tank/kube/{prd,dev}/velero` — ⚠ **MISNAMED**: each is
+  MinIO's whole `/data` for that env and holds **every** bucket, not just Velero's; rename to
+  `tank/kube/{prd,dev}/minio` is tracked in #152, after the MS-A2 cutover. (Longhorn
   datasets **removed 2026-04-27** — Longhorn → MinIO S3, kube-infra #26),
   `tank/media/{plex,torrent}`, `tank/shared/general`, and `tank/system/*`
   (apps-config/{nut,traefik,wiki}, tls). ⚠ `pxe` and `stress-results` were
