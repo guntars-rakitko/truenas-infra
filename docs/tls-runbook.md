@@ -12,10 +12,13 @@ own.
 
 ```sh
 ./manage.sh phase verify
-# Expect 20/20 green. Pay attention to:
+# Expect every check green (currently 18: pool, datasets, 3 services,
+# 1 per enabled app, cert, dns records, 6 TLS probes). Pay attention to:
 #   - cert w1-wildcard: NN days left   (warning at <14, fail at <7)
-#   - dns records: 14/14 resolve correctly
-#   - tls <host>:<port> × 8: all LE R12 issuer
+#   - dns records: every record in config/dns.yaml resolves correctly
+#   - tls <host>:<port> × 6 (nas, minio-prd, minio-dev, wiki, s3-prd:9000,
+#     s3-dev:9000): issuer = the current LE intermediate (LE rotates them —
+#     do not pin a name like "R12")
 ```
 
 Or direct:
@@ -25,12 +28,6 @@ openssl s_client -connect nas.w1.lv:443 -servername nas.w1.lv </dev/null 2>/dev/
   openssl x509 -noout -issuer -subject -dates
 ```
 
-### See the Traefik dashboard
-
-Browser: https://traefik-nas.w1.lv/dashboard/
-
-(The trailing slash matters — Traefik redirects `/dashboard` → `/dashboard/` but some clients don't follow that.)
-
 ### Rotate the CloudFlare API token
 
 CloudFlare tokens expire annually (or on demand). To rotate:
@@ -38,18 +35,28 @@ CloudFlare tokens expire annually (or on demand). To rotate:
 1. Create a new token at dash.cloudflare.com with the same scope
    (Zone:Zone:Read + Zone:DNS:Edit on w1.lv).
 2. Edit Doppler `infrastructure/shr` → `SHARED_CLOUDFLARE_API_TOKEN`
-   with the new value (single edit covers cert-manager via DopplerSecret,
-   truenas-infra ACME, and operator scripts).
+   with the new value (cert-manager reads it via DopplerSecret).
+   ⚠ **`manage.sh` does NOT read `shr`** — it fetches
+   `SHARED_CLOUDFLARE_API_TOKEN` from **`infrastructure/ops`**, and that is
+   what feeds the NAS ACME authenticator. In the Doppler dashboard, check
+   whether the `ops` value is a secret reference to `shr`
+   (`${infrastructure.shr.SHARED_CLOUDFLARE_API_TOKEN}`): if it is, the `shr`
+   edit covers both; if it is a separate copy, set the same new value in
+   `ops` too (overwriting a reference with a literal would turn it into a
+   copy). Miss `ops` and the NAS ACME stays on the token you are about to
+   revoke — renewal then fails silently until the wildcard nears expiry.
 3. Run `./manage.sh phase tls --apply` — `ensure_acme_authenticator`
    detects the token drift and calls `acme.dns.authenticator.update`
    in place (no CSR/cert churn).
 4. Revoke the old token in CloudFlare once confirmed.
 
-All consumers (cert-manager DopplerSecret, truenas ACME, operator
-scripts) read the canonical value from Doppler — no per-repo copies
-to keep in lockstep.
+All consumers read the value from Doppler, but from two configs: cert-manager
+from `shr`, truenas-infra (`manage.sh` → NAS ACME) from `ops`. Unless `ops`
+references `shr`, those are two copies to keep in lockstep.
 
 ### Force a renewal (no 60-day wait)
+
+⚠ **Read [§ Let's Encrypt rate limit](#lets-encrypt-rate-limit-the-one-that-binds) first** — every re-issue here spends one of 5 per week, shared with the clusters. Do not do this during an msa2 cutover week.
 
 TrueNAS auto-renews at `days_to_expiration < renew_days`. To exercise
 the rotation pipeline without actually waiting:
@@ -77,7 +84,8 @@ midclt call cronjob.run <id>
 # 5. Verify propagation:
 #    - /mnt/tank/system/tls/{fullchain,privkey,public,private}.* mtime updated
 #    - MinIO prd+dev redeployed (check `app.query` state)
-#    - https://mc.w1.lv/ shows the new cert fingerprint
+#    - https://wiki.w1.lv/ (via Traefik) and https://s3-prd.w1.lv:9000
+#      (MinIO direct) show the new cert fingerprint
 
 # 6. Restore renew_days to 30
 midclt call certificate.update <id> '{"renew_days": 30}'
@@ -87,8 +95,8 @@ midclt call certificate.update <id> '{"renew_days": 30}'
 
 ### Traefik is down — mgmt UIs return 5xx / connection refused
 
-Symptom: `https://mc.w1.lv/`, `https://minio-prd.w1.lv/`, `https://pxe.w1.lv/`
-all unreachable; `https://nas.w1.lv/` still works.
+Symptom: `https://minio-prd.w1.lv/`, `https://minio-dev.w1.lv/`,
+`https://wiki.w1.lv/` all unreachable; `https://nas.w1.lv/` still works.
 
 TrueNAS UI is on `10.10.5.10:443` directly — never behind Traefik —
 precisely so this scenario is recoverable. Log in to the UI, check the
@@ -105,6 +113,8 @@ Check `/mnt/tank/system/apps-config/traefik/routes.yaml` and the cert
 files under `/mnt/tank/system/tls/`.
 
 ### Cert expired and auto-renewal hasn't fired
+
+⚠ **Read [§ Let's Encrypt rate limit](#lets-encrypt-rate-limit-the-one-that-binds) first** — every re-issue here spends one of 5 per week, shared with the clusters.
 
 ```sh
 # Force re-issue — deletes the cert record + rebinds UI to default first
@@ -160,8 +170,21 @@ midclt call certificate.delete <staging-id> '{"job": true}'
 ./manage.sh phase tls --apply
 ```
 
-LE staging has much higher rate limits than prod (~30k certs/week vs
-50/week), so always use staging for bring-up rework.
+### Let's Encrypt rate limit — the one that binds
+
+⚠ The limit that binds is **NOT** the 50/week per registered domain. It is
+**5 new certificates per rolling week for the exact identifier set
+`[*.w1.lv, w1.lv]`** — and the NAS shares that set with every cluster wildcard
+Certificate (kube-infra CLAUDE.md § Let's Encrypt rate limit; the msa2 plan's
+rule 4 counts it at 3 of 5). The NAS cert is invisible to
+`kubectl get certificate`. Every forced renewal, re-issue or staging→prod flip
+here spends one, and renewals count too (cert-manager has no ARI enabled, and
+the NAS's TrueNAS ACME client is not known to use it). If it blows, wiki.w1.lv
+fails first — the runbooks you would be recovering from.
+
+- Use staging (~30k/week) for any rework.
+- Do **NOT** force-renew or re-issue the NAS cert during an msa2 cutover week
+  (kube-infra msa2 plan, cutover row 18).
 
 ## Why things are where they are
 
@@ -171,7 +194,8 @@ LE staging has much higher rate limits than prod (~30k certs/week vs
 - **TrueNAS UI direct on `10.10.5.10:443`**: bootstrap path. If Traefik
   dies, we can still log in to repair it.
 - **Traefik on `10.10.5.20:443` (new sub-IP)**: fronts the mgmt-plane
-  web UIs (mc / pxe / minio-prd/dev console / traefik-nas itself).
+  web UIs (minio-prd/dev consoles + wiki — `apps/traefik/routes.yaml`).
+  It has no dashboard (every Traefik dashboard was removed 2026-09-13).
   Hot-reloads its cert from `/mnt/tank/system/tls` without restarting.
 - **MinIO S3 direct on `10.10.{10,15}.10:9000`**: data plane. Native
   port kept — `:443` on data VLANs reserved for future services.

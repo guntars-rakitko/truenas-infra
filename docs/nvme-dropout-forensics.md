@@ -1,7 +1,7 @@
 # Beelink ME Mini — NVMe dropout forensics
 
 **Status:** open. Root cause partially identified; monitoring.
-**Last updated:** 2026-08-02.
+**Last updated:** 2026-09-25 (§ 2026-09-23 pool rebuild — where the repeat offenders went). Kernel-log forensics 2026-08-02; double drop 2026-09-14.
 **Tracking issue:** [truenas-infra#109](https://github.com/guntars-rakitko/truenas-infra/issues/109).
 
 Kernel-log forensics for the recurring NVMe dropouts on `nas.w1.lv`
@@ -22,7 +22,11 @@ to predict the next incident.
 2. **PCIe signal integrity is ruled out** — zero AER events in six weeks.
 3. **`…392` is a bad drive, on evidence** — its fault followed it across a
    physical reslot, and its last failure was a firmware hang with the device
-   still electrically alive.
+   still electrically alive. ⚠ **The operator reads this the other way**
+   (kube-infra msa2 plan decision D2, 2026-09-24): the NAS's defective rail
+   failed, not the drive — and `…392` is now msa2-dev's Postgres drive by that
+   decision. See § 2026-09-23 below; the MS-A2 is where the two readings get
+   tested.
 4. **The remaining fault (slots 04/07) is consistent with the community's
    3.3 V rail theory** but is not independently proven on this unit.
 5. ⭐ **2026-09-14 — first DOUBLE drop, and it is a CASCADE.** Both repeat
@@ -36,6 +40,33 @@ to predict the next incident.
 6. **Recovery doctrine confirmed under fire:** full power-off, ~30 s, power on
    → pool `ONLINE`, `No known data errors`, no resilver. A warm reboot would
    not have cleared it.
+
+---
+
+## 2026-09-23 — pool rebuilt 5→3; where the repeat offenders went
+
+The pool was rebuilt 5-wide → 3-wide RAIDZ1 on 2026-09-23
+(`docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md`). **Both repeat
+offenders left the NAS:**
+
+| Drive | Where it is now | Source |
+|---|---|---|
+| PM981a `S4GRNX0NA00357` (Mode A ×3, slot 04) | **msa2-dev's install/system disk** (Talos STATE + EPHEMERAL + user volumes) | kube-infra `hardware/ms-a2-dev.json` `install_disk_serial` |
+| PM9A1 `S6H2NF0WC37392` (Mode A ×3 + the only Mode B) | **msa2-dev's Postgres disk** — by operator decision (kube-infra msa2 plan D2), placed on dev as the lowest-stakes slot | kube-infra `hardware/ms-a2-dev.json` `postgres_disk_serial` |
+
+The NAS `tank` is now Samsung 980 `S649NF1R820750Y` + SM961 `S34DNX0JA02364`
++ PM981a-H7 `S4GSNF0N301379` (`config/storage.yaml`, CLAUDE.md § Hardware).
+⚠ Do not act on "retire `…392`" or "watch slot 04" below without reading this:
+pulling "the faulty drive" now means pulling msa2-dev's database disk.
+
+**What the MS-A2 can now tell us** (a separate board with its own rail):
+- The Mode-B signature on the MS-A2 — `Device not ready; aborting reset,
+  CSTS=0x1` in `talosctl dmesg`, drive still listed by `talosctl get disks` —
+  would implicate **the drive** after all.
+- A **Mode-A** drop (`CSTS=0xffffffff`) of `…357` or `…392` there would
+  **falsify the NAS-rail-only theory**.
+- Recovery there is also a **full power-off** (a warm reboot leaves the M.2
+  rail powered); dev Postgres restores from its Barman chain.
 
 ---
 
@@ -473,14 +504,22 @@ not a second fault.
 
 ## Recommended next steps
 
-1. **Retire `S6H2NF0WC37392`.** Mode B is a drive fault and the evidence is
-   specific to this unit. Verify a candidate replacement with
-   `nvme id-ctrl -H` and require its **lowest operational power state** to be
-   ≤ ~1.5–2 W. (Note: buy on power-state table, **not** on "DRAM-less" —
-   DRAM-less drives appear on both sides of the community's stability ledger.)
-2. **Watch slot 04.** The Mode A fault is unaffected by that swap.
-3. **Keep pulled drives as cold spares** — they are healthy on any host with
-   competent 3.3 V regulation.
+1. ~~**Retire `S6H2NF0WC37392`.**~~ **Superseded 2026-09-24** — `…392` was
+   deliberately placed as msa2-dev's Postgres drive (kube-infra msa2 plan D2,
+   operator decision). On the MS-A2's rail, the Mode-B signature
+   (`Device not ready; aborting reset, CSTS=0x1` in `talosctl dmesg`, drive
+   still in `talosctl get disks`) would implicate the drive after all, and a
+   Mode-A drop of `…357`/`…392` there would falsify the NAS-rail-only theory.
+   Recovery there is also a FULL power-off; dev Postgres restores from its
+   Barman chain. For any future NAS drive purchase the rule stands: verify
+   with `nvme id-ctrl -H` and require the **lowest operational power state**
+   to be ≤ ~1.5–2 W (buy on the power-state table, **not** on "DRAM-less" —
+   DRAM-less drives appear on both sides of the community's stability ledger).
+2. **Watch the NAS by serial, not slot.** Slot 04's repeat offender (`…357`)
+   left the NAS on 2026-09-23; a drop now implicates one of the three tank
+   members above, and which one is the information.
+3. ~~**Keep pulled drives as cold spares.**~~ The pulled drives went to MS-A2
+   duty (§ 2026-09-23); the pool-rebuild plan records no cold spare.
 4. **Settle the rail question for free** — photograph and count the DFN power
    ICs near PL1/PL2 with the lid off. One regulator vs several is decisive and
    determines whether drive placement is a lever at all.
