@@ -36,40 +36,59 @@ The Beelink ME Mini 2 has an HDMI port and USB for keyboard.
 
 The `tank` pool is RAIDZ1 — tolerates a single disk failure.
 
-- On a single-disk failure: run `zpool status tank` to identify, swap disk,
-  then trigger `pool.replace` (or re-run `phase storage` with the new serial).
+- On a single-disk failure: run `zpool status tank` to identify the failed
+  member **by serial** (`nvmeN` names reshuffle across boots), swap the disk,
+  then replace it via `pool.replace` (UI: Storage → tank → Manage Devices →
+  Replace), choosing the new disk **by serial**. `phase pool` only CREATES the
+  pool and is a no-op when `tank` exists, so it cannot do the replace. Record
+  the new serial in `config/storage.yaml`, and note which drive failed — the
+  vdev mixes three models, so that attribution is the only thing a failure
+  teaches (CLAUDE.md § Storage Design).
 - **Resilver is the vulnerable window** — no parity during the rebuild.
   Avoid stress on other drives until `zpool status` shows `scan: resilvered`.
 
 ## 4. Reinstall from scratch
 
-If you need to rebuild the OS (eMMC failure, bad upgrade, etc.):
+If you need to rebuild the OS (boot-drive failure, bad upgrade, etc.). This
+unit is the post-RMA "v2" and has **no eMMC**: the `boot-pool` lives on the
+256 GB PM981 NVMe (CLAUDE.md § Hardware).
 
 1. Boot the TrueNAS installer USB.
-2. Apply the eMMC install quirk (see memory `emmc_install_quirk.md`):
-   ```bash
-   sed -i 's/tries=30/tries=200/' /usr/lib/python3/dist-packages/truenas_installer/install.py
-   ```
-3. Install fresh. **Do not touch the NVMe drives** — they host the `tank`
-   pool and will be re-imported.
-4. Post-install: in the new TrueNAS UI, `Storage → Import Pool → tank`.
+2. Install fresh onto the 256 GB PM981 **by serial** `S444NX0N496890` (the
+   only ~238 GiB disk) — **never by `nvmeN`**: the 2026-09-23 rebuild moved
+   boot from `nvme3n1` to `nvme2n1`, so a device-name pick can wipe a `tank`
+   member. **Do NOT touch** the tank members `S649NF1R820750Y`,
+   `S34DNX0JA02364`, `S4GSNF0N301379` — they host the `tank` pool and will be
+   re-imported. ⚠ The tank holds every cluster backup bucket (MinIO) and the
+   GIKS v1 MSSQL chain.
+3. Post-install: in the new TrueNAS UI, `Storage → Import Pool → tank`.
    All data, datasets, and snapshots come back intact.
-5. Re-run `bootstrap/01-bootstrap-notes.md` (API key is lost; mint a new one).
-6. Re-run all phases in order; idempotency ensures they re-apply cleanly
+4. Re-run `bootstrap/01-bootstrap-notes.md` (API key is lost; mint a new one).
+5. Re-run all phases in order; idempotency ensures they re-apply cleanly
    without destroying the re-imported pool.
-7. **Re-arm the UPS pre-halt shutdown hook (bug #57).** `phase nut` restores
-   the `ups.config` fields but does **not** deploy the shutdown hook script or
-   set `shutdowncmd` — that lives in a separate one-shot installer. The hook
-   files survive on the re-imported `tank` pool, but the fresh config DB loses
-   `shutdowncmd`, so re-run the installer (idempotent — re-uploads the hook +
-   password file to `/mnt/tank/system/nut` and re-sets `ups.config.shutdowncmd`):
-   ```bash
-   # TRUENAS_HOST + TRUENAS_API_KEY come from manage.sh / Doppler infrastructure/ops
-   export TRUENAS_NUT_ADMINPWD=$(doppler secrets get TRUENAS_NUT_ADMINPWD \
-       --project infrastructure --config ops --plain)
-   ~/github/truenas-infra/scripts/setup-ups-shutdown-hook.sh
-   ```
-   Then re-validate the shutdown chain with **Drill A** (see
-   `wiki/docs/runbooks/ups-operations.md`). Until validated, `powerdown: true`
-   remains the (failing-but-harmless) backup. Without this step the UPS will
-   not power off on a real outage — it keeps draining until the battery is flat.
+6. **Re-arm the UPS shutdown path (Path B + the bug-#57 hook).**
+   - `./manage.sh phase nut --apply` (step 5) restores `ups.config`,
+     **including** `shutdowncmd=/mnt/tank/system/talos/nas-ups-orchestrator.sh`
+     (from `config/services.yaml` § nut.shutdowncmd). That orchestrator is what
+     actually shuts the cluster nodes down on an outage (`talosctl shutdown
+     --force` per node, NAS last).
+   - Then re-register the #57 Init/Shutdown hook, which arms the UPS
+     kill-power. The registration lives in the config DB and is lost on
+     reinstall; the installer is idempotent and does **not** touch
+     `shutdowncmd`:
+     ```bash
+     # TRUENAS_HOST + TRUENAS_API_KEY come from manage.sh / Doppler infrastructure/ops
+     export TRUENAS_NUT_ADMINPWD=$(doppler secrets get TRUENAS_NUT_ADMINPWD \
+         --project infrastructure --config ops --plain)
+     ~/github/truenas-infra/scripts/setup-ups-shutdown-hook.sh
+     ```
+   - Confirm `/mnt/tank/system/talos/{talosctl,dev-shutdown.talosconfig,prd-shutdown.talosconfig,nas-ups-orchestrator.sh}`
+     survived the pool import (list names only — never read the configs); if
+     not, re-run `scripts/setup-talos-shutdown-orchestrator.sh`. Then, per
+     cluster, prove the credential still authenticates:
+     `ssh -t truenas_admin@nas.w1.lv 'sudo /mnt/tank/system/talos/talosctl --talosconfig /mnt/tank/system/talos/<env>-shutdown.talosconfig -n <node> -e <node> version'`.
+   - Re-validate the chain with **Drill A** (see
+     `wiki/docs/runbooks/ups-operations.md`).
+
+   Without the orchestrator the nodes are **not** shut down on a real outage;
+   without the hook the UPS keeps draining until the battery is flat.

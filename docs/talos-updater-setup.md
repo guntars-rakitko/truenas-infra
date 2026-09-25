@@ -1,154 +1,48 @@
-# Talos PXE updater — manual setup
+# Talos PXE updater — RETIRED 2026-09-23
 
-## What this is
+> ⚠ **Retired.** This page described a nightly NAS cronjob that cached Talos
+> kernel + initramfs images for PXE boot and rendered an iPXE version-picker
+> menu. **None of it exists any more.** PXE was removed entirely with the
+> 2026-09-23 NAS pool rebuild (truenas-infra #146 plan, #149): the
+> `talos-updater` cronjob was deleted from the NAS (21dfb97), its code
+> (`ensure_talos_updater`, `TalosUpdaterConfig`) was deleted (b7262d5), and
+> the `tank/system/pxe` dataset went with the pool. Reasons:
+> `docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md` § *Why PXE goes
+> completely*.
 
-A daily job that:
+## What replaces it
 
-1. Registers our Talos schematic (`nut-client` + `intel-ucode`) with
-   `factory.talos.dev` and caches the schematic ID.
-2. Polls `github.com/siderolabs/talos` for the latest stable release tag.
-3. Downloads `vmlinuz` + `initramfs` for that version into
-   `/mnt/tank/system/pxe/http/talos/<version>/`.
-4. Renders a standalone Talos version-picker menu at
-   `/mnt/tank/system/pxe/http/talos-menu.ipxe`
-   that points Talos PXE boot at the latest images.
+**Talos upgrades never used this.** `talosctl upgrade` pulls the installer
+image from the registry (`factory.talos.dev/installer/<schematic ID>:<version>`);
+nothing on the NAS is involved.
 
-The `homelab-pxe` container (`apps/pxe`, on VLAN 5, `10.10.5.10`) serves
-those assets over HTTP on `:8080` (via `nginx`); the main `menu.ipxe`
-Talos entry chains the rendered `talos-menu.ipxe` via its `:chain-menu`
-item.
+**Talos installs and re-images now boot a USB ISO**, built on demand at
+`factory.talos.dev` from the cluster's schematic in kube-infra — there is no
+local image cache. The whole procedure, as the pool-rebuild plan states it
+(§ *Why PXE goes completely*):
 
-## Why this is manual (for now)
+1. Open `factory.talos.dev` and paste the schematic:
+   - Q170S1 (kub-dev / kub-prd, including a re-image during the MS-A2
+     rollback window): `kube-infra/talos-os/schematic.yaml`, at the Talos
+     version pinned in `talos-os/patches/q170s1.yaml`.
+   - MS-A2 (msa2-dev / msa2-prd): `kube-infra/talos-os/schematic-msa2.yaml`.
+2. Download the ISO and write it to a USB stick.
+3. Boot the stick at the machine. ⚠ Someone has to be there: the MS-A2 has no
+   out-of-band management, and the Q170S1 remote-console path (amtctl /
+   MeshCentral) was retired the same day.
 
-The updater logic was originally designed as a sidecar container inside
-the PXE app's compose stack. That turned out fragile — the inline shell
-script in the compose `command:` heredoc couldn't reliably see the
-`${VAR}` environment it depended on, and the sidecar failed with
-`mkdir: can't create directory ''` in live tests.
+⚠ **No written runbook exists yet.** A wiki page (`talos-usb-install`) is
+planned but not written. **kube-infra CLAUDE.md does not describe this
+either:** its § PXE Boot and its amtctl "→ PXE" re-image note still present
+PXE as the install path, and are stale until they are rewritten. Do not follow
+them.
 
-The sensible fallback is a TrueNAS host-level cronjob, but TrueNAS's
-`cronjob.command` field is limited to **1024 characters** and the
-compacted shell pipeline is ~1200. Splitting it across `filesystem.put`
-(drop the script on disk) + a short cronjob that just calls it is
-straightforward and will be automated later; for now it's a one-time
-manual step.
+## History
 
-Everything except the cronjob registration is already committed to this
-repo and reproducible:
+The full former page is in git history:
+`git show 00e582b:docs/talos-updater-setup.md`.
 
-| Artifact | Path |
-|---|---|
-| Reference script | `apps/pxe/talos-updater.sh` |
-| Schematic | `apps/pxe/schematic.yaml` |
-| Dataset | `tank/system/apps-config/talos-updater` (created by `phase datasets`) |
-| Asset output dir | `tank/system/pxe/http/talos/` (created by `phase datasets`) |
-| Menu output file | `tank/system/pxe/http/talos-menu.ipxe` (rendered by the updater itself) |
-
-## Setup — one-time
-
-Prereq: `phase datasets` and `phase apps` have already run successfully;
-the `pxe` app (`homelab-pxe`) is in state `RUNNING`.
-
-### 1. Drop the script and schematic on the NAS
-
-SSH to the NAS (`ssh admin@10.10.5.10`) and copy the two files from this
-repo to the host:
-
-```sh
-sudo mkdir -p /mnt/tank/system/apps-config/talos-updater
-sudo install -m 0755 /path/to/truenas-infra/apps/pxe/talos-updater.sh \
-    /mnt/tank/system/apps-config/talos-updater/talos-updater.sh
-sudo install -m 0644 /path/to/truenas-infra/apps/pxe/schematic.yaml \
-    /mnt/tank/system/apps-config/talos-updater/schematic.yaml
-```
-
-(Or scp the files in.) The script lives on ZFS, so it's preserved across
-TrueNAS upgrades.
-
-### 2. Run once to populate assets
-
-```sh
-sudo SCHEMATIC_FILE=/mnt/tank/system/apps-config/talos-updater/schematic.yaml \
-     ASSETS_DIR=/mnt/tank/system/pxe/http/talos \
-     STATE_FILE=/mnt/tank/system/apps-config/talos-updater/state \
-     UPDATE_INTERVAL=1 \
-     /mnt/tank/system/apps-config/talos-updater/talos-updater.sh
-```
-
-(The script's default `UPDATE_INTERVAL` is 86400s; set it to `1` for the
-one-off run so the inner loop fires immediately. Kill with Ctrl-C after
-you see `Update cycle complete for Talos vX.Y.Z`.)
-
-Verify assets landed:
-
-```sh
-ls /mnt/tank/system/pxe/http/talos/
-# → v1.8.3/  (or whatever the latest tag is)
-
-ls /mnt/tank/system/pxe/http/talos/v1.8.3/
-# → vmlinuz-amd64  initramfs-amd64.xz
-
-cat /mnt/tank/system/pxe/http/talos-menu.ipxe
-# → #!ipxe ... kernel http://10.10.5.10:8080/talos/v1.8.3/vmlinuz-amd64 ...
-```
-
-### 3. Register the daily cronjob (TrueNAS UI)
-
-**System → Advanced → Cron Jobs → Add:**
-
-| Field | Value |
-|---|---|
-| Description | `talos-updater` |
-| Command | `/mnt/tank/system/apps-config/talos-updater/talos-updater.sh` |
-| Run as User | `root` |
-| Schedule | Daily, `03:00` |
-| Hide Standard Output | yes |
-| Hide Standard Error | no |
-| Enabled | yes |
-
-Equivalent one-shot via `midclt` (from SSH on the NAS):
-
-```sh
-midclt call cronjob.create '{
-  "enabled": true,
-  "description": "talos-updater",
-  "command": "/mnt/tank/system/apps-config/talos-updater/talos-updater.sh",
-  "user": "root",
-  "schedule": {"minute": "0", "hour": "3", "dom": "*", "month": "*", "dow": "*"}
-}'
-```
-
-The description `talos-updater` is the idempotency key used by
-`apps.ensure_cronjob()` — if the automation ever takes over, it will
-detect the existing entry and leave it alone.
-
-## Operating notes
-
-- **Where to check if a boot fails:** on the NAS, `tail -f
-  /var/log/cron` shows the cronjob invocation. The script itself logs
-  to stdout (captured by cron if you leave stderr visible).
-- **How to force a refresh:** delete
-  `/mnt/tank/system/apps-config/talos-updater/state`, then run the
-  script. It will re-register the schematic (idempotent — same YAML ⇒
-  same schematic ID) and re-download.
-- **Changing the schematic:** edit `schematic.yaml` on the NAS (and in
-  this repo — keep them in sync), delete the `state` file, run the
-  script. A new schematic ID will be issued.
-- **PXE client URL:** Talos clients iPXE-chain to
-  `http://10.10.5.10:8080/talos-menu.ipxe` (the standalone version-picker
-  the updater renders). The top-level `menu.ipxe` Talos entry reaches it
-  via its `:chain-menu` item.
-
-## TODO — automate in-code
-
-Short backlog item on `modules/apps.py`:
-
-1. `filesystem.put` — write `talos-updater.sh` + `schematic.yaml` from
-   `apps/pxe/` into `/mnt/tank/system/apps-config/talos-updater/`
-   via the API. Diff on SHA-256 of file contents for idempotency.
-2. `cronjob.create` with a short `command` that just invokes the
-   on-disk script. Already implemented as `ensure_talos_updater_cronjob`
-   — unblocked once step 1 lands.
-
-Once that ships, delete the manual steps above and replace with a
-pointer to `./manage.sh phase apps --apply`.
+This file is kept as a tombstone only because the wiki syncs it
+(`wiki/sync-map.yaml` → `docs/runbooks/talos-pxe-updater.md`). It is deleted
+together with that mapping in one coordinated change (pool-rebuild plan
+Task 9a) — deleting the source first makes the wiki sync fail.

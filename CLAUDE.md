@@ -20,14 +20,14 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 |---|---|
 | [`guntars-rakitko/kube-infra`](https://github.com/guntars-rakitko/kube-infra) | Talos + Kubernetes clusters (prd/dev), Flux CD, workloads |
 | [`guntars-rakitko/mikrotik-infra`](https://github.com/guntars-rakitko/mikrotik-infra) | Router, switches, WiFi, LTE, VLANs, firewall, DHCP/DNS |
-| [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, NFS), MinIO, PXE server, NUT server, media apps (this repo) |
+| [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, SMB), MinIO, NUT server + UPS shutdown orchestrator, cluster-agent, wiki host (this repo). PXE retired 2026-09-23 |
 | [`guntars-rakitko/bios-config`](https://github.com/guntars-rakitko/bios-config) | ASUS Q170S1 BIOS settings (AMT, PXE, power, security) |
 | [`guntars-rakitko/wiki`](https://github.com/guntars-rakitko/wiki) | Internal MkDocs wiki at [wiki.w1.lv](https://wiki.w1.lv/) — mirrors docs from all above |
 
 **Always read the CLAUDE.md of every related repo before making cross-cutting changes.** Common shared concerns:
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
-- **PXE / NUT / MinIO services** — live here on the NAS; referenced by `kube-infra` and `bios-config`
+- **NUT / MinIO services** — live here on the NAS; referenced by `kube-infra`. (The PXE server that `bios-config` also used was retired 2026-09-23 — see § Planned Services.)
 - **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92.
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
@@ -51,8 +51,7 @@ edit the matching wiki page in the same commit set.
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
 | `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
-| `apps/pxe/pxe-download.sh` (new PXE asset) | `docs/runbooks/bios-apply-pxe-setup.md` (if cross-repo flow changes), `docs/runbooks/pxe-operator.md` (adding / removing PXE ISOs) |
-| `docs/bios-apply-pxe-setup.md` | _Auto-synced_ → `docs/runbooks/bios-apply-pxe-setup.md` |
+| `docs/{pxe-operator,talos-updater-setup,bios-apply-pxe-setup}.md` | _Auto-synced_ — ⚠ **retirement tombstones since PXE was retired 2026-09-23.** Delete them only together with their `wiki/sync-map.yaml` mappings, `.gitignore` lines and `.pages` entries in one coordinated wiki change: a deleted source with a live mapping makes `sync_repos.py` fail hard. `apps/pxe/` and `config/talos.yaml` are dead code awaiting the same removal (pool-rebuild plan Task 9a). |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
 | Doppler `infrastructure/ops` (add/remove key) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
 | "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |
@@ -131,7 +130,7 @@ device-name comparison would have looked like a missing drive when nothing was w
 | NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
 | NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
-| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, PXE/TFTP, NUT |
+| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088). PXE/TFTP retired 2026-09-23. (cluster-agent's `:9595` metrics bind on the data-VLAN IPs above, not here — `apps/cluster-agent/docker-compose.yaml`) |
 
 Connected to CRS310:
 - `ether7` — tagged trunk, VLANs 10/15/20 (data, NIC1)
@@ -148,9 +147,9 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
-| MinIO prd S3 API | Velero backup store | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
-| MinIO dev S3 API | Velero backup store | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
-| cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated GH issues in [cluster-agent-sandbox](https://github.com/guntars-rakitko/cluster-agent-sandbox). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
+| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated Findings filed as issues in [`kube-infra`](https://github.com/guntars-rakitko/kube-infra) (labels `cluster-agent` + `needs-review`); the daily digest-summary goes to [`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest) (renamed from `-sandbox`; routing since the 2026-07-06 graduation — § cluster-agent ops). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
@@ -177,7 +176,7 @@ Decision tree — **apply every time you add an HTTPS endpoint on this network**
 1. **Admin / mgmt UI a human opens in a browser?**
    → Expose through Traefik at `10.10.5.20:443`. Backend plain HTTP on
      mgmt-VLAN IP. Portless URL `<name>.w1.lv`. Add DNS record (via
-     `mikrotik-infra/manage.sh` option 15) pointing at `10.10.5.20`.
+     `mikrotik-infra/manage.sh` option 5, "Sync DNS static records") pointing at `10.10.5.20`.
      Add a route in `apps/traefik/routes.yaml`.
 2. **Data-plane API a machine consumes (S3, gRPC, K8s API, …)?**
    → Bind directly on the service's own VLAN IP using its **native
@@ -281,6 +280,11 @@ fails on a full 6-drive DRAM-cached array. There is **no NVMe/power BIOS fix**
 >   **alive and answering**. A **drive firmware hang**, not a power event.
 >   Specific to PM9A1 `S6H2NF0WC37392`, whose fault followed it across a
 >   physical reslot → that drive is faulty on evidence.
+>   ⚠ Since 2026-09-23 that drive (and slot 04's `S4GRNX0NA00357`) has left
+>   the NAS: `…392` is **msa2-dev's Postgres disk by operator decision**
+>   (kube-infra msa2 plan D2, which reads the evidence the other way — the
+>   rail, not the drive). Do not "retire the faulty drive" without reading
+>   the forensics doc's § 2026-09-23.
 >
 > **Fixing one mode will not fix the other.** That doc also carries the
 > recovery ladder (⚠ a warm reboot is **not** enough — the M.2 3.3 V rail
@@ -359,7 +363,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 9 canonical buckets per cluster
+./scripts/setup-minio-buckets.sh      # 10 buckets per instance (incl. the orphan loki-chunks)
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -369,14 +373,15 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the nine canonical backup buckets on each MinIO instance
-(authoritative list = the `BUCKETS` array in the script):
+Creates the backup buckets on each MinIO instance — **ten** today, one of
+them (`loki-chunks`) an orphan with no consumer (authoritative list = the
+`BUCKETS` array in the script; its header still says "nine"):
 
 | Bucket | Consumer |
 |---|---|
 | `cluster-agent` | cluster-agent — `state.db` nightly backups |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
-| `loki-chunks` | Loki — log chunks (compressed log streams + index) |
+| `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
 | `longhorn` | Longhorn — volume + system backups (S3 BackupTarget; replaced the old NFS export 2026-04-27) |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
 | `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
@@ -389,19 +394,40 @@ Creates the nine canonical backup buckets on each MinIO instance
 
 Provisions the cluster's service user. **One user per cluster**,
 shared across all cluster backup tracks (Velero / Longhorn / Postgres /
-etcd-snapshots / cluster-agent / loki-chunks / …), `readwrite` policy.
+etcd-snapshots / …), `readwrite` policy.
 Per-track IAM scoping isn't worth the operational overhead for this
-scale. (`mssql-backups` is **not** a cluster track — it's fed by the
-legacy GIKS-v1 box's own MSSQL credentials, not this per-cluster user.)
+scale. (`mssql-backups` is **not** a cluster track — only the legacy
+GIKS-v1 box, docker-prd-01, writes there.)
+
+⚠ **Which MinIO user the v1 box authenticates as is UNCONFIRMED here.**
+This section used to say the box has its own credentials; the wiki's
+`giks-v1-box-backup` runbook says it **reuses this prd per-cluster user**
+(a hand copy in the box's `/opt/stacks/mssql/.env`). If the wiki is right,
+rotating the prd user without updating that `.env` and restarting
+`mssql-native-backup` silently stops backups of the only production
+database. Check the box before any prd rotation (compare access-key IDs,
+never print the secret).
 
 **Source of truth for the credentials is Doppler**
 `infrastructure/{dev,prd}` → `KUBE_MINIO_ACCESS_KEY_ID` +
-`KUBE_MINIO_SECRET_ACCESS_KEY` + `KUBE_MINIO_ENDPOINT`. The cluster
-reads them via DopplerSecret CRDs (rendered as the K8s Secrets
-`velero-minio`, `longhorn-s3`, `mssql-backup-creds`); this script
-reads the same Doppler keys via `doppler secrets get --plain` to
+`KUBE_MINIO_SECRET_ACCESS_KEY` + `KUBE_MINIO_ENDPOINT`. The clusters
+read them via DopplerSecret CRDs (kube-infra
+`flux-cd/infrastructure/configs/per-cluster/<cluster>/secrets/`), rendered as
+`postgres-backups-s3` + `postgres-backups-s3-w1-db` (every cluster),
+`loki-s3` (every cluster; unused since Loki moved to filesystem, slated for
+removal), `pocket-id-secrets` (reads them on dev + msa2-dev only), `velero-minio` +
+`longhorn-s3` on the Q170S1 clusters only (`velero-minio` also feeds their
+etcd-snapshot CronJob), and `etcd-snapshot-minio` on msa2 only
+(`mssql-backup-creds` went with the cluster MSSQL decommission, 2026-06-17).
+This script reads the same Doppler keys via `doppler secrets get --plain` to
 provision the MinIO user. Single canonical copy, zero drift,
 no cross-repo coupling.
+
+⚠ **`infrastructure/{dev,prd}` is shared by each Q170S1 cluster and its msa2
+successor** (kube-infra `talos-os/estates.yaml` `doppler_env`; the msa2
+per-cluster DopplerSecrets read the same configs). Once an msa2 cluster is
+up, a `KUBE_MINIO_*` rotation reaches both it and the old cluster at once —
+roll it as one change.
 
 To rotate: generate a new key pair, update Doppler
 (`doppler secrets set KUBE_MINIO_ACCESS_KEY_ID=... \
@@ -447,9 +473,9 @@ irreversible: both buckets are un-versioned with no object-lock.
 `etcd-<stamp>.db` namespace with no date prefixes, so `--expire-days` applies
 uniformly. Hourly-then-daily tiering would need a prune step in the CronJob.
 
-Velero / Longhorn / loki-chunks / pocket-id-litestream remain intentionally
-absent — Loki's compactor and Litestream prune their own object stores, and
-**Velero and Longhorn must NOT be given an age-based backstop**: Longhorn
+Velero / Longhorn / pocket-id-litestream remain intentionally absent (and so
+does the orphan `loki-chunks`, which nothing writes) — Litestream prunes its
+own replicas, and **Velero and Longhorn must NOT be given an age-based backstop**: Longhorn
 backups are incremental block chains where later backups reference blocks
 written by earlier ones, so expiring a base by age corrupts every surviving
 backup that depended on it, and Velero's TTL controller expects to own
@@ -457,8 +483,13 @@ deletion.
 
 #### setup-minio-encryption.sh
 
-Enables **SSE-S3 default encryption** on all 9 buckets of both
-instances (GDPR at-rest encryption, kube-infra #520 Workstream C).
+Enables **SSE-S3 default encryption** on the buckets in its own `BUCKETS`
+list, on both instances (GDPR at-rest encryption, kube-infra #520
+Workstream C). ⚠ **That list is NOT the bucket list above:** it has eight
+entries and omits `postgres-backups-w1` and `sms-gateway-backups` (the
+latter holds the SMS-gateway's member/billing dumps). So this script has
+never enabled default encryption on those two; whether they are encrypted
+live is unchecked (`mc encrypt info nas-<env>/<bucket>`).
 With SSE-S3 on, every object is encrypted server-side before it hits
 the ZFS pool — backups become ciphertext at rest, transparently.
 
@@ -770,7 +801,7 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 **Per-script keys** (read by `manage.sh` top-level + Python config):
 
 - `TRUENAS_HOST`, `TRUENAS_API_KEY`, `TRUENAS_VERIFY_SSL`
-- `TRUENAS_NUT_MONPWD` — NUT `upsmon` user password (monitoring + FSD trigger, used by K8s nodes' Talos nut-client extension; written into upsd.users by TrueNAS at service start). Role: **secondary** — read-only state queries + FSD trigger, **no SET/INSTCMD**.
+- `TRUENAS_NUT_MONPWD` — NUT `upsmon` (monitor) user password; written into upsd.users by TrueNAS at service start, and **required** — without it upsd exits silently (`config/services.yaml` § nut `monuser`). Used by the NAS's own upsmon master and by the in-cluster nut-exporter on every cluster — kub-dev and kub-prd, and the msa2 clusters declare the same (kube-infra `flux-cd/infrastructure/configs/base/nut-exporter.yaml`, `--nut.username=upsmon`). The K8s nodes are NOT NUT clients since 2026-06-02 (Path B). Role: read-only state queries, **no SET/INSTCMD**. ⚠ The clusters read the password from Doppler `infrastructure/shr` → `SHARED_TRUENAS_NUT_MONPWD` (DopplerSecret `nut-credentials`), a separate key that must equal this one — rotate both together, or make one a Doppler reference to the other.
 - `TRUENAS_NUT_ADMINPWD` — NUT `upsadmin` user password (operator-side, used for `upsrw` + `upscmd` writes). Role: **SET + INSTCMD ALL**, configured via TrueNAS UI → Services → UPS → Edit → **"Extra Users"** field (pasted from the doctrine block in `wiki/docs/runbooks/ups-operations.md`). Live since 2026-05-28. Apple Passwords mirror: `TrueNAS NUT upsadmin`. Add to **NOPASSWD allowlist** when extending NUT automation — see SSH section below.
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
@@ -890,10 +921,13 @@ wildcards.
 
 **Per-app keys** (`_DOPPLER_KEYS_PER_APP` in `modules/apps.py`):
 
-- `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`
-- `minio-dev` → `MINIO_ROOT_USER_DEV`, `MINIO_ROOT_PASSWORD_DEV`
-- `amtctl` → `AMT_USER`, `AMT_PASSWORD`
-- `homepage` → `TRUENAS_API_KEY` + `MINIO_ROOT_*_{DEV,PRD}` (5 keys total, mapped from `HOMEPAGE_VAR_*` placeholders in compose)
+- `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`, `MINIO_KMS_SECRET_KEY_PRD`, `MINIO_AISTOR_LICENSE`
+- `minio-dev` → `MINIO_ROOT_USER_DEV`, `MINIO_ROOT_PASSWORD_DEV`, `MINIO_KMS_SECRET_KEY_DEV`, `MINIO_AISTOR_LICENSE` (one shared, org-scoped license key)
+- `cluster-agent` → its own Doppler project `cluster-agent/prd` (`_DOPPLER_PROJECT_PER_APP`), not `infrastructure/ops` — key list in § cluster-agent ops
+
+⚠ The dict still carries `amtctl` and `homepage` entries. Both apps were
+retired 2026-09-23 and are no longer in `config/apps.yaml`, so those entries
+are never read — dead legacy awaiting removal from `modules/apps.py`.
 
 **Inspect / edit:**
 
@@ -954,8 +988,12 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
-      upsmon   (secondary perms) → RETAINED but unused (nodes are no longer
-                                   NUT clients; safe to drop — see history)
+      upsmon   (read-only)       → the in-cluster nut-exporter on every cluster
+                                   (kub-dev, kub-prd; msa2 declares the same)
+                                   + the NAS's own upsmon master. ⚠ NOT safe
+                                   to drop — upsd will not start without monpwd,
+                                   and dropping it kills UPS telemetry + alerting
+                                   on every cluster
 
 K8s nodes (×6)
   └─ NOT NUT clients. The nut-client extension was stripped from the Talos
@@ -975,17 +1013,27 @@ cluster with quorum intact** — quorum loss is not required. Removing `--force`
 would add ~5 min per node to a battery-constrained shutdown. Verified on Talos
 v1.13.7: `shutdown --force` still exists, semantics unchanged.
 
-⚠ **On the MS-A2 single-node clusters the conclusion HOLDS but the reasons
-NARROW — do not re-derive it from the list above and conclude `--force` is
+⚠ **On the MS-A2 single-node clusters KEEP `--force` — but the reasons
+NARROW, so do not re-derive it from the list above and conclude it is
 unnecessary.** Longhorn is dropped, so the three `instance-manager-*` PDBs
-vanish, and the msa2 overlays `$patch: delete` the three repo-owned PDBs (loki,
-pocket-id, coredns) precisely because `minAvailable: 1` on a 1-replica workload
-blocks **every** eviction at n=1. What remains is the **chart-level** PDBs
-(cert-manager, metrics-server, traefik ×3, kube-prometheus-stack ×3) — open item
-6 in `kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml`, still in
-place. Those alone re-create the hang. (Distinct from
-`talosctl upgrade`, whose `--preserve` flag was **deprecated — not removed** —
-in v1.13; it still parses and exits 0 with a warning. Unrelated to this path.)
+vanish. The repo-owned PDBs (loki, pocket-id, coredns, and the giks/health app
+PDBs) moved into kube-infra `flux-cd/legacy-q170s1/`, which only the Q170S1
+clusters read (kube-infra plan Tasks D1b / D4-move), because `minAvailable: 1`
+on a 1-replica workload blocks **every** eviction at n=1; the cloudflared PDB
+is declared only in the Q170S1 per-cluster overlays. The **chart-level** PDBs
+are gone too: open item 6 in
+`kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml` is CLOSED by
+kube-infra plan Task D2 (the shared HelmReleases render no PDB at n=1; the
+three-node values moved to `legacy-q170s1/`). What is expected to remain is
+CNPG's own `<cluster>-primary` PDB for `giks` and `w1` at `instances: 1` — the
+plan deliberately keeps CNPG's PDBs (D4 fold-in M3: `enablePDB: false` NOT
+adopted). ⚠ Unverified until `kubectl get pdb -A` on an msa2 cluster at
+bring-up. Either way `--force` stays: at n=1 any blocking PDB makes the drain
+unfinishable (a single-node drain was measured never to finish on msa2-dev
+2026-09-24 — `talosctl upgrade`, left cordoned, no reboot; kube-infra plan Task
+C1 Step 5). (Separately, and unrelated to this path: `talosctl upgrade`'s
+`--preserve` flag was **deprecated — not removed** — in v1.13; it still parses
+and exits 0 with a warning.)
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary.
@@ -994,12 +1042,16 @@ client plus the real `os:operator` credential authenticating to a v1.13.7 node),
 but a major/minor gap would break the UPS shutdown path **silently**, surfacing
 only during a real outage.
 
-> ⚠ **THERE IS A FULL-MINOR GAP RIGHT NOW (measured 2026-09-22).** The staged
-> binary is still **v1.13.2** (mtime Jun 1); both clusters rolled to **v1.14.0**
-> on 2026-09-19. This is UNVERIFIED, not known-broken — the only pairing ever
-> tested here was same-minor. Re-stage with
-> `setup-talos-shutdown-orchestrator.sh` (its `TALOSCTL_VERSION` default is now
-> v1.14.0) and run the check below.
+> ⚠ **Re-staged 2026-09-23, version not re-measured since.** On 2026-09-22 the
+> staged binary was **v1.13.2** against nodes on **v1.14.0** — a full-minor gap.
+> The 2026-09-23 pool rebuild destroyed `/mnt/tank/system/talos/` and the whole
+> path was re-staged with `setup-talos-shutdown-orchestrator.sh` (pool-rebuild
+> plan Task 7), whose `TALOSCTL_VERSION` default is **v1.14.0** — same minor as
+> the old estate (v1.14.0) and msa2 (v1.14.1). ⚠ Confirm with the check below
+> (and `talosctl version --client` on the NAS) before relying on it; if it still
+> reports v1.13.2, the gap is real — re-stage.
+> ⚠ At each msa2 cutover the orchestrator needs **new** `os:operator` configs
+> (msa2 has its own PKI — kube-infra plan cutover row 15); re-stage then.
 >
 > ✅ **The CREDENTIALS are fine** — read from Doppler 2026-09-22 they are valid
 > `Jun 1 2026 → May 29 2036`. A suspicion that they had expired came from
@@ -1010,22 +1062,25 @@ only during a real outage.
 > (verified: nothing in this repo rotates it, no kube-infra `prometheus-rules-*`
 > watches it). Corrected 2026-09-22 to 87600h, with the reasoning written down.
 
-One-line check after any node upgrade:
+One-line check after any node upgrade (the configs are 0600 root, so it needs
+`sudo` — and a TTY, because `talosctl` is not on the NOPASSWD allowlist):
 
 ```sh
-/mnt/tank/system/talos/talosctl --talosconfig /mnt/tank/system/talos/dev-shutdown.talosconfig \
-  -n 10.10.5.14 --endpoints 10.10.5.14 version --short   # expect Server: v1.13.x
+ssh -t truenas_admin@nas.w1.lv 'sudo /mnt/tank/system/talos/talosctl \
+  --talosconfig /mnt/tank/system/talos/dev-shutdown.talosconfig \
+  -n 10.10.5.14 --endpoints 10.10.5.14 version --short'   # expect Server: v1.14.x
 ```
 
 **Two NUT users — role separation:**
 
 | User | Password key | Perms | Used by | Where defined |
 |---|---|---|---|---|
-| `upsmon` | `TRUENAS_NUT_MONPWD` | secondary (monitoring + FSD trigger only) | K8s nodes' Talos nut-client | TrueNAS UI → Services → UPS → Edit → **Monitor User/Password** fields (managed via `ups.config` API; appears in upsd.users at service start) |
+| `upsmon` | `TRUENAS_NUT_MONPWD` (clusters: `infrastructure/shr` `SHARED_TRUENAS_NUT_MONPWD`, must match) | monitor (read-only) | in-cluster nut-exporter (kub-dev, kub-prd; the msa2 clusters declare the same) + the local upsmon master | TrueNAS UI → Services → UPS → Edit → **Monitor User/Password** fields (managed via `ups.config` API; appears in upsd.users at service start) |
 | `upsadmin` | `TRUENAS_NUT_ADMINPWD` | `actions = SET`, `instcmds = ALL` | Operator's `upsrw`/`upscmd` invocations | TrueNAS UI → Services → UPS → Edit → **Extra Users** field (`ups.config.extrausers`). Live since 2026-05-28. |
 
-Operator never uses `upsmon` for writes — `upsmon`'s purpose is K8s
-node fleet monitoring; the upsadmin user keeps that scope clean.
+Operator never uses `upsmon` for writes — `upsmon`'s purpose is read-only
+telemetry for the nut-exporters and the local master; the upsadmin user keeps
+that scope clean.
 
 **UPS HID thresholds (live on UPS firmware, not in NUT config):**
 
@@ -1039,7 +1094,7 @@ swap silently reverts to APC defaults. Codified in
 | `ups.delay.shutdown` | **90** | seconds | Time UPS waits after the #57-hook kill-power before killing outputs. Trimmed 450→90 on 2026-06-02 — the Path-B orchestrator confirms all 6 nodes are down (poll 0/6) BEFORE the NAS halts+arms, so this only has to cover the NAS's own final poweroff. ENUM valid: 090/180/.../630/000; 090 is the floor. Writable (`upsrw`, zero-padded). |
 | `ups.delay.start` | **60** (1 min) | seconds | Delay before UPS re-enables outputs after utility returns. apcsmart ENUM — write the zero-padded `"060"` (bare `60` → `ERR INVALID-VALUE`). Avoids the boot-shutdown-boot loop on flaky grids. |
 | **`sdtype`** | **5** | enum | apcsmart kill-power METHOD: hard hibernate (`@`) ALWAYS, regardless of line state. In `ups.config.options`. The default (0) is status-dependent (`S` on battery / `@` on mains) and the #57 hook's transient `upsdrvctl` can't read status → used `S` → no-op on mains. `5` forces `@` → UPS cuts + auto-returns even on MAINS (validated 2026-06-02). The lever that closed the mains-mid-drain gap. |
-| `battery.runtime.low` | **600** (10 min) | seconds | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.runtime.low = 600` in `ups.config.options`. |
+| `battery.runtime.low` | **420** (7 min) | seconds | LB trigger (secondary). **READ-ONLY on firmware** — enforced via driver `override.battery.runtime.low = 420` in `ups.config.options`. Lowered 600→420 on 2026-08-01 (#112): the apcsmart runtime estimate jitters 480–1260 s on mains, so 600 fired false `UPSBatteryLow` alerts at full charge. |
 | `battery.charge.low` | **60** | percent | LB trigger. **READ-ONLY on firmware** — enforced via driver `override.battery.charge.low = 60` + `ignorelb` in `ups.config.options`. Lowered 75→60 on 2026-06-01 — node shutdown is fast (~187s via the orchestrator) so 60% leaves ample reserve + restores short-outage ride-through. |
 | `battery.charge.warning` | 50 | percent | WARN-level notification at 50% (logs only, no shutdown). Default — kept as early-warning signal. |
 | TrueNAS `powerdown` | `true` | boolean | Set 2026-05-28. (Path B no longer relies on TrueNAS's own `powerdown` killpower — the #57 Init/Shutdown hook does the kill-power via `upsdrvctl shutdown`/sdtype=5. Left enabled, harmless.) |
@@ -1088,15 +1143,17 @@ confirmed the UPS cuts power + power-cycles the rack.
   so the hook first runs `upsmon -K` and only arms the UPS when the flag is set
   (genuine FSD/low-battery shutdown). A routine reboot/poweroff → flag unset →
   it logs and exits, so it does NOT power-cycle the rack on normal maintenance.
-- `scripts/setup-ups-shutdown-hook.sh` — installer (API-based: clears
-  shutdowncmd + restarts ups, uploads hook + root-only pw file, registers the
-  SHUTDOWN init/shutdown script). Init/shutdown scripts persist in the config
-  DB across reboots + updates.
+- `scripts/setup-ups-shutdown-hook.sh` — installer (API-based: uploads hook +
+  root-only pw file, registers the SHUTDOWN init/shutdown script). ⚠ Since
+  Path B it does **NOT** touch `shutdowncmd` (script header) — the Attempt-2
+  version cleared it, which would now break the orchestrator. Init/shutdown
+  scripts persist in the config DB across reboots + updates, but NOT across a
+  TrueNAS reinstall (`docs/recovery.md` § 4).
 - `config/services.yaml § nut.shutdowncmd` — ~~**keep empty**~~
   **⚠ SUPERSEDED by Path B (kube-infra #611, 2026-06-02 — see the banner
   at the top of this §).** `shutdowncmd` is now **SET** to
   `/mnt/tank/system/talos/nas-ups-orchestrator.sh` (verify:
-  `config/services.yaml:276`). **Do NOT clear it** — an empty
+  `config/services.yaml` § nut.shutdowncmd). **Do NOT clear it** — an empty
   `shutdowncmd` would break the Path-B DR orchestration. The Attempt-1/
   Attempt-2 prose above is retained only as history of the pre-Path-B
   design (when the Init/Shutdown hook armed the UPS and `shutdowncmd`
@@ -1115,6 +1172,9 @@ fallback. Other options if init/shutdown also fails: native RS-232 (no USB —
 needs hardware the Beelink lacks), or revert apcsmart→usbhid-ups (trades the
 rich Grafana telemetry for the standard kill-power path).
 
+**HISTORY — superseded:** charge.low 75→60 (2026-06-01), runtime.low 840→600
+(#611) →420 (2026-08-01, #112), delay.shutdown 450→90 (2026-06-02). Current
+values are in the table above.
 **Thresholds (2026-05-31):** LB `override.battery.charge.low` 50→**75** and
 `override.battery.runtime.low` 600→**840** (shutdown starts with ~14 min
 reserve, after the drill left the battery at ~5%). `ups.delay.shutdown` was
@@ -1124,30 +1184,15 @@ left aggressive for reserve. Trade-off: LB at 75% gives up short-outage
 ride-through sooner (a ~4-5 min outage triggers shutdown; still rides routine
 ~90s blips).
 
-**✅ RESOLVED 2026-05-31 — slow Talos node shutdown (kube-infra #611).** Root
+**2026-05-31 (history) — slow Talos node shutdown (kube-infra #611).** Root
 cause: Talos's shutdown sequence ran an API-dependent pod *drain*
 (`CordonAndDrainNode`) that burned a hardcoded 5-min `DrainTimeout` once etcd
-quorum was lost (all 3 CP nodes powering off together) — the ~6-8 min "stuck
-loop" that drained the battery. Fix: the nodes' NUT `SHUTDOWNCMD` is now
-`/sbin/poweroff --force`, which skips ONLY that drain (StopAllPods graceful
-SIGTERM + fs sync still run, so it stays clean). Whole-rack node poweroff
-dropped to **~3.2 min** with **0 faulted** Longhorn volumes on recovery
-(validated on dev+prd). With shutdown fast, `ups.delay.shutdown` was trimmed
-630→450. The LB threshold COULD now be lowered back toward 50% for more
-ride-through, but is left at 75% (operator preference); the recharge alert
-noise was solved at the alert-class layer (see "UPS alert notifications"
-below), not by moving thresholds. Config: `kube-infra/talos-os/patches/general.yaml`.
-
-**Future option — controlled talosctl-orchestrated shutdown (NOT built).**
-Instead of relying on each node's NUT-secondary self-shutdown, a NAS-side
-orchestrator could `talosctl shutdown` the nodes in order, confirm each is down
-(AMT/ping), then halt the NAS + arm the UPS — with a full per-step log. Better
-control + observability, BUT: (a) puts a Talos cluster-control credential on
-the NAS (blast-radius increase; Talos roles are coarse — os:reader/operator/
-admin — no "shutdown-only" scope, so the cred can at least DoS the cluster),
-(b) real new infra + maintenance (talosctl binary, config rotation, AMT
-integration, more drills), (c) against the "no new infra" wrap-up doctrine.
-Defer; revisit post-rebuild only if the controlled process + logging is wanted.
+quorum was lost — the ~6-8 min "stuck loop" that drained the battery. An
+interim node-side NUT `SHUTDOWNCMD=/sbin/poweroff --force` cut node shutdown to
+~3.2 min. **Superseded 2026-06-02 by Path B** — the nodes are no longer NUT
+clients (kube-infra `talos-os/patches/general.yaml` § NUT removal note); the NAS
+orchestrator runs `talosctl shutdown --force` instead (banner at the top of this
+§). charge.low was lowered 75→60 on 2026-06-01.
 
 **Service-restart gotcha:** `midclt call service.control RESTART ups` can
 leave the service **STOPPED** on TrueNAS 25.10 (observed 2026-05-30 after a
@@ -1170,9 +1215,10 @@ auto-reconciled, re-apply after a NAS rebuild):
 | `UPSBatteryLow` | ALERT | IMMEDIATELY→**HOURLY** | flapped per threshold-crossing during post-outage recharge (email spam) → throttled to ≤1/hr; still signals a genuine low battery. |
 
 Other UPS* classes (Commbad/Commok/Replbatt) kept at defaults. The recharge
-flapping is a side-effect of the aggressive 75%/840s LB triggers — the battery
-dwells in the LB zone for a while while recharging — so HOURLY caps the email
-spam without moving the (deliberately aggressive) thresholds.
+flapping was a side-effect of the earlier 75%/840s LB triggers — the battery
+dwelt in the LB zone for a while while recharging — and HOURLY caps the email
+spam. The triggers have since been lowered (charge.low 60, runtime.low 420 —
+see the table above).
 
 **Battery health verification:**
 - Last manual quick test: **2026-06-13 (Done and passed)** — establishes baseline for the new RBC7 pair.

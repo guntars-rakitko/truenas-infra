@@ -8,18 +8,18 @@ serving everything it should, and nothing it shouldn't.
 | What | Command | Expected |
 |---|---|---|
 | UI on mgmt | `curl -skI https://10.10.5.10/` | 200/302 |
-| VLAN 10 up | from prd Kube node: `ping -c3 10.10.10.10` | 0% loss |
-| VLAN 15 up | from dev Kube node: `ping -c3 10.10.15.10` | 0% loss |
+| VLAN 10 up | from a debug pod in the prd cluster (Talos nodes have no shell): `ping -c3 10.10.10.10` — or the `cluster-data-plane` MinIO blackbox probe in that cluster's Prometheus | 0% loss / probe success |
+| VLAN 15 up | from a debug pod in the dev cluster: `ping -c3 10.10.15.10` — or the dev cluster's `cluster-data-plane` MinIO probe | 0% loss / probe success |
 | VLAN 20 up | from home LAN: `ping -c3 10.10.20.10` | 0% loss |
-| SSH on mgmt | `ssh svc-automation@10.10.5.10 whoami` | `svc-automation` |
+| SSH on mgmt | `ssh truenas_admin@10.10.5.10 whoami` (publickey; `svc-automation` has no SSH keys and a `nologin` shell — it is API-key only, `config/users.yaml`) | `truenas_admin` |
 
 ## Storage
 
 | What | Command | Expected |
 |---|---|---|
-| Pool healthy | `ssh admin@10.10.5.10 zpool status tank` | `ONLINE`, **3 disks** — rebuilt 5-wide → 3-wide raidz1 on 2026-09-23 |
-| All datasets present | `ssh admin@10.10.5.10 zfs list -r tank` | all 13 datasets |
-| SMART schedule | `midclt call smart.test.query` | 6 tasks, 1/disk |
+| Pool healthy | `ssh truenas_admin@10.10.5.10 zpool status tank` | `ONLINE`, **3 disks** — rebuilt 5-wide → 3-wide raidz1 on 2026-09-23 |
+| All datasets present | `ssh truenas_admin@10.10.5.10 zfs list -r tank` | every dataset in `config/storage.yaml` present (20 under `tank`) |
+| SMART | not verifiable via the API on 25.10 (`smart.*` was removed; `phase storage-tasks` logs a skip) — `ssh -t truenas_admin@10.10.5.10 'sudo smartctl -H /dev/nvmeX'` for each of the 4 NVMe drives (match by serial). `-t` because `smartctl` is not on the NOPASSWD sudo allowlist, so sudo prompts for the password (CLAUDE.md § SSH + sudo on NAS) | `PASSED` on all 4 |
 | Scrub schedule | `midclt call pool.scrub.query` | 1 task, weekly |
 | Snapshot schedule | `midclt call pool.snapshottask.query` | 7 tasks |
 
@@ -27,18 +27,15 @@ serving everything it should, and nothing it shouldn't.
 
 | What | Command | Expected |
 |---|---|---|
-| NFS prd mountable | from prd node: `mount -t nfs 10.10.10.10:/mnt/tank/kube/prd/longhorn /mnt/t` | success |
-| NFS dev mountable | from dev node: `mount -t nfs 10.10.15.10:/mnt/tank/kube/dev/longhorn /mnt/t` | success |
+| NFS exports | `showmount -e 10.10.10.10` | empty — NFS has had no shares since 2026-09-23 (the Longhorn exports went 2026-04-27, `stress-results` with the pool rebuild) |
 | NFS VLAN-20 isolated | from VLAN 20: `showmount -e 10.10.20.10` | connection refused |
 | SMB `general` listed | `smbclient -L //10.10.20.10` | `general` share present |
-| SMB Kube isolated | from Kube node: `smbclient -L //10.10.10.10` | connection refused |
+| SMB Kube isolated | from a debug pod in a cluster (Talos nodes have no shell): `smbclient -L //10.10.10.10` | connection refused |
 
 ## Apps
 
 | What | Command | Expected |
 |---|---|---|
-| Homelab PXE HTTP (nginx) | `curl -sI http://10.10.5.10:8080/` | `Server: nginx` header (HTTP assets up) |
-| TFTP | `tftp 10.10.5.10 -c get ipxe.efi /tmp/x && ls -la /tmp/x` | non-zero size (iPXE binary served) |
 | MinIO prd | `mc alias set prd https://10.10.10.10:9000 … && mc ls prd` | no error |
 | MinIO dev | `mc alias set dev https://10.10.15.10:9000 … && mc ls dev` | no error |
 | MinIO VLAN-20 isolated | `curl --connect-timeout 3 http://10.10.20.10:9000` | refused/timeout |
@@ -48,7 +45,7 @@ serving everything it should, and nothing it shouldn't.
 | What | Command | Expected |
 |---|---|---|
 | Service running | `midclt call service.query '[["service","=","ups"]]'` | `state=RUNNING` |
-| Reachable from Kube | from Kube node (VLAN 5): `upsc apc1@10.10.5.10` | live UPS status |
+| Reachable from Kube | each cluster's Prometheus: `up{job="nut-exporter"}` and `network_ups_tools_ups_status` (the Talos nodes are not NUT clients since 2026-06-02 and have no shell) | target UP, `ups_status` series present |
 | Not reachable from home | from VLAN 20: `nc -zv 10.10.5.10 3493` | refused (firewall) |
 
 ## TLS
@@ -56,4 +53,3 @@ serving everything it should, and nothing it shouldn't.
 | What | Command | Expected |
 |---|---|---|
 | Valid cert chain | `curl -I https://nas.w1.lv/` | 200, valid chain |
-| Internal CA exported | `test -f docs/nas-internal-ca.pem && openssl x509 -in docs/nas-internal-ca.pem -noout -subject` | CN line printed |

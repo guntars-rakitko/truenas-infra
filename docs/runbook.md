@@ -15,8 +15,14 @@ piece; everything else is scripted.
 ./manage.sh phase users --apply
 ./manage.sh phase network       # DRY RUN first
 ./manage.sh phase network --apply
+./manage.sh phase tunables      # DRY RUN — NVMe 3.3V-rail mitigations
+./manage.sh phase tunables --apply
+# REBOOT here so the kernel args (nvme_core.default_ps_max_latency_us=0
+# pcie_aspm=off pcie_port_pm=off) and the PS2 udev cap take effect, then on
+# EACH NVMe drive, BEFORE phase pool:
+#   sudo nvme get-feature /dev/nvmeX -f 0x02   → Current value:0x00000002
 ./manage.sh phase tls --apply
-./manage.sh phase pool          # DRY RUN — review the disk list
+./manage.sh phase pool          # DRY RUN — review the disk list (match by SERIAL)
 ./manage.sh phase pool --apply --confirm=CREATE-TANK
 ./manage.sh phase datasets --apply
 ./manage.sh phase storage-tasks --apply
@@ -28,6 +34,12 @@ piece; everything else is scripted.
 
 Always dry-run first; every phase computes and logs a diff of what it
 would change. Only pass `--apply` after reading the diff.
+
+⚠ **`phase tunables` + the reboot + the PS2 check are mandatory before pool
+creation** — pool creation is the highest-current moment for the ME Mini's
+shared 3.3 V M.2 rail, and these are the mitigations for its drive dropouts.
+See CLAUDE.md § NVMe 3.3V-rail mitigations (and the 2026-09-23 pool-rebuild
+plan, which made this a gate).
 
 ## Safety flags
 
