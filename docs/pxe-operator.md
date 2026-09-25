@@ -11,8 +11,8 @@
 ## What replaces it
 
 **Talos installs and re-images boot a USB ISO**, built on demand at
-`factory.talos.dev` from the cluster's schematic in kube-infra. The whole
-procedure, as the pool-rebuild plan states it (§ *Why PXE goes completely*):
+`factory.talos.dev` from the cluster's schematic in kube-infra. In outline,
+as the pool-rebuild plan states it (§ *Why PXE goes completely*):
 
 1. Open `factory.talos.dev` and paste the schematic:
    - Q170S1 (kub-dev / kub-prd, including a re-image during the MS-A2
@@ -24,12 +24,16 @@ procedure, as the pool-rebuild plan states it (§ *Why PXE goes completely*):
    out-of-band management, and the Q170S1 AMT console (amtctl / MeshCentral)
    was retired the same day.
 
-⚠ **No written runbook exists yet.** A wiki page (`talos-usb-install`) is
-planned but not written. **kube-infra CLAUDE.md does not describe this
-either:** its § PXE Boot and its amtctl "→ PXE" re-image note still present
-PXE as the install path, and are stale until they are rewritten. Do not follow
-them. ⚠ The pool-rebuild plan (Task 9 prerequisite) requires the USB path to
-be proven on real hardware before the old estate is torn down.
+**Runbook:** [Talos USB install](https://wiki.w1.lv/runbooks/talos-usb-install/) (wiki): get
+the ISO, write the stick, reset a disk that still holds Talos, boot the stick
+at the box into maintenance mode, then hand off to `bootstrap.sh`. Proven on
+the MS-A2 (2026-09-24); ⚠ **unproven on a Q170S1**, because the pool-rebuild
+plan's Task 9 prerequisite covered only the MS-A2 stick. Prove it on a kub-dev
+node before depending on it.
+
+**kube-infra CLAUDE.md does not describe this:** its § PXE Boot and its amtctl
+"→ PXE" re-image note still present PXE as the install path, and are stale
+until they are rewritten. Do not follow them.
 
 The other PXE menus (BIOS apply, utilities, live CDs, netboot) have no NAS
 replacement. The Q170S1 BIOS is applied from a USB stick built by

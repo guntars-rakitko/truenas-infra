@@ -23,9 +23,12 @@
   `talos-os/schematic-msa2.yaml` for an MS-A2), download the ISO, write the
   stick and boot it at the machine
   (`docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md` § *Why PXE goes
-  completely*). ⚠ No written runbook exists yet (a wiki `talos-usb-install`
-  page is planned). kube-infra CLAUDE.md § PXE Boot still presents PXE as the
-  install path and is stale until it is rewritten, so do not follow it.
+  completely*). Runbook: [Talos USB install](https://wiki.w1.lv/runbooks/talos-usb-install/)
+  (wiki), covering the ISO, the stick, resetting a disk that still holds
+  Talos, maintenance mode and the hand-off to `bootstrap.sh`; ⚠ unproven on a
+  Q170S1 so far (proven on the MS-A2, 2026-09-24). kube-infra CLAUDE.md § PXE
+  Boot still presents PXE as the install path and is stale until it is
+  rewritten, so do not follow it.
 
 ## History
 

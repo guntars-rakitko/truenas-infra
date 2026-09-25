@@ -18,7 +18,7 @@ nothing on the NAS is involved.
 
 **Talos installs and re-images now boot a USB ISO**, built on demand at
 `factory.talos.dev` from the cluster's schematic in kube-infra — there is no
-local image cache. The whole procedure, as the pool-rebuild plan states it
+local image cache. In outline, as the pool-rebuild plan states it
 (§ *Why PXE goes completely*):
 
 1. Open `factory.talos.dev` and paste the schematic:
@@ -31,11 +31,15 @@ local image cache. The whole procedure, as the pool-rebuild plan states it
    out-of-band management, and the Q170S1 remote-console path (amtctl /
    MeshCentral) was retired the same day.
 
-⚠ **No written runbook exists yet.** A wiki page (`talos-usb-install`) is
-planned but not written. **kube-infra CLAUDE.md does not describe this
-either:** its § PXE Boot and its amtctl "→ PXE" re-image note still present
-PXE as the install path, and are stale until they are rewritten. Do not follow
-them.
+**Runbook:** [Talos USB install](https://wiki.w1.lv/runbooks/talos-usb-install/) (wiki): get
+the ISO, write the stick, reset a disk that still holds Talos, boot the stick
+at the box into maintenance mode, then hand off to `bootstrap.sh`. Proven on
+the MS-A2 (2026-09-24); ⚠ **unproven on a Q170S1**: prove it on a kub-dev node
+before depending on it.
+
+**kube-infra CLAUDE.md does not describe this:** its § PXE Boot and its amtctl
+"→ PXE" re-image note still present PXE as the install path, and are stale
+until they are rewritten. Do not follow them.
 
 ## History
 
