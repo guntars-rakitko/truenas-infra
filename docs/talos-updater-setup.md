@@ -18,16 +18,24 @@ nothing on the NAS is involved.
 
 **Talos installs and re-images now boot a USB ISO**, built on demand at
 `factory.talos.dev` from the cluster's schematic in kube-infra — there is no
-local image cache:
+local image cache. The whole procedure, as the pool-rebuild plan states it
+(§ *Why PXE goes completely*):
 
-- Q170S1 (kub-dev / kub-prd, including a re-image during the MS-A2 rollback
-  window): `kube-infra/talos-os/schematic.yaml`, at the version pinned in
-  `talos-os/patches/q170s1.yaml`.
-- MS-A2 (msa2-dev / msa2-prd): `kube-infra/talos-os/schematic-msa2.yaml`.
+1. Open `factory.talos.dev` and paste the schematic:
+   - Q170S1 (kub-dev / kub-prd, including a re-image during the MS-A2
+     rollback window): `kube-infra/talos-os/schematic.yaml`, at the Talos
+     version pinned in `talos-os/patches/q170s1.yaml`.
+   - MS-A2 (msa2-dev / msa2-prd): `kube-infra/talos-os/schematic-msa2.yaml`.
+2. Download the ISO and write it to a USB stick.
+3. Boot the stick at the machine. ⚠ Someone has to be there: the MS-A2 has no
+   out-of-band management, and the Q170S1 remote-console path (amtctl /
+   MeshCentral) was retired the same day.
 
-See kube-infra CLAUDE.md for the install-media procedure. ⚠ Someone has to be
-at the machine: the MS-A2 has no out-of-band management, and the Q170S1
-remote-console path (amtctl / MeshCentral) was retired the same day.
+⚠ **No written runbook exists yet.** A wiki page (`talos-usb-install`) is
+planned but not written. **kube-infra CLAUDE.md does not describe this
+either:** its § PXE Boot and its amtctl "→ PXE" re-image note still present
+PXE as the install path, and are stale until they are rewritten. Do not follow
+them.
 
 ## History
 

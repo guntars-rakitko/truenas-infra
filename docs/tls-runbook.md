@@ -32,8 +32,11 @@ openssl s_client -connect nas.w1.lv:443 -servername nas.w1.lv </dev/null 2>/dev/
 
 CloudFlare tokens expire annually (or on demand). To rotate:
 
-1. Create a new token at dash.cloudflare.com with the same scope
-   (Zone:Zone:Read + Zone:DNS:Edit on w1.lv).
+1. Create a new token at dash.cloudflare.com with the same scope:
+   Zone:Zone:Read + Zone:DNS:Edit on **w1.lv AND giks.lv**. cert-manager's
+   ClusterIssuer solves DNS-01 for both zones with this one token (kube-infra
+   `flux-cd/infrastructure/configs/base/cert-manager-clusterissuer-letsencrypt.yaml`
+   header), so a w1.lv-only token breaks the `*.giks.lv` renewals.
 2. Edit Doppler `infrastructure/shr` → `SHARED_CLOUDFLARE_API_TOKEN`
    with the new value (cert-manager reads it via DopplerSecret).
    ⚠ **`manage.sh` does NOT read `shr`** — it fetches
@@ -170,7 +173,7 @@ midclt call certificate.delete <staging-id> '{"job": true}'
 ./manage.sh phase tls --apply
 ```
 
-### Let's Encrypt rate limit — the one that binds
+### Let's Encrypt rate limit: the one that binds
 
 ⚠ The limit that binds is **NOT** the 50/week per registered domain. It is
 **5 new certificates per rolling week for the exact identifier set

@@ -1016,22 +1016,24 @@ v1.13.7: `shutdown --force` still exists, semantics unchanged.
 ⚠ **On the MS-A2 single-node clusters KEEP `--force` — but the reasons
 NARROW, so do not re-derive it from the list above and conclude it is
 unnecessary.** Longhorn is dropped, so the three `instance-manager-*` PDBs
-vanish, and the msa2 overlays `$patch: delete` the three repo-owned PDBs (loki,
-pocket-id, coredns) precisely because `minAvailable: 1` on a 1-replica workload
-blocks **every** eviction at n=1. The **chart-level** PDBs are gone too: open
-item 6 in `kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml` is
-CLOSED by kube-infra plan Task D2 (the shared HelmReleases render no PDB at
-n=1; the three-node values moved to `legacy-q170s1/`). What is expected to
-remain is CNPG's own `<cluster>-primary` PDB for `giks` and `w1` at
-`instances: 1` — the plan deliberately keeps CNPG's PDBs (D4 fold-in M3:
-`enablePDB: false` NOT adopted). ⚠ Unverified until `kubectl get pdb -A` on an
-msa2 cluster at bring-up. Either way `--force` stays: at n=1 any blocking PDB
-makes the drain unfinishable (a single-node drain was measured never to finish
-on msa2-dev 2026-09-24 — `talosctl upgrade`, left cordoned, no reboot; kube-infra
-plan Task C1 Step 5), and the etcd-quorum reason still applies. (Separately,
-and unrelated to this path: `talosctl upgrade`'s `--preserve` flag was
-**deprecated — not removed** — in v1.13; it still parses and exits 0 with a
-warning.)
+vanish. The repo-owned PDBs (loki, pocket-id, coredns, and the giks/health app
+PDBs) moved into kube-infra `flux-cd/legacy-q170s1/`, which only the Q170S1
+clusters read (kube-infra plan Tasks D1b / D4-move), because `minAvailable: 1`
+on a 1-replica workload blocks **every** eviction at n=1; the cloudflared PDB
+is declared only in the Q170S1 per-cluster overlays. The **chart-level** PDBs
+are gone too: open item 6 in
+`kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml` is CLOSED by
+kube-infra plan Task D2 (the shared HelmReleases render no PDB at n=1; the
+three-node values moved to `legacy-q170s1/`). What is expected to remain is
+CNPG's own `<cluster>-primary` PDB for `giks` and `w1` at `instances: 1` — the
+plan deliberately keeps CNPG's PDBs (D4 fold-in M3: `enablePDB: false` NOT
+adopted). ⚠ Unverified until `kubectl get pdb -A` on an msa2 cluster at
+bring-up. Either way `--force` stays: at n=1 any blocking PDB makes the drain
+unfinishable (a single-node drain was measured never to finish on msa2-dev
+2026-09-24 — `talosctl upgrade`, left cordoned, no reboot; kube-infra plan Task
+C1 Step 5). (Separately, and unrelated to this path: `talosctl upgrade`'s
+`--preserve` flag was **deprecated — not removed** — in v1.13; it still parses
+and exits 0 with a warning.)
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary.

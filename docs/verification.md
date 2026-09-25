@@ -11,7 +11,7 @@ serving everything it should, and nothing it shouldn't.
 | VLAN 10 up | from a debug pod in the prd cluster (Talos nodes have no shell): `ping -c3 10.10.10.10` — or the `cluster-data-plane` MinIO blackbox probe in that cluster's Prometheus | 0% loss / probe success |
 | VLAN 15 up | from a debug pod in the dev cluster: `ping -c3 10.10.15.10` — or the dev cluster's `cluster-data-plane` MinIO probe | 0% loss / probe success |
 | VLAN 20 up | from home LAN: `ping -c3 10.10.20.10` | 0% loss |
-| SSH on mgmt | `ssh svc-automation@10.10.5.10 whoami` | `svc-automation` |
+| SSH on mgmt | `ssh truenas_admin@10.10.5.10 whoami` (publickey; `svc-automation` has no SSH keys and a `nologin` shell — it is API-key only, `config/users.yaml`) | `truenas_admin` |
 
 ## Storage
 
@@ -19,7 +19,7 @@ serving everything it should, and nothing it shouldn't.
 |---|---|---|
 | Pool healthy | `ssh truenas_admin@10.10.5.10 zpool status tank` | `ONLINE`, **3 disks** — rebuilt 5-wide → 3-wide raidz1 on 2026-09-23 |
 | All datasets present | `ssh truenas_admin@10.10.5.10 zfs list -r tank` | every dataset in `config/storage.yaml` present (20 under `tank`) |
-| SMART | not verifiable via the API on 25.10 (`smart.*` was removed; `phase storage-tasks` logs a skip) — on the NAS: `sudo smartctl -H /dev/nvmeX` for each of the 4 NVMe drives (match by serial) | `PASSED` on all 4 |
+| SMART | not verifiable via the API on 25.10 (`smart.*` was removed; `phase storage-tasks` logs a skip) — `ssh -t truenas_admin@10.10.5.10 'sudo smartctl -H /dev/nvmeX'` for each of the 4 NVMe drives (match by serial). `-t` because `smartctl` is not on the NOPASSWD sudo allowlist, so sudo prompts for the password (CLAUDE.md § SSH + sudo on NAS) | `PASSED` on all 4 |
 | Scrub schedule | `midclt call pool.scrub.query` | 1 task, weekly |
 | Snapshot schedule | `midclt call pool.snapshottask.query` | 7 tasks |
 
