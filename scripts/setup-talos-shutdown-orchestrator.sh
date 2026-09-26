@@ -20,10 +20,10 @@
 # block re-staging the live path. The orchestrator skips a cluster whose config
 # is not staged. ⚠ An msa2 config is never DELETED from the NAS by this script,
 # and a STALE one is not harmless: its shutdown is rejected, so that box is not
-# shut down at all, and at a FINAL address (.11/.12, also in the Q170S1 prd list
-# until prd's teardown) the orchestrator then polls it to the 300 s backstop.
-# Re-run this script after every `bootstrap.sh <msa2-env>` menu 10 so the
-# staged copy tracks Doppler, and run the printed check.
+# shut down at all (the orchestrator does not wait for it either — its rules
+# (a)/(d) — so the battery is spared, but Postgres is hard-cut). Re-run this
+# script after every `bootstrap.sh <msa2-env>` menu 10 so the staged copy
+# tracks Doppler, and run the printed check.
 #
 # `--print-checks` prints the authenticated post-staging check (below) and exits;
 # it needs no credentials and touches nothing.
@@ -178,9 +178,9 @@ print_checks() {
   echo "  Read the result per box: every box that is up and installed must show"
   echo "  Server: for its OWN config at its CURRENT address — anything else there"
   echo "  means it would NOT be shut down. The orchestrator does not wait for an msa2"
-  echo "  BUILD address (.17/.18) that fails BY DESIGN; but .11/.12 are also in the"
-  echo "  Q170S1 prd list until prd's teardown, so an msa2 box there that fails is"
-  echo "  also polled to the 300 s backstop."
+  echo "  address that fails, BY DESIGN (rules (a)/(d) in its header: while kub-prd"
+  echo "  is live, .11/.12 are still polled the Q170S1 way) — so a failure here costs"
+  echo "  that box a hard power-off, not the NAS its battery."
 }
 
 if [[ "${1:-}" == "--print-checks" ]]; then

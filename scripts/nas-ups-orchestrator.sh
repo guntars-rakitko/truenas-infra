@@ -66,7 +66,8 @@
 #      actually minted; that comment is now corrected.
 #   2) poll each node's apid (:50000) until all are down (or a timeout backstop
 #      so the NAS never hangs forever). The poll set is every Q170S1 node (as
-#      before) plus each MS-A2 address that ACCEPTED its shutdown (below).
+#      before) plus each MS-A2 address that ACCEPTED its shutdown — narrowed at
+#      the FINAL addresses once their Q170S1 cluster is gone (rule (d) below).
 #   3) halt the NAS LAST → /sbin/shutdown -P now. That fires the #57 Init/Shutdown
 #      hook (nas-ups-shutdown.sh) which arms the UPS (shutdown.return). Because the
 #      NAS is genuinely last, ups.delay.shutdown only needs to cover the NAS's own
@@ -76,8 +77,8 @@
 # Each MS-A2 cluster is ONE node with its OWN PKI, so it has its own os:operator
 # talosconfig (kube-infra bootstrap.sh menu 10 mints TALOS_NAS_SHUTDOWN_CONFIG_
 # MSA2_{DEV,PRD}; setup-talos-shutdown-orchestrator.sh stages each one that
-# exists as msa2-{dev,prd}-shutdown.talosconfig). Three rules differ from the
-# Q170S1 path, and all three exist so an MS-A2 box that is NOT there — not built
+# exists as msa2-{dev,prd}-shutdown.talosconfig). Four rules differ from the
+# Q170S1 path, and all four exist so an MS-A2 box that is NOT there — not built
 # (msa2-prd today), in Talos maintenance mode (msa2-dev during a reinstall),
 # unplugged, or on the other side of a cutover — costs nothing:
 #
@@ -91,9 +92,8 @@
 #      rule (c), rc=124 / x509 unknown authority / maintenance mode), so nothing
 #      this script does would bring that address down and waiting for it only
 #      drains the battery.
-#      ⚠ This protects an address that is ONLY in an MS-A2 list: the BUILD
-#      addresses. The FINAL addresses are ALSO in PRD_NODES — see "BOTH
-#      addresses" below.
+#      This alone covers an address that is ONLY in an MS-A2 list: the BUILD
+#      addresses. The FINAL addresses are ALSO in PRD_NODES — rule (d).
 #   b) --wait=false, so rc=0 means the Version pre-check AND the Shutdown RPC
 #      both succeeded, and rc!=0 means the shutdown was not delivered. (talosctl
 #      v1.14's --wait=false branch first runs helpers.ClientVersionCheck — a
@@ -109,6 +109,23 @@
 #      swallows packets holds everything up by at most MSA2_CALL_TIMEOUT+5 s.
 #      Today the ~187 s Q170S1 calls hide it; after the cutovers those fail fast
 #      and the cap is the delay (see MSA2_CALL_TIMEOUT for why 60 s).
+#   d) A FINAL ADDRESS (.11/.12 — in PRD_NODES AND in an MS-A2 list) FOLLOWS THE
+#      Q170S1 RULE WHILE kub-prd IS LIVE, AND RULE (a) ONCE IT IS GONE. While
+#      at least one kub-prd call returned 0 (before prd's cutover, and after a
+#      rollback) .11/.12 are polled whatever their rc — unchanged. Once NO
+#      kub-prd call returned 0 (after the cutover the old nodes' power cords are
+#      out, kube-infra plan D12) each is polled only if some call to it returned
+#      0. Without this, from prd's cutover until its teardown an msa2 box at
+#      .11/.12 that does not accept (maintenance mode, config not staged, a
+#      stale PKI) was polled to the 300 s backstop, like a Q170S1 node that
+#      rejects. ⚠ The ONE change to the live Q170S1 path: if EVERY kub-prd call
+#      fails while the old nodes are up, .11/.12 are no longer waited for. For a
+#      broken prd config that changes nothing in practice (a rejecting .13 is
+#      still polled to the backstop). For a --wait tracker error on all three
+#      AFTER the shutdown was delivered, the NAS can halt while .11/.12 are still
+#      going down — gated by .13 and kub-dev, which shut down in parallel, then
+#      apc1's 90 s ups.delay.shutdown. One failing kub-prd call changes nothing.
+#      Both sides are pinned by tests; CLAUDE.md § UPS / NUT has the trade-off.
 #   --force stays (see the paragraph above): a single-node drain cannot finish.
 #
 # BOTH addresses of each box are listed — BUILD first, FINAL (cutover) second:
@@ -122,16 +139,6 @@
 # de-duplicated). Even a mis-aimed ACCEPTED shutdown would be harmless: this
 # script exists to shut down every node on the rack.
 #
-# ⚠ RULE (a) DOES NOT REACH THE FINAL ADDRESSES. .11 and .12 are also in
-# PRD_NODES, and the Q170S1 rule polls those whatever the rc. So from prd's
-# cutover until PRD_NODES is deleted at prd's teardown, an msa2 box at .11 (or
-# .12) that does NOT accept its shutdown — maintenance mode, config not staged,
-# a stale PKI — is polled to the 300 s backstop, exactly like a Q170S1 node that
-# rejects. That box is not shut down either way; the cost is 300 s of battery.
-# Pinned by tests/test_ups_orchestrator.py (test_final_address_that_does_not_
-# accept_is_polled_to_the_backstop). The mitigation is procedural: re-stage
-# after every `bootstrap.sh msa2-<env>` menu 10 and run --print-checks.
-#
 # ⚠ UNKNOWN (2026-09-26): whether the MS-A2 boxes are on this NAS's UPS (apc1).
 #   The DESIGN assumes they are (kube-infra docs/msa2-audit/02-design-decisions.md
 #   § 10 gate 7 plans a real UPS drill to "confirm both new boxes go down" and
@@ -143,8 +150,7 @@
 #     loss: Always On" (both boxes; kube-infra plan G1 / H2) boots them again,
 #     like the Q170S1 nodes.
 #   NOT on apc1, real outage → they lost power when the mains did; the call fails
-#     fast (no route) and rule (a) keeps them out of the poll (at a FINAL address
-#     the Q170S1 list still probes it, and a dark box reads as down).
+#     fast (no route) and rules (a)/(d) keep them out of the poll.
 #   NOT on apc1 but still powered (a drill on mains, or a second UPS) → they are
 #     shut down cleanly and STAY OFF until someone powers them on, because their
 #     AC never drops. An availability cost, never a data one — and the opposite
@@ -296,34 +302,55 @@ fire_msa2 msa2-prd "$MSA2_PRD_CFG" $MSA2_PRD_NODES
 # shellcheck disable=SC2086
 fire_msa2 msa2-dev "$MSA2_DEV_CFG" $MSA2_DEV_NODES
 
-accepted=""   # MS-A2 addresses whose shutdown was accepted — rule (a)
+in_list(){ case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }  # is $1 in list $2?
+
+accepted=""   # every address a call to which was accepted (rc=0) — rules (a), (d)
+live=""       # the Q170S1 clusters with at least one accepted call — rule (d)
 for entry in "${pids[@]}"; do
   pid=${entry%%|*}; rest=${entry#*|}; cl=${rest%%|*}; ip=${rest#*|}
   wait "$pid"; rc=$?
   log "$cl $ip shutdown --force rc=$rc"
-  case "$cl" in
-    msa2-*)
-      if [ "$rc" -eq 0 ]; then
-        accepted="$accepted $ip"
-      else
-        case " $Q170S1_NODES " in
-          *" $ip "*) log "  $cl $ip did not accept — still polled, via the Q170S1 list (a FINAL address: see the header)" ;;
-          *) log "  $cl $ip did not accept — NOT polled (no box here, maintenance mode, or another cluster's PKI)" ;;
-        esac
-      fi ;;
-  esac
+  if [ "$rc" -eq 0 ]; then
+    accepted="$accepted $ip"
+    case "$cl" in msa2-*) ;; *) live="$live $cl" ;; esac
+  else
+    case "$cl" in
+      msa2-*)
+        if in_list "$ip" "$Q170S1_NODES"; then
+          log "  $cl $ip did not accept (a FINAL address: rule (d) decides whether it is polled)"
+        else
+          log "  $cl $ip did not accept — NOT polled (no box here, maintenance mode, or another cluster's PKI)"
+        fi ;;
+    esac
+  fi
 done
 
-# The poll set: every Q170S1 node, whatever its rc (unchanged behaviour — and
-# that includes the FINAL addresses .11/.12, see the header), plus the accepted
-# MS-A2 addresses, each address once.
-POLL_NODES="$Q170S1_NODES"
-for ip in $accepted; do
-  case " $POLL_NODES " in
-    *" $ip "*) ;;
-    *) POLL_NODES="$POLL_NODES $ip" ;;
-  esac
-done
+# The poll set, each address once:
+#  - every Q170S1 node, whatever its rc (unchanged behaviour) — except a FINAL
+#    address once its Q170S1 cluster is gone, which follows rule (a) (rule d);
+#  - every accepted MS-A2 address.
+POLL_NODES=""
+poll_add(){ in_list "$1" "$POLL_NODES" || POLL_NODES="${POLL_NODES:+$POLL_NODES }$1"; }
+poll_q170s1(){  # $1 = Q170S1 cluster, $2.. = its nodes
+  local cl=$1 ip
+  shift
+  for ip in "$@"; do
+    if in_list "$ip" "$MSA2_PRD_NODES $MSA2_DEV_NODES" && ! in_list "$ip" "$accepted"; then
+      if in_list "$cl" "$live"; then
+        log "  $ip still polled — a $cl node accepted, so the Q170S1 rule holds here (rule d)"
+      else
+        log "  $ip NOT polled — no $cl node accepted (that cluster is gone) and no call to $ip did (rule d)"
+        continue
+      fi
+    fi
+    poll_add "$ip"
+  done
+}
+# shellcheck disable=SC2086  # the node lists are space-separated on purpose
+poll_q170s1 dev $DEV_NODES
+# shellcheck disable=SC2086
+poll_q170s1 prd $PRD_NODES
+for ip in $accepted; do poll_add "$ip"; done
 # shellcheck disable=SC2086  # word-splitting the list is the point
 NODE_COUNT=$(set -- $POLL_NODES; echo $#)
 log "shutdown --force sent; polling apid on ${NODE_COUNT} node(s) until down: ${POLL_NODES}"

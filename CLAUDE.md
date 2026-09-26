@@ -992,7 +992,8 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │    `/mnt/tank/system/talos/nas-ups-orchestrator.sh`:
   │      talosctl shutdown --force × every node (one call PER NODE) →
   │      poll apid until 0/N → halt NAS LAST
-  │      (N = the 6 Q170S1 nodes + each MS-A2 address that ACCEPTED)
+  │      (N = the Q170S1 nodes + each MS-A2 address that ACCEPTED;
+  │       .11/.12 only if accepted once kub-prd is gone — rule (d))
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
@@ -1057,7 +1058,7 @@ below has run it still fans out to the six Q170S1 nodes only.
 | addresses | `.11-.13`, `.14-.16` | **both** of each box's: BUILD then FINAL — prd `10.10.5.17` + `.11`, dev `10.10.5.18` + `.12` (kube-infra `talos-os/estates.yaml`, plan D12) |
 | config | `{prd,dev}-shutdown.talosconfig` | `msa2-{prd,dev}-shutdown.talosconfig`, from `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{PRD,DEV}` (bootstrap.sh menu 10); a cluster with no staged config is **skipped** |
 | call | `shutdown --force` (unchanged, byte for byte) | `shutdown --force --wait=false`, capped at 60 s by coreutils `timeout` |
-| polled? | always, whatever the rc (unchanged) | **only if the call returned 0** — true at a BUILD address only: a FINAL address is also in the Q170S1 prd list (the ⚠ bullet below) |
+| polled? | always, whatever the rc (unchanged) — except `.11`/`.12` once kub-prd is gone (rule d) | **only if the call returned 0** |
 
 - **Why only-if-accepted.** apid's `:50000` probe is unauthenticated: a box in
   Talos maintenance mode, or one whose PKI no longer matches the staged config,
@@ -1081,16 +1082,28 @@ below has run it still fans out to the six Q170S1 nodes only.
   is msa2-prd, the old prd config is rejected there, msa2-prd's is accepted,
   and `.11` is polled once (the poll set is de-duplicated). Tests pin all of
   these: `tests/test_ups_orchestrator.py`.
-- ⚠ **Only-if-accepted covers the BUILD addresses, not the FINAL ones.** `.11`
-  and `.12` are also in `PRD_NODES`, and the Q170S1 rule polls them whatever
-  the rc. So from prd's cutover until `PRD_NODES` is deleted at prd's teardown,
-  an msa2 box at `.11` (or `.12`) that does **not** accept its shutdown —
-  maintenance mode, config not staged, a stale PKI — is polled to the 300 s
-  backstop, like a Q170S1 node that rejects. That box is not shut down either
-  way; the cost is 300 s of battery (LB fires at `battery.runtime.low` 420 s).
-  Pinned by `test_final_address_that_does_not_accept_is_polled_to_the_backstop`;
-  the mitigation is procedural — re-stage after every menu 10 and run the
-  printed check, which must show `Server:` for the box at its current address.
+- **Rule (d): a FINAL address follows kub-prd while it is live, and
+  only-if-accepted once it is gone.** `.11` and `.12` are in `PRD_NODES` as
+  well as in an MS-A2 list. While at least one kub-prd call returned 0 (before
+  prd's cutover, and after a rollback) they are polled whatever their rc — the
+  Q170S1 rule, unchanged. Once **no** kub-prd call returned 0 (after the
+  cutover the old nodes' power cords are out, kube-infra plan D12) each is
+  polled only if some call to it returned 0. Without it, from prd's cutover
+  until its teardown an msa2 box at `.11`/`.12` that does not accept —
+  maintenance mode, config not staged, a stale PKI — was polled to the 300 s
+  backstop (LB fires at `battery.runtime.low` 420 s, so that is most of the
+  reserve). That box is still not shut down, so re-stage after every menu 10
+  and run the printed check all the same.
+  ⚠ **Its one change to the live Q170S1 path** — an operator decision, and the
+  last commit on its own so it can be dropped: if **every** kub-prd call fails
+  while the old nodes are up, `.11`/`.12` are no longer waited for. For a
+  broken prd config that changes nothing in practice (`.13` still runs to the
+  backstop); for a `--wait` tracker error on all three after the shutdown was
+  delivered, the NAS can halt while `.11`/`.12` are still going down — gated
+  by `.13` and kub-dev, which shut down in parallel, and followed by `apc1`'s
+  90 s `ups.delay.shutdown`. A single failing kub-prd call changes nothing.
+  Tests pin both sides (`test_final_address_*`, `test_every_kub_prd_call_*`,
+  `test_tracker_error_on_every_kub_prd_call_*`).
 - **The cap bounds a hung msa2 call; it does not hide it.** The poll, and so
   the NAS halt, starts only after every shutdown call has returned, so an msa2
   address that connects and then hangs delays it by up to 65 s (60 s + the 5 s
@@ -1138,15 +1151,18 @@ below has run it still fans out to the six Q170S1 nodes only.
   setup script's `check_pairs` fails on a list it cannot read. prd's teardown
   comes first (before dev's cutover); per torn-down cluster `<X>` (`PRD`, then
   `DEV`) remove:
-  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its part
-    of `Q170S1_NODES`, and that msa2 cluster's BUILD address
-    (`MSA2_<X>_NODES` keeps only the FINAL one);
+  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its
+    `poll_q170s1 <x>` line, its part of `Q170S1_NODES`, and that msa2
+    cluster's BUILD address (`MSA2_<X>_NODES` keeps only the FINAL one). Once
+    `PRD_NODES` is gone, `.11`/`.12` are MS-A2-only and rule (a) covers them
+    directly;
   - `setup-talos-shutdown-orchestrator.sh`: `<X>` in `check_pairs`'s loop, its
     required-key line (`TALOS_NAS_SHUTDOWN_CONFIG_<X>`), its `base64 -d` line,
     its entry in the initial `CFGS`, and the header lines naming it;
   - `tests/test_ups_orchestrator.py`: that cluster's Q170S1 expectations.
   After the second teardown delete what is left of the Q170S1 block —
-  `Q170S1_NODES`, the rejection-log `case`, the Q170S1 tests. Run the suite,
+  `Q170S1_NODES`, the FINAL-address branch of the rejection log, `live`,
+  `poll_q170s1`, the Q170S1 and rule-(d) tests. Run the suite,
   re-stage, run the printed check. The staged `{dev,prd}-shutdown.talosconfig`
   are then unused; the setup script never deletes a file, so remove them from
   the NAS by hand.
