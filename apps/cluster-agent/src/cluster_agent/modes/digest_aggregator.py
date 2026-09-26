@@ -386,6 +386,7 @@ def aggregate_log_patterns(
     max_patterns: int = 10,
     sample_lines_per_pattern: int = 3,
     now: dt.datetime | None = None,
+    failures: list[str] | None = None,
 ) -> list[LogPattern]:
     """Surface notable log patterns from Loki history.
 
@@ -411,6 +412,15 @@ def aggregate_log_patterns(
     Failures in any individual Loki call don't abort the whole
     aggregator — we log + continue. A partial result is more useful
     than nothing.
+
+    ⚠ But a failed query is NOT a clean result: a tripwire that timed
+    out was never checked, and "no pattern" for it means nothing. When
+    the caller passes a `failures` list, one short line per failed
+    query (`"tripwire panic: ReadTimeout"`) is appended to it so the
+    daily summary can say which signals went unchecked. Measured
+    2026-09-26: 8 of dev's 10 tripwire queries hit the 60s timeout
+    (dev Loki's trivy-system ingest), and nothing outside the container
+    log said so.
     """
     import logging
     log = logging.getLogger(__name__)
@@ -473,6 +483,8 @@ def aggregate_log_patterns(
         )
     except Exception as e:
         log.warning("digest log-pattern outlier query failed: %r", e)
+        if failures is not None:
+            failures.append(f"ratio_outlier: {type(e).__name__}")
 
     # Tripwires — sequential queries, per-tripwire graceful degradation.
     # Each pattern carries its own LogQL line filter (substring `|=`,
@@ -493,6 +505,8 @@ def aggregate_log_patterns(
             ))
         except Exception as e:
             log.warning("digest tripwire query for %s failed: %r", label, e)
+            if failures is not None:
+                failures.append(f"tripwire {label}: {type(e).__name__}")
 
     # ── Merge: tripwires first, then ratio outliers, cap at max_patterns
     combined = tripwires + sorted(

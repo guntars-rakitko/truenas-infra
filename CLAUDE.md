@@ -789,6 +789,14 @@ preview. Yesterday's auto-closes when today's is filed. Body groups
 alerts by chronicity (chronic / flapping / active / self-healed /
 transient), with a `rolled into` column linking back to the per-
 Finding issues. Watchdog is silently excluded from the rendering.
+**Since 2026-09-26 the body also names every Loki query that failed**
+in a `⚠ Log-mining coverage gaps` section, for example
+`tripwire OOMKilled: ReadTimeout`. A tripwire that timed out was never
+checked, and before this it looked exactly like one that found nothing.
+Measured the day it was added: 8 of kub-dev's 10 tripwire queries hit the
+60s timeout (dev Loki is swamped by trivy-system's ~8M lines/h of runner
+re-scans, a kube-infra issue). The only trace was a WARNING in the
+container log.
 
 Email body is the same markdown rendered as plain-text + HTML
 alternative (HTML wraps in `<pre>` so monospace tables stay aligned

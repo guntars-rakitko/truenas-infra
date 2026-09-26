@@ -356,6 +356,53 @@ def test_aggregate_log_patterns_tool_failure_does_not_abort():
     assert patterns == []
 
 
+def test_aggregate_log_patterns_records_every_failed_query():
+    """A failed Loki query is NOT a clean result. Each failure must be
+    named in the caller's `failures` list so the summary can say which
+    signals went unchecked (2026-09-26: 8 of dev's 10 tripwires timed
+    out and nothing outside the container log said so)."""
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        raise RuntimeError("loki backend not reachable")
+
+    def streams_query(cluster, query, *, start, end, limit):
+        if '"OOMKilled"' in query or '"x509"' in query:
+            raise TimeoutError("read timed out")
+        return _loki_streams_response()
+
+    failures: list[str] = []
+    patterns = aggregate_log_patterns(
+        "dev",
+        loki_query_fn=streams_query,
+        loki_metric_query_fn=metric_query,
+        failures=failures,
+    )
+    assert patterns == []
+    assert failures == [
+        "ratio_outlier: RuntimeError",
+        "tripwire OOMKilled: TimeoutError",
+        "tripwire x509_expired: TimeoutError",
+    ]
+
+
+def test_aggregate_log_patterns_records_nothing_on_success():
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+
+    def metric_query(cluster, query, *, start, end, step_seconds):
+        return _loki_metric_response(("flux-system", 10))
+
+    def streams_query(cluster, query, *, start, end, limit):
+        return _loki_streams_response()
+
+    failures: list[str] = []
+    aggregate_log_patterns(
+        "dev", loki_query_fn=streams_query, loki_metric_query_fn=metric_query,
+        failures=failures,
+    )
+    assert failures == []
+
+
 def test_aggregate_log_patterns_caps_at_max_patterns():
     """When more outliers + tripwires would exist than max_patterns,
     the list is truncated. Tripwires take priority (sorted first)."""

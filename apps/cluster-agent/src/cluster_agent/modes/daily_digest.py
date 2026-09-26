@@ -110,16 +110,21 @@ async def run_async(*, cluster: str) -> DigestResult:
     # Failures here don't abort the digest — log patterns are
     # supplementary signal, not the primary input. If Loki is down or
     # the metric query fails, we still produce a useful alert digest.
+    # Every failed query is recorded in `log_mining_failures` and shown in
+    # the summary: an unchecked tripwire must not read as a clean one.
+    log_mining_failures: list[str] = []
     try:
         log_patterns = aggregate_log_patterns(
             cluster,
             loki_query_fn=loki_query,
             loki_metric_query_fn=loki_metric_query_range,
             window_hours=window_hours,
+            failures=log_mining_failures,
         )
     except Exception as e:
         log.warning("digest %s: log-pattern mining failed: %r", cluster, e)
         log_patterns = []
+        log_mining_failures.append(f"log-pattern mining: {type(e).__name__}")
 
     # ── 5. Open issue dedup keys ────────────────────────────────────
     sdb = StateDB(os.environ["STATE_DB_PATH"])
@@ -212,6 +217,7 @@ async def run_async(*, cluster: str) -> DigestResult:
             window_hours=window_hours,
             model=model,
             digest_summary=report.summary or "",
+            log_mining_failures=log_mining_failures,
         )
     except Exception as e:
         # Summary delivery is best-effort — never break the digest.

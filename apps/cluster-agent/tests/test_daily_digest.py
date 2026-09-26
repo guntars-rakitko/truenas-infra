@@ -287,3 +287,61 @@ async def test_daily_digest_passes_open_dedup_keys_to_llm(tmp_path, monkeypatch)
     await daily_digest.run_async(cluster="dev")
     assert "alert:KubePodCrashLooping:pocket-id-0:dev" in captured["open_issue_keys"]
     assert "alert:KubeJobFailed:velero-1234:dev" in captured["open_issue_keys"]
+
+
+def _stub_digest_inputs(daily_digest, monkeypatch, tmp_path):
+    """One active alert group, no AM annotations, no context, quiet LLM."""
+    from cluster_agent.schema import Report
+
+    now = dt.datetime.now(dt.timezone.utc)
+    samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(5, 0, -1)]
+    monkeypatch.setattr(daily_digest, "alertmanager_history",
+                        lambda cluster, since_hours=24: {
+                            "data": {"result": [{
+                                "metric": {"alertname": "X"}, "values": samples,
+                            }]},
+                        })
+    monkeypatch.setattr(daily_digest, "alertmanager_alerts", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_gather_context_for_chronic",
+                        lambda groups, cluster: "")
+
+    async def fake_triage(**kw):
+        return Report(
+            id="01JK3R8Q9M01234567890123XZ", cluster="dev", digest_window_hours=24,
+            summary="quiet", quiet_period=True, findings=[],
+            total_alerts_24h=1, chronic_count=0, transient_count=0, self_healed_count=0,
+        )
+    monkeypatch.setattr(daily_digest, "triage_digest", fake_triage)
+    monkeypatch.setattr(daily_digest, "dispatch", MagicMock())
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["per-query", "whole-aggregator"])
+async def test_daily_digest_forwards_log_mining_failures_to_summary(tmp_path, monkeypatch, mode):
+    """Failed Loki queries must reach the daily summary, whether one
+    tripwire failed (reported by the aggregator) or the whole aggregator
+    raised (reported by the runner)."""
+    from cluster_agent.modes import daily_digest, summary_issue
+
+    _stub_digest_inputs(daily_digest, monkeypatch, tmp_path)
+
+    if mode == "per-query":
+        def fake_mining(cluster, *, failures, **kw):
+            failures.append("tripwire OOMKilled: ReadTimeout")
+            return []
+        expected = ["tripwire OOMKilled: ReadTimeout"]
+    else:
+        def fake_mining(cluster, **kw):
+            raise RuntimeError("loki backend exploded")
+        expected = ["log-pattern mining: RuntimeError"]
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns", fake_mining)
+
+    captured = {}
+    monkeypatch.setattr(summary_issue, "emit_summary",
+                        lambda **kw: captured.update(kw) or {})
+
+    result = await daily_digest.run_async(cluster="dev")
+    assert result.error is None
+    assert captured["log_mining_failures"] == expected
