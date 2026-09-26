@@ -47,8 +47,9 @@ replacement. The Q170S1 BIOS is applied from a USB stick built by
   advertise a boot server that nothing serves (inert, but misleading; whether
   the live router still carries it is unchecked). Removal: pool-rebuild plan
   Task 9b.
-- **Dead code in this repo.** `apps/pxe/` and `config/talos.yaml` are still
-  in the tree; removal is pool-rebuild plan Task 9a.
+- ~~**Dead code in this repo.**~~ `apps/pxe/` and `config/talos.yaml` were
+  deleted 2026-09-26 (the rest of pool-rebuild plan Task 9a); `git show
+  3244103:apps/pxe/` has them.
 
 ## History
 

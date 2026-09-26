@@ -1,86 +1,38 @@
-# amtctl
+# amtctl — RETIRED 2026-09-23; only `nodes.yaml` remains
 
-Intel AMT power-control + status dashboard for the 6 ASUS Q170S1 K8s
-nodes. FastAPI sidecar polls each node's ME firmware via WS-MAN every
-60s, caches results in memory, serves:
+The amtctl app (an Intel AMT power-control and status dashboard for the six
+ASUS Q170S1 K8s nodes, at `amtctl.w1.lv`) was retired with the NAS pool
+rebuild in truenas-infra#149: it is not in `config/apps.yaml`, and its compose
+file, FastAPI app, web UI and the `amt.py` symlink were deleted afterwards.
+The MS-A2 boxes that replace the Q170S1 nodes have no IPMI, BMC, vPro or AMT
+at all, so it cannot come back on the new estate.
 
-- **`https://amtctl.w1.lv/`** — static HTML dashboard (per-node panel
-  with System / Hardware / Network / Storage + action buttons)
-- **`https://amtctl.w1.lv/api/...`** — JSON API consumed by the
-  dashboard itself and by Homepage widgets at `https://home.w1.lv/`
+⚠ **This directory stays, holding `nodes.yaml`, because another repo reads
+it.** `bios-config`'s four AMT tools (`tools/amt_fleet_audit.py`,
+`amt_fleet_apply.py`, `amt_audit_passwords.py`, `amt_config_discovery.py`)
+resolve `../truenas-infra/apps/amtctl/` through the sibling-clone convention:
+three read the fleet inventory from `nodes.yaml`, and all of them exit if the
+directory is missing. bios-config's `CLAUDE.md` says the same: do not delete
+it until the inventory has moved there. Once it has, delete this directory.
 
-## Files
-
-| Path | Role |
-|---|---|
-| `amt.py` | **Symlink** → `../../../bios-config/amt/amt.py`. Single source of truth for the WS-MAN client; bios-config owns it since it's shared between this dashboard and the fleet-provisioning tool under `bios-config/tools/`. |
-| `main.py` | FastAPI app: background poller + endpoints + static UI serve |
-| `web/index.html` | Single-file dashboard (vanilla JS + CSS, no build) |
-| `nodes.yaml` | Node inventory — 6 `{name, host, role}` entries. Shared with `bios-config` AMT tools (cross-repo read). |
-| AMT admin creds | Doppler `infrastructure/ops` → `AMT_USER` + `AMT_PASSWORD`. `manage.sh apps` injects them as `AMTCTL_AMT_USER` / `AMTCTL_AMT_PASSWORD` env vars when rendering the compose. The same Doppler keys are read directly by `bios-config`'s AMT tools. |
-| `docker-compose.yaml` | python:3.13-alpine + runtime venv bootstrap |
-
-## What AMT gives us
-
-Confirmed working on Q170S1 + ME 11.8.65:
-
-- Power state (on / soft-off / hard-off / unreachable)
-- Full CPU SKU string (`Intel(R) Core(TM) i7-7700T CPU @ 2.90GHz`)
-- BIOS + ME firmware version
-- Memory modules (per-DIMM: size, bank, manufacturer, part number)
-- Network: IP, MAC, subnet mask, gateway, DNS, link state
-- Power actions: On / Off (graceful + hard) / Reset, with optional
-  one-time boot override (PXE / BIOS Setup / normal)
-
-## What AMT does NOT give us (Q170S1 hardware limitation)
-
-- Temperature / fan RPM / sensors (`CIM_NumericSensor` empty on this
-  hardware)
-- Live CPU frequency (only base clock from BIOS sticker)
-- Per-drive model + serial (only aggregate `MaxMediaSize` via
-  `CIM_MediaAccessDevice` — ~381 GB number with no breakdown). To
-  match MeshCentral's per-drive inventory view we'd need to implement
-  AMT's **legacy Asset SOAP interface** (separate binding from WS-MAN,
-  ~100 LOC of new client code).
-
-## Planned: Talos metrics integration
-
-Once the cluster is up (track in `kube-infra/CLAUDE.md` → "Planned
-post-bringup work"), this app gains a new endpoint
-`/api/nodes/{name}/metrics` that queries Prometheus (scraped from
-node-exporter on every node) for:
-
-- CPU % utilization
-- Memory % used
-- CPU package temperature (`node_hwmon_temp_celsius`)
-- Fan RPM (where Q170S1 board reports)
-- SMART disk temp + health
-
-The UI renders those rows under each node card alongside the existing
-AMT-derived data. When a node is offline, graceful degradation keeps
-the AMT-only view working.
-
-See kube-infra CLAUDE.md for the full plan + prerequisites.
+Nothing in this repo reads `nodes.yaml` any more.
 
 ## Fleet AMT provisioning (lives in bios-config)
 
 The provisioning side of AMT configuration — declaring canonical
 state + a tool to assert it — lives in the sibling `bios-config`
-repo, alongside the analogous BIOS NVRAM flow. This dashboard stays
-here (it's a NAS-deployed monitoring service); the fleet tools ship
+repo, alongside the analogous BIOS NVRAM flow. The fleet tools ship
 with bios-config because they're "set the hardware to a canonical
 state" tools, which is bios-config's whole thesis.
 
 See: `~/github/bios-config/tools/amt_fleet_{audit,apply}.py`
 and `~/github/bios-config/amt/canonical.yaml`.
 
-The two repos share:
-- `amt.py` — lives in bios-config, symlinked into this directory.
-- `nodes.yaml` — lives here (dashboard is the primary owner of the
-  fleet inventory); bios-config's tools read it cross-repo.
+What the two repos share now:
+- `nodes.yaml` — lives here; bios-config's tools read it cross-repo.
 - AMT admin creds — Doppler `infrastructure/ops` → `AMT_USER` +
-  `AMT_PASSWORD`. Both repos read the canonical values from Doppler
-  at runtime; no shared file on disk.
+  `AMT_PASSWORD`, read by bios-config at runtime. Nothing in this repo
+  reads them any more.
 
 Discovery findings (2026-04-22 session; see bios-config for details):
 
@@ -94,33 +46,16 @@ Discovery findings (2026-04-22 session; see bios-config for details):
   rest at 2016). Every apply run force-syncs via
   `SetHighAccuracyTimeSynch`.
 
-## Operator notes
-
-**Add a node:** edit `nodes.yaml`, `./manage.sh phase apps --apply`
-(uploads to `/mnt/tank/system/apps-config/amtctl/config/nodes.yaml`),
-restart the app (`app.stop` + `app.start` — NOT `app.redeploy`).
-
-**Change AMT creds:** edit Doppler `infrastructure/ops` → `AMT_PASSWORD`
-(and `AMT_USER` if rotating that), then `./manage.sh phase apps --apply`
-to re-render the compose with the new env vars and restart the
-container. bios-config tools pick up the new value on their next run
-without further action.
-
-**Debug a probe failure:** hit
-`https://amtctl.w1.lv/api/nodes/<name>` for the full JSON dump
-including `errors` array. Common AMT quirk: `PT10S` timeouts on some
-classes — the client uses `PT60S` but if a node is truly unreachable
-it times out there.
+## Q170S1 notes still worth keeping (rollback window)
 
 **Power-on BIOS gotcha:** if a node accepts AMT power-on but doesn't
 physically wake, check BIOS "After AC Power Loss" (must be `Power On`,
 not `Always Off`) and "Wake from ME" (must be `Enabled`). Seen on
 kub-prd-03 after a CPU swap — BIOS had reverted that setting.
 
-## Security note
-
-AMT admin password is shared across all 6 nodes; canonical value lives
+**AMT admin password** is shared across all 6 nodes; canonical value lives
 in Doppler `infrastructure/ops` → `AMT_PASSWORD`. Rotate via MEBx
-(Ctrl-P during node POST) when needed; update the Doppler key + re-run
-`./manage.sh phase apps --apply` to push the new value into the
-running container.
+(Ctrl-P during node POST) when needed, then update the Doppler key.
+
+The full former README (dashboard, API, operator notes):
+`git show 3244103:apps/amtctl/README.md`.

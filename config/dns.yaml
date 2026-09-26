@@ -76,11 +76,11 @@ records:
     comment: kub-dev-03 AMT (mgmt NIC)
 
   # ─── MikroTik device admin FQDNs (base-vlan 99) ─────────────────────────
-  # Used by the Homepage `mikrotik` widget to poll each device's REST API.
-  # Requires a narrow firewall carve-out on MikroTik (see
-  # mikrotik-infra/configs/fleet.yaml — firewall.input + firewall.forward
-  # "accept nas homepage widget to ..." rules) since mgmt-vlan (NAS)
-  # normally cannot reach base-vlan admin services.
+  # Created for the Homepage `mikrotik` widget. Homepage is retired (its
+  # widget and the router firewall carve-outs went 2026-04-24, the app
+  # itself 2026-09-23) and nothing polls these now. Kept: they are how a
+  # human or tooling reaches a device by name. Same records, same note, in
+  # mikrotik-infra/configs/dns.yaml.
   - name: router.w1.lv
     address: 10.10.0.1
     comment: MikroTik RB5009 router (primary)

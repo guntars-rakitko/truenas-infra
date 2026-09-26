@@ -13,9 +13,9 @@ services:
     container_name: wiki
     restart: unless-stopped
     ports:
-      # Mgmt VLAN bind only. Port 8088 picked clear of:
-      # :3000 netboot-ui, :4480 meshcentral, :8080 tftp-http,
-      # :9001 minio-prd-console, :9011 minio-dev-console.
+      # Mgmt VLAN bind only. Port 8088 picked clear of
+      # :9001 minio-prd-console and :9011 minio-dev-console (and of the
+      # retired PXE/MeshCentral ports it was first chosen around).
       - "10.10.5.10:8088:80"
     volumes:
       - /mnt/tank/system/apps-config/wiki/site:/usr/share/nginx/html:ro

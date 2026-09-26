@@ -50,10 +50,6 @@ from truenas_infra.util import Diff
 # Adding a new app with secrets: append a new entry here. The compose
 # file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
 _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
-    "amtctl": {
-        "AMTCTL_AMT_USER":     "AMT_USER",
-        "AMTCTL_AMT_PASSWORD": "AMT_PASSWORD",
-    },
     "cluster-agent": {
         # Secrets source: cluster-agent/prd (see _DOPPLER_PROJECT_PER_APP).
         # Env var names match Doppler key names exactly — project is the
@@ -135,13 +131,6 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token
     # works for both single-node instances.
-    "homepage": {
-        "HOMEPAGE_VAR_TRUENAS_API_KEY":      "TRUENAS_API_KEY",
-        "HOMEPAGE_VAR_MINIO_PRD_ACCESS_KEY": "MINIO_ROOT_USER_PRD",
-        "HOMEPAGE_VAR_MINIO_PRD_SECRET_KEY": "MINIO_ROOT_PASSWORD_PRD",
-        "HOMEPAGE_VAR_MINIO_DEV_ACCESS_KEY": "MINIO_ROOT_USER_DEV",
-        "HOMEPAGE_VAR_MINIO_DEV_SECRET_KEY": "MINIO_ROOT_PASSWORD_DEV",
-    },
     "minio-dev": {
         "MINIO_ROOT_USER":       "MINIO_ROOT_USER_DEV",
         "MINIO_ROOT_PASSWORD":   "MINIO_ROOT_PASSWORD_DEV",
@@ -871,8 +860,9 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     are done. It skips gracefully if the files/dirs don't exist yet rather
     than failing — the real code upload happens automatically once they appear.
 
-    Same deploy pattern as amtctl and stress-dashboard: stock python:3.14-alpine
-    base image, code on the pool, bind-mounted into /app in the container.
+    Deploy pattern: stock python base image, code on the pool, bind-mounted
+    into /app in the container (the only app left using it — see the module
+    constants above).
     docker-compose.yaml's command block invokes `uvicorn main:app` which
     resolves to /app/main.py — so main.py must be at the code/ root.
     """

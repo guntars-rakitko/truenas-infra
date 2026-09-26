@@ -29,7 +29,7 @@
 # venv rebuilds on Python version drift. App code uploaded by
 # _ensure_cluster_agent_config_via_ctx
 #
-# WHY 3.13 (not 3.14 like amtctl): pydantic-core 2.10 doesn't yet publish
+# WHY 3.13 (not 3.14): pydantic-core 2.10 doesn't yet publish
 # `cpython-314-musllinux` wheels, so pip falls back to source-build on
 # alpine, which needs Rust, and alpine's musl can't satisfy the cargo
 # binary's glibc deps (libgcc_s.so.1 + _Unwind_* symbols). Bricked the
@@ -274,9 +274,7 @@ services:
       retries: 3
       start_period: 60s
     # Resource + capability hardening — first app on the NAS where these
-    # matter materially. Other apps (amtctl, stress-dashboard) are
-    # stateless HTTP dashboards with predictable resource usage and
-    # don't need them. The cluster-agent has:
+    # matter materially. The cluster-agent has:
     #   - persistent state (SQLite at /data/state.db)
     #   - external API calls that can spike load (Anthropic LLM bursts)
     #   - subprocess forks (kubectl, gh, mc) with their own resource

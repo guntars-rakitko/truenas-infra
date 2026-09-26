@@ -52,7 +52,7 @@ doppler setup --project infrastructure --config ops
 | 6 | `storage-tasks` | SMART, scrub, snapshots |
 | 7 | `shares` | NFS (prd/dev) + SMB (home) |
 | 8 | `nut` | Built-in UPS service |
-| 9 | `apps` | pxe (homelab-pxe), minio-prd, minio-dev |
+| 9 | `apps` | the enabled apps in `config/apps.yaml` (minio-prd, minio-dev, traefik, wiki, cluster-agent) |
 | 10 | `verify` | Run the verification matrix |
 
 ## Related repositories
