@@ -23,11 +23,20 @@ set -euo pipefail
 # ─── Desired state ───────────────────────────────────────────────────────────
 # Each row: <alias>/<bucket> <expire-days>
 #
-# ⚠ velero / longhorn are DELIBERATELY absent — do not "add a backstop".
-# Longhorn backups are incremental block chains whose later backups reference
-# blocks written by earlier ones; expiring a base by age corrupts every
+# ⚠ velero / longhorn / pvc-backups are DELIBERATELY absent — do not "add a
+# backstop". Longhorn backups are incremental block chains whose later backups
+# reference blocks written by earlier ones; expiring a base by age corrupts every
 # surviving backup that depended on it. Velero's own TTL controller expects to
-# own deletion. Age-based ILM is the wrong tool for both.
+# own deletion. pvc-backups holds restic repositories, which are worse still:
+# a pack file is shared by every snapshot that references one of its blobs, so
+# the newest snapshot routinely depends on the oldest packs; and each
+# repository's `config` and `keys/*` objects are written once at `restic init`
+# (the recovery key: right after it) and never rewritten by backup or prune, so
+# they are among the OLDEST objects there and an age rule deletes them first,
+# leaving a repository that no password opens. restic's own `forget --prune`
+# (run by the backup CronJob) owns deletion. Age-based ILM is the wrong tool
+# for all three.
+# tests/test_minio_setup_scripts.py fails if any RULES row targets one of them.
 # loki-chunks and pocket-id-litestream are absent because Loki's compactor and
 # Litestream prune their own object stores.
 #
