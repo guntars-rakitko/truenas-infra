@@ -624,10 +624,18 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 
 **Daily-digest architecture (short version).** Each 06:00 fire:
 
-1. Pulls 24h of `ALERTS{alertstate="firing"}` from Prometheus,
-   aggregates per `(alertname, fingerprint)` with chronicity
-   classification (chronic / flapping / active / self_healed / transient).
-   Watchdog is silently skipped.
+1. Pulls 24h of `ALERTS{alertstate="firing", alertname!="InfoInhibitor"}`
+   from Prometheus, aggregates per `(alertname, fingerprint)` with
+   chronicity classification (chronic / flapping / active / self_healed /
+   transient). **`InfoInhibitor` is dropped in the query** (2026-09-26,
+   kube-infra #1286). It is a severity=none meta-alert that restates "an
+   info alert exists in this namespace", and it also fires for info alerts
+   that are only *pending*. So it flapped with every CPUThrottlingHigh and
+   was filed as findings. **Watchdog is kept in the pull on purpose** and
+   skipped later (summary tables + the prompt). It keeps the history
+   non-empty, and `run_async` returns *before* log mining and the summary
+   when the history is empty. Excluding it would silently drop the tripwire
+   scan on every alert-quiet day.
 2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
    alerts (not for self_healed/transient — presumed noise).
 3. **P3: Mines Loki for notable log patterns** — namespaces with
