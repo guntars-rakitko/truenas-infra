@@ -15,8 +15,10 @@
 #
 # Pattern:
 #   <name>.w1.lv  →  HTTP backend URL  (plain HTTP inside mgmt VLAN)
-#   TLS terminated at Traefik using /etc/traefik/certs/fullchain.pem
-#   kept fresh by tls-rotate (sub-phase D).
+#   TLS terminated at Traefik using /etc/traefik/certs/fullchain.pem.
+#   ⚠ Editing THIS file hot-reloads. A renewed cert does NOT: nothing watches
+#   /etc/traefik/certs, so apps/tls/tls-rotate.sh redeploys Traefik when the
+#   cert changes.
 
 http:
   routers:
@@ -30,8 +32,6 @@ http:
       service: minio-dev-console
       entryPoints: [websecure]
       tls: {}
-    # Traefik's own dashboard — NAS-side, distinct from any future
-    # kube-infra Traefik (traefik-prd / traefik-dev).
     # Internal wiki — MkDocs static site served by nginx on mgmt VLAN.
     # Content pushed from the wiki repo's tools/deploy.sh (rsync).
     wiki:
@@ -69,4 +69,4 @@ http:
 tls:
   certificates:
     - certFile: /etc/traefik/certs/fullchain.pem
-      keyFile:  /etc/traefik/certs/privkey.pem
+      keyFile: /etc/traefik/certs/privkey.pem

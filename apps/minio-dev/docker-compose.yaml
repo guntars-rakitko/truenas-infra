@@ -27,6 +27,8 @@ services:
       - "10.10.5.10:9011:9001"
     volumes:
       - /mnt/tank/kube/dev/velero:/data
+      # Wildcard cert — see minio-prd: reloaded by MinIO itself on change, so
+      # tls-rotate does NOT redeploy this app. Keep this a DIRECTORY mount.
       - /mnt/tank/system/tls:/root/.minio/certs:ro
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}

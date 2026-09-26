@@ -169,6 +169,20 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 All browser-facing services serve a valid Let's Encrypt `*.w1.lv` cert.
 See `docs/tls-runbook.md` for rotation + recovery.
 
+⚠ **Cert rotation redeploys Traefik only.** TrueNAS renews at 30 days left. The
+hourly `tls-rotate` cronjob (`apps/tls/tls-rotate.sh`) copies the cert to
+`/mnt/tank/system/tls/` and `app.redeploy`s every app in `TLS_CONSUMERS`,
+which today is just `traefik`. Its file provider watches `/etc/traefik/dynamic`,
+not the cert. MinIO prd/dev re-read the cert themselves and are deliberately
+NOT redeployed; a redeploy would be ~30 s of S3 outage for every backup track.
+Both facts were measured at the 2026-09-14 renewal, which the docs had
+**backwards**. Until 2026-09-26 the script also died under `set -e` before any
+redeploy. Together that left wiki.w1.lv on the old cert for nine days (kube-infra
+#1252 / #1253). A failed redeploy is retried hourly from
+`.tls-redeploy-pending`. `tests/test_tls_rotate.py` requires every enabled app
+that mounts the TLS dir to be in `TLS_CONSUMERS` or on its evidence-backed
+exemption list.
+
 ### Policy for adding new services
 
 Decision tree — **apply every time you add an HTTPS endpoint on this network**:

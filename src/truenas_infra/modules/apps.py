@@ -666,7 +666,9 @@ TLS_REMOTE_DIR = "/mnt/tank/system/tls"
 
 # Traefik dynamic config — routers + services + TLS block. Committed in
 # the repo; uploaded to the container's file-provider directory so
-# Traefik hot-reloads on change.
+# Traefik hot-reloads on change. ⚠ That covers edits to routes.yaml only,
+# NOT the cert files its TLS block points at: tls-rotate.sh redeploys
+# Traefik when the cert changes.
 TRAEFIK_ROUTES_PATH = Path("apps/traefik/routes.yaml")
 TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 
