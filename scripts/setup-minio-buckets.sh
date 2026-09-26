@@ -16,7 +16,9 @@
 #     (with `MINIO_ROOT_USER_DEV` / `MINIO_ROOT_PASSWORD_DEV` from
 #     Doppler `infrastructure/ops`)
 #
-# Verification: `mc ls nas-{dev,prd}` shows all nine buckets.
+# Verification: `mc ls nas-{dev,prd}` lists every bucket in BUCKETS below.
+# (No count here on purpose: this line said "nine" for two buckets after it
+# stopped being true. CLAUDE.md § setup-minio-buckets.sh carries the count.)
 
 set -euo pipefail
 
@@ -40,6 +42,16 @@ BUCKETS=(
                          # silently prunes it. ⚠ This is an ILM boundary, NOT a credential
                          # one — the shared service user below has readwrite on s3:*.
     pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
+    pvc-backups          # restic — PVC-state repositories, one per cluster generation and
+                         # namespace: pvc-backups/<cluster>/<namespace>, e.g.
+                         # pvc-backups/msa2-prd/pocket-id (kube-infra
+                         # docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md
+                         # § 6.1 / § 6.13). ⚠ NO ILM rule and versioning OFF, both on
+                         # purpose: restic's own `forget --prune` owns deletion (the
+                         # why is in setup-minio-lifecycle.sh). Off is what `mc mb`
+                         # creates and nothing here enables it; with versioning on,
+                         # prune would hide objects instead of freeing space. SSE-S3
+                         # default encryption: setup-minio-encryption.sh.
     sms-gateway-backups  # SMS-gateway appliance — nightly pg_dump of the box's smsgw+gammu DBs (box-<env>/ prefix)
     velero               # Velero — K8s manifest backups
 )

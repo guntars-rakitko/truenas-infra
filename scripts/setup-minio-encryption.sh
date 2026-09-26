@@ -38,6 +38,10 @@
 set -euo pipefail
 
 ALIASES=(nas-dev nas-prd)
+# ⚠ NOT the full list in setup-minio-buckets.sh: postgres-backups-w1 and
+# sms-gateway-backups have never been here (CLAUDE.md § setup-minio-encryption.sh).
+# Adding them is a live change to two other consumers' buckets and is left to its
+# own change, not slipped in with an unrelated bucket.
 BUCKETS=(
     cluster-agent
     etcd-snapshots
@@ -46,6 +50,9 @@ BUCKETS=(
     mssql-backups
     postgres-backups
     pocket-id-litestream
+    pvc-backups          # restic already encrypts client-side; SSE-S3 here keeps the
+                         # at-rest convention and the inventory whole, it closes no
+                         # exposure (kube-infra msa2-pvc-backup spec § 6.13)
     velero
 )
 

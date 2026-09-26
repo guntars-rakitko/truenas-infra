@@ -159,8 +159,8 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
-| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
-| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
 | cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated Findings filed as issues in [`kube-infra`](https://github.com/guntars-rakitko/kube-infra) (labels `cluster-agent` + `needs-review`); the daily digest-summary goes to [`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest) (renamed from `-sandbox`; routing since the 2026-07-06 graduation — § cluster-agent ops). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
@@ -389,7 +389,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 10 buckets per instance (incl. the orphan loki-chunks)
+./scripts/setup-minio-buckets.sh      # 11 buckets per instance (incl. the orphan loki-chunks)
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -399,9 +399,14 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the backup buckets on each MinIO instance — **ten** today, one of
+Creates the backup buckets on each MinIO instance — **eleven** today, one of
 them (`loki-chunks`) an orphan with no consumer (authoritative list = the
-`BUCKETS` array in the script; its header still says "nine"):
+`BUCKETS` array in the script; its header deliberately states no count: it said
+"nine" for two buckets after that stopped being true). `tests/test_minio_setup_scripts.py`
+runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if `pvc-backups` is
+not created and encrypted on both instances, if the encryption or lifecycle
+script names a bucket this one never creates (a live `SKIP` with exit 0), or if
+any ILM row targets `longhorn`, `velero` or `pvc-backups`:
 
 | Bucket | Consumer |
 |---|---|
@@ -413,6 +418,7 @@ them (`loki-chunks`) an orphan with no consumer (authoritative list = the
 | `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
 | `postgres-backups-w1` | CloudNativePG **w1-db** (web-tracker) — its own bucket, not a prefix. MinIO ILM is bucket-wide, so two retention windows need two buckets; and it makes a `serverName` typo fail into an empty bucket instead of silently landing in the financial chain's prefix. ⚠ An ILM boundary, **not** a credential one — the shared service user has `readwrite` on `s3:*`. |
 | `pocket-id-litestream` | Pocket-ID — SQLite Litestream replicas (DR for the OIDC IdP) |
+| `pvc-backups` | **restic** — PVC-state repositories, one per cluster generation and namespace: `pvc-backups/<cluster>/<namespace>` (e.g. `pvc-backups/msa2-prd/pocket-id`). First and only consumer: kube-infra's `pocket-id/pocket-id-backup` CronJob (Pocket-ID's SQLite DB, approach E of kube-infra `docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md`). Named for what it holds, not its first consumer. ⚠ **No ILM** (§ setup-minio-lifecycle.sh) and **versioning off** (what `mc mb` creates; with it on, prune would hide objects instead of freeing space). SSE-S3 on, though restic already encrypts client-side. Added to `BUCKETS` 2026-09-26, ahead of the CronJob (spec § 7.2 row 2); empty until the CronJob lands. Credentials: the shared per-env `KUBE_MINIO_*` user on kub-dev/kub-prd and on msa2-dev until H0; msa2-scoped users with `pvc-backups/<msa2-X>/*` statements at H0 (§ setup-minio-users.sh, not built yet). |
 | `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
 | `velero` | Velero — K8s manifest backups |
 
@@ -499,20 +505,25 @@ irreversible: both buckets are un-versioned with no object-lock.
 `etcd-<stamp>.db` namespace with no date prefixes, so `--expire-days` applies
 uniformly. Hourly-then-daily tiering would need a prune step in the CronJob.
 
-Velero / Longhorn / pocket-id-litestream remain intentionally absent (and so
+Velero / Longhorn / pvc-backups / pocket-id-litestream remain intentionally absent (and so
 does the orphan `loki-chunks`, which nothing writes) — Litestream prunes its
-own replicas, and **Velero and Longhorn must NOT be given an age-based backstop**: Longhorn
+own replicas, and **Velero, Longhorn and pvc-backups must NOT be given an age-based backstop**: Longhorn
 backups are incremental block chains where later backups reference blocks
 written by earlier ones, so expiring a base by age corrupts every surviving
 backup that depended on it, and Velero's TTL controller expects to own
-deletion.
+deletion. `pvc-backups` holds restic repositories: a pack is shared by every
+snapshot that references one of its blobs, and each repository's `config` and
+`keys/*` are written once at `restic init` and never rewritten, so an age rule
+deletes exactly the objects that make the repository openable, first. restic's
+`forget --prune` in the backup CronJob owns deletion there.
+`tests/test_minio_setup_scripts.py` fails if a `RULES` row targets any of the three.
 
 #### setup-minio-encryption.sh
 
 Enables **SSE-S3 default encryption** on the buckets in its own `BUCKETS`
 list, on both instances (GDPR at-rest encryption, kube-infra #520
-Workstream C). ⚠ **That list is NOT the bucket list above:** it has eight
-entries and omits `postgres-backups-w1` and `sms-gateway-backups` (the
+Workstream C). ⚠ **That list is NOT the bucket list above:** it has nine
+entries (`pvc-backups` joined 2026-09-26) and omits `postgres-backups-w1` and `sms-gateway-backups` (the
 latter holds the SMS-gateway's member/billing dumps). So this script has
 never enabled default encryption on those two; whether they are encrypted
 live is unchecked (`mc encrypt info nas-<env>/<bucket>`).
@@ -1442,7 +1453,9 @@ config/
                       # mapped per-app in modules/apps.py)
 src/                  # Python CLI implementation
 scripts/
-  setup-minio-{buckets,users,lifecycle}.sh    # one-shot MinIO bootstrap
+  setup-minio-{buckets,users,lifecycle,encryption}.sh  # one-shot MinIO bootstrap
+                                              # (buckets/encryption/lifecycle: guarded by
+                                              #  tests/test_minio_setup_scripts.py)
   render-cluster-agent-kubeconfigs.sh         # rotate the agent's SA tokens
                                               # (mint + verify granted expiry
                                               #  + prove services/proxy works;
