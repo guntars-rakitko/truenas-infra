@@ -6,11 +6,15 @@ rc=0 if everything checks out, rc=1 otherwise.
 
 from __future__ import annotations
 
+import os
 import socket
 import ssl
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -203,15 +207,21 @@ def _dig_short(host: str, resolver: str) -> str | None:
 
 
 def check_dns_records(
-    *, records: list[dict], internal_resolver: str = "10.10.0.1",
+    *, records: list[dict], internal_resolver: str = "10.10.0.1", source: str = "",
 ) -> CheckResult:
     """Every record in `records` must resolve to its expected address via
     the MikroTik internal resolver.
 
-    Takes a plain list-of-dicts (matches config/dns.yaml's shape —
-    `{"name": ..., "address": ...}`). Preserved entries (`preserve: true`)
-    and non-A records are skipped — we only vet what this phase manages.
+    Takes a plain list-of-dicts (the shape of mikrotik-infra
+    `configs/dns.yaml` — `{"name": ..., "address": ...}`). Preserved entries
+    (`preserve: true`) and non-A records are skipped, as `sync_dns.py` never
+    manages them. `source` names where the records came from and is appended
+    to the message, so a stale source is visible in the output.
+
+    ⚠ Zero checked records is a FAILURE, not "0/0 resolve correctly": an
+    empty or unparseable declaration must not read as a clean matrix.
     """
+    suffix = f" [{source}]" if source else ""
     failures: list[str] = []
     checked = 0
     for r in records:
@@ -225,11 +235,85 @@ def check_dns_records(
         checked += 1
         if actual != expected:
             failures.append(f"{name}→{actual or 'NXDOMAIN'} (want {expected})")
+    if checked == 0:
+        return CheckResult(
+            "dns records", False,
+            f"no records to check — an empty declaration is not a pass{suffix}")
     if failures:
         return CheckResult(
             "dns records", False,
-            f"{len(failures)}/{checked} wrong: {'; '.join(failures[:3])}")
-    return CheckResult("dns records", True, f"{checked}/{checked} resolve correctly")
+            f"{len(failures)}/{checked} wrong: {'; '.join(failures[:3])}{suffix}")
+    return CheckResult(
+        "dns records", True, f"{checked}/{checked} resolve correctly{suffix}")
+
+
+# ─── Router DNS declaration (single source: mikrotik-infra) ─────────────────
+#
+# The router's static DNS records are declared ONCE, in mikrotik-infra
+# `configs/dns.yaml`: that file is what its `manage.sh` "Sync DNS static
+# records" (`tools/sync_dns.py`) pushes to the router. Until 2026-09-26 this
+# repo also kept a hand-mirrored `config/dns.yaml` for the verify matrix. By
+# then the copy held 19 records to the router's 47 and lacked 29 of them (no
+# msa2-* nodes, no cluster admin UIs, no giks-db / w1-db, no sms-gw), so the
+# matrix was vetting a stale subset, and every MS-A2 re-address (kube-infra
+# msa2 plan § Cutover inventory row 12) would have needed the same edit in two
+# repos. The copy is deleted; verify reads the router's own declaration.
+#
+# ⚠ It reads a git REF (default `origin/main`), NOT the clone's working tree.
+# The clone at ~/github/mikrotik-infra is shared with other sessions and can
+# be parked on a feature branch; a working-tree read would silently vet that
+# branch's records. `origin/main` is what has been merged, i.e. what the
+# router should carry. It is only as fresh as the clone's last `git fetch`,
+# so the check message prints the commit and its date: fetch first if they
+# look old.
+#
+#   MIKROTIK_INFRA_DIR  the clone (default ~/github/mikrotik-infra — the
+#                       workspace's flat clone layout; a relative
+#                       ../mikrotik-infra would break when run from a worktree)
+#   MIKROTIK_DNS_REF    the ref to read (default origin/main), e.g. HEAD to
+#                       check a branch you have just synced to the router
+
+MIKROTIK_DNS_PATH = "configs/dns.yaml"
+
+
+def _mikrotik_infra_dir() -> Path:
+    raw = os.environ.get("MIKROTIK_INFRA_DIR") or str(Path.home() / "github" / "mikrotik-infra")
+    return Path(raw).expanduser()
+
+
+def load_router_dns_records() -> tuple[list[dict[str, Any]], str]:
+    """Return (records, source label) from mikrotik-infra's `configs/dns.yaml`
+    at `MIKROTIK_DNS_REF`.
+
+    Raises RuntimeError naming the clone and ref on ANY failure (clone missing,
+    unknown ref, file missing at that ref, no records). The caller turns that
+    into a FAILED check: a missing source is never a skip.
+    """
+    repo = _mikrotik_infra_dir()
+    ref = os.environ.get("MIKROTIK_DNS_REF") or "origin/main"
+    if not repo.is_dir():
+        raise RuntimeError(
+            f"mikrotik-infra clone not found at {repo} (clone it, or set MIKROTIK_INFRA_DIR)")
+
+    def _git(*args: str) -> str:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"git {args[0]} in {repo} failed: {exc}") from exc
+        if out.returncode != 0:
+            raise RuntimeError(
+                f"git {' '.join(args)} in {repo} failed: {out.stderr.strip()}")
+        return out.stdout
+
+    full_sha, short_sha, date = _git("log", "-1", "--format=%H %h %cs", ref, "--").split()
+    raw = yaml.safe_load(_git("show", f"{full_sha}:{MIKROTIK_DNS_PATH}")) or {}
+    records = raw.get("records") if isinstance(raw, dict) else None
+    if not isinstance(records, list) or not records:
+        raise RuntimeError(f"{ref}:{MIKROTIK_DNS_PATH} in {repo} declares no records")
+    return records, f"mikrotik-infra {ref} {short_sha} {date}"
 
 
 # ─── Phase entry point ───────────────────────────────────────────────────────
@@ -270,15 +354,14 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         check_cert_expiry(cli, cert_name="w1-wildcard"),
     ]
 
-    # DNS records — load from config/dns.yaml
+    # DNS records — the router's own declaration in mikrotik-infra (see
+    # load_router_dns_records for why there is no copy in this repo).
     try:
-        import yaml as _yaml
-        from pathlib import Path as _P
-        dns_cfg = _yaml.safe_load(_P("config/dns.yaml").read_text(encoding="utf-8")) or {}
-        records = dns_cfg.get("records") or []
-        checks.append(check_dns_records(records=records))
+        records, source = load_router_dns_records()
+        checks.append(check_dns_records(records=records, source=source))
     except Exception as exc:  # noqa: BLE001
-        checks.append(CheckResult("dns records", False, f"config load failed: {exc}"))
+        checks.append(CheckResult(
+            "dns records", False, f"router DNS declaration unreadable: {exc}"))
 
     # HTTPS endpoint probes — the user-facing URLs our services expose.
     # Host headers go through Traefik (minio-prd/minio-dev/wiki) or direct
@@ -292,9 +375,10 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
     # every Traefik dashboard was removed — a permanent false failure nobody
     # chased because it looked like just another red line.
     #
-    # ⚠ Deliberately NOT derived from dns.yaml: that file carries records for
-    # things with no HTTPS listener (node AMT addresses, switches, the router),
-    # and probing those would trade false failures for different false failures.
+    # ⚠ Deliberately NOT derived from the router DNS declaration: it carries
+    # records for things with no HTTPS listener, or none on the NAS (node mgmt
+    # addresses, switches, the router, databases, cluster UIs), and probing
+    # those would trade false failures for different false failures.
     # Keep it explicit and short — one entry per host that genuinely terminates
     # TLS — and prune it when an app is retired.
     for host, port in [

@@ -18,6 +18,16 @@ def env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_mikrotik_clone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`phase verify` reads the router DNS declaration from the operator's
+    ~/github/mikrotik-infra clone. No test may depend on that clone: point the
+    lookup at a path that does not exist, so a test that wants records must
+    build its own clone (tests/test_verify.py::_make_mikrotik_clone)."""
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", "/nonexistent/mikrotik-infra-for-tests")
+    monkeypatch.delenv("MIKROTIK_DNS_REF", raising=False)
+
+
 @pytest.fixture
 def with_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Provide a minimal set of env vars for tests that need a RuntimeConfig."""
