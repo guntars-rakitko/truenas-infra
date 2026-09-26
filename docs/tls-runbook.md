@@ -15,7 +15,8 @@ own.
 # Expect every check green (currently 18: pool, datasets, 3 services,
 # 1 per enabled app, cert, dns records, 6 TLS probes). Pay attention to:
 #   - cert w1-wildcard: NN days left   (warning at <14, fail at <7)
-#   - dns records: every record in config/dns.yaml resolves correctly
+#   - dns records: every record in mikrotik-infra configs/dns.yaml (origin/main
+#     of ~/github/mikrotik-infra — fetch it first) resolves correctly
 #   - tls <host>:<port> × 6 (nas, minio-prd, minio-dev, wiki, s3-prd:9000,
 #     s3-dev:9000): issuer = the current LE intermediate (LE rotates them —
 #     do not pin a name like "R12")

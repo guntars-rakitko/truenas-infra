@@ -12,7 +12,7 @@
 #       wiki/docs/architecture/tls-split-horizon.md   (if it's admin or data plane)
 #       wiki/docs/reference/links.md                  (if it has a browser URL)
 #       apps/traefik/routes.yaml                      (if it's admin-plane, needs a route)
-#       config/dns.yaml                               (if it needs a new DNS record)
+#       mikrotik-infra/configs/dns.yaml               (if it needs a new DNS record)
 #       src/truenas_infra/modules/verify.py           (+ check_app(...), + tls_https probe)
 #     Then: ./manage.sh phase apps --apply && cd ~/github/wiki && ./tools/deploy.sh --verify
 

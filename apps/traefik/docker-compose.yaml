@@ -42,6 +42,6 @@ services:
 
 # Policy: this Traefik fronts mgmt-plane web UIs on the NAS only. When
 # kube-infra gets its own Traefik(s) (prd + dev clusters), name them
-# traefik-prd / traefik-dev per the convention in truenas-infra
-# config/dns.yaml. Different IPs, different clusters, same hostname
-# discipline.
+# traefik-prd / traefik-dev per the hostname convention in CLAUDE.md
+# § Policy for adding new services. Different IPs, different clusters,
+# same hostname discipline.

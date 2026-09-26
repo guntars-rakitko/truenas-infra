@@ -46,7 +46,6 @@ edit the matching wiki page in the same commit set.
 |---|---|
 | `CLAUDE.md` (this file) | _Auto-synced_ — `sync-repos.sh` pulls `truenas-infra/CLAUDE.md` → `docs/projects/truenas-infra.md` |
 | `config/network.yaml` (NICs, sub-IPs, hostname) | `docs/architecture/ip-plan.md` (NAS static allocations table) |
-| `config/dns.yaml` (add/remove DNS record) | `docs/architecture/hostnames.md` (record inventory) |
 | `config/apps.yaml` (new Custom App) | `docs/architecture/hostnames.md`, `docs/reference/links.md` |
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
@@ -63,10 +62,23 @@ cd ~/github/wiki && ./tools/deploy.sh --verify
 ```
 
 The verify matrix (`./manage.sh phase verify`) catches structural drift
-(DNS resolution, TLS SAN coverage, cert expiry, app state) for
-anything added to `config/dns.yaml`. It does **not** catch prose drift
-in the wiki (stale IPs in commentary, outdated VLAN descriptions) —
-that's operator responsibility.
+(DNS resolution, TLS SAN coverage, cert expiry, app state). Its DNS check
+vets **every record the router declares**: it reads mikrotik-infra
+`configs/dns.yaml` at `origin/main` from the sibling clone
+(`~/github/mikrotik-infra`, override `MIKROTIK_INFRA_DIR` / `MIKROTIK_DNS_REF`)
+and digs each name against `10.10.0.1`. `git fetch` that clone first — the
+check prints the commit and date it read. A missing clone or ref is a
+**failed** check, never a skip. It does **not** catch prose drift in the wiki
+(stale IPs in commentary, outdated VLAN descriptions) — that's operator
+responsibility.
+
+> ⚠ **There is no DNS file in this repo since 2026-09-26.** A hand-mirrored
+> `config/dns.yaml` used to feed that check. It held 19 records to the
+> router's 47 (no msa2-*, no cluster admin UIs, no giks-db / w1-db, no
+> sms-gw), so the matrix vetted a stale subset, and each MS-A2 re-address
+> (kube-infra msa2 plan § Cutover inventory row 12) would have needed two
+> edits. It was deleted rather than re-synced. A new DNS record goes in
+> mikrotik-infra `configs/dns.yaml` only (+ its wiki `hostnames.md` row).
 
 ---
 

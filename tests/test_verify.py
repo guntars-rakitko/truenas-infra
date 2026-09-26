@@ -2,13 +2,57 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import yaml
 
 
 def _mk_cli(side_effects: list) -> MagicMock:
     cli = MagicMock()
     cli.call.side_effect = side_effects
     return cli
+
+
+# A throwaway git repo shaped like the mikrotik-infra clone that `phase verify`
+# reads its DNS records from. Isolated from the operator's git config (global
+# commit signing, hooks), which would otherwise make `git commit` prompt or fail.
+_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+}
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True, capture_output=True, text=True, env=_GIT_ENV,
+    ).stdout.strip()
+
+
+def _make_mikrotik_clone(root: Path, dns_yaml: str | None) -> Path:
+    """Init a repo, commit `configs/dns.yaml` (omitted when None), and point
+    refs/remotes/origin/main at that commit — i.e. a freshly fetched clone."""
+    repo = root / "mikrotik-infra"
+    (repo / "configs").mkdir(parents=True)
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    if dns_yaml is not None:
+        (repo / "configs" / "dns.yaml").write_text(dns_yaml, encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fixture")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return repo
+
+
+def _dns_yaml(records: dict[str, str]) -> str:
+    return yaml.safe_dump(
+        {"records": [{"name": n, "address": a} for n, a in records.items()]})
 
 
 # ─── check_pool ──────────────────────────────────────────────────────────────
@@ -108,40 +152,29 @@ class _Ctx:
         self.log = structlog.get_logger("test")
 
 
-def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
-    from truenas_infra.modules import verify
-    from truenas_infra.modules.verify import run
+# The router records the all-pass fixture declares AND the fake resolver
+# answers. Includes the msa2 BUILD records, which the old hand-mirrored
+# config/dns.yaml never carried.
+_ROUTER_RECORDS: dict[str, str] = {
+    "nas.w1.lv": "10.10.5.10",
+    "minio-prd.w1.lv": "10.10.5.20",
+    "minio-dev.w1.lv": "10.10.5.20",
+    "wiki.w1.lv": "10.10.5.20",
+    "s3-prd.w1.lv": "10.10.10.10",
+    "s3-dev.w1.lv": "10.10.15.10",
+    "kub-prd-01.w1.lv": "10.10.5.11",
+    "kub-dev-01.w1.lv": "10.10.5.14",
+    "msa2-dev-01.w1.lv": "10.10.5.18",
+    "msa2-prd-01.w1.lv": "10.10.5.17",
+    "router.w1.lv": "10.10.0.1",
+    "admin-dev.giks.lv": "10.10.15.20",
+}
 
-    # Stub out the network probes so tests don't touch DNS or TLS.
-    monkeypatch.setattr(verify, "_dig_short",
-                        lambda host, resolver: {
-                            "nas.w1.lv": "10.10.5.10",
-                            "minio-prd.w1.lv": "10.10.5.20",
-                            "minio-dev.w1.lv": "10.10.5.20",
-                            "s3-prd.w1.lv": "10.10.10.10",
-                            "s3-dev.w1.lv": "10.10.15.10",
-                            "kub-prd-01.w1.lv": "10.10.5.11",
-                            "kub-prd-02.w1.lv": "10.10.5.12",
-                            "kub-prd-03.w1.lv": "10.10.5.13",
-                            "kub-dev-01.w1.lv": "10.10.5.14",
-                            "kub-dev-02.w1.lv": "10.10.5.15",
-                            "kub-dev-03.w1.lv": "10.10.5.16",
-                            "traefik-nas.w1.lv": "10.10.5.20",
-                            "wiki.w1.lv": "10.10.5.20",
-                            "router.w1.lv": "10.10.0.1",
-                            "sw-data.w1.lv": "10.10.0.2",
-                            "sw-mgmt.w1.lv": "10.10.0.3",
-                            "wifi.w1.lv": "10.10.0.4",
-                            "lte.w1.lv": "10.10.0.5",
-                        }.get(host))
-    monkeypatch.setattr(verify, "_tls_handshake_cert",
-                        lambda host, port, timeout: {
-                            "subject": "CN=*.w1.lv",
-                            "issuer": "CN=R12, O=Let's Encrypt, C=US",
-                            "sans": ["*.w1.lv", "w1.lv"],
-                        })
 
-    cli = _mk_cli([
+def _all_pass_cli() -> MagicMock:
+    """A cli whose every API-backed check passes, so the DNS source is the
+    only variable in the run() tests below."""
+    return _mk_cli([
         # pool
         [{"name": "tank", "status": "ONLINE", "healthy": True}],
         # datasets
@@ -168,8 +201,163 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 
-    rc = run(cli, _Ctx(apply=False), only=None)
+
+def _stub_network(monkeypatch) -> None:
+    """No real DNS or TLS: the fake resolver answers every _ROUTER_RECORDS
+    name correctly and nothing else."""
+    from truenas_infra.modules import verify
+
+    monkeypatch.setattr(verify, "_dig_short",
+                        lambda host, resolver: _ROUTER_RECORDS.get(host))
+    monkeypatch.setattr(verify, "_tls_handshake_cert",
+                        lambda host, port, timeout: {
+                            "subject": "CN=*.w1.lv",
+                            "issuer": "CN=R12, O=Let's Encrypt, C=US",
+                            "sans": ["*.w1.lv", "w1.lv"],
+                        })
+
+
+def _run_and_capture(cli: MagicMock) -> tuple[int, dict[str, dict]]:
+    """run() plus its per-check log events, keyed by check name."""
+    import structlog.testing
+
+    from truenas_infra.modules.verify import run
+
+    with structlog.testing.capture_logs() as logs:
+        rc = run(cli, _Ctx(apply=False), only=None)
+    events = {e["name"]: e for e in logs if e.get("event") in ("check_passed", "check_failed")}
+    return rc, events
+
+
+def test_run_returns_zero_when_all_pass(monkeypatch, tmp_path) -> None:
+    _stub_network(monkeypatch)
+    repo = _make_mikrotik_clone(tmp_path, _dns_yaml(_ROUTER_RECORDS))
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+
+    rc, events = _run_and_capture(_all_pass_cli())
+
     assert rc == 0
+    dns = events["dns records"]
+    assert dns["event"] == "check_passed"
+    n = len(_ROUTER_RECORDS)
+    assert f"{n}/{n} resolve correctly" in dns["message"]
+    # The source is named, commit and all, so a stale clone is visible.
+    assert f"mikrotik-infra origin/main {_git(repo, 'rev-parse', '--short', 'HEAD')}" \
+        in dns["message"]
+
+
+def test_run_fails_when_mikrotik_clone_missing(monkeypatch) -> None:
+    """Positive control for the test above: the SAME all-pass run, minus the
+    clone (conftest points MIKROTIK_INFRA_DIR at a path that does not exist),
+    must fail the matrix, naming the path. A missing source is never a skip."""
+    _stub_network(monkeypatch)
+
+    rc, events = _run_and_capture(_all_pass_cli())
+
+    assert rc != 0
+    dns = events["dns records"]
+    assert dns["event"] == "check_failed"
+    assert "/nonexistent/mikrotik-infra-for-tests" in dns["message"]
+    # ...and it is the ONLY failure, so it alone flipped the rc.
+    assert [k for k, e in events.items() if e["event"] == "check_failed"] == ["dns records"]
+
+
+def test_run_fails_when_router_disagrees_with_declaration(monkeypatch, tmp_path) -> None:
+    """A record the declaration carries but the router answers differently
+    (the msa2 re-address, half done) fails the matrix."""
+    _stub_network(monkeypatch)
+    moved = {**_ROUTER_RECORDS, "msa2-prd-01.w1.lv": "10.10.5.11"}
+    repo = _make_mikrotik_clone(tmp_path, _dns_yaml(moved))
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+
+    rc, events = _run_and_capture(_all_pass_cli())
+
+    assert rc != 0
+    assert "msa2-prd-01.w1.lv→10.10.5.17 (want 10.10.5.11)" in events["dns records"]["message"]
+
+
+# ─── load_router_dns_records ─────────────────────────────────────────────────
+
+
+def test_load_router_dns_records_reads_origin_main_not_the_worktree(monkeypatch, tmp_path) -> None:
+    """The shared clone may be parked on a branch with unmerged records; verify
+    must vet what is MERGED (origin/main), not whatever is checked out."""
+    from truenas_infra.modules import verify
+
+    repo = _make_mikrotik_clone(tmp_path, _dns_yaml({"nas.w1.lv": "10.10.5.10"}))
+    # A local commit origin/main does not have, plus an uncommitted edit on top.
+    (repo / "configs" / "dns.yaml").write_text(
+        _dns_yaml({"branch-only.w1.lv": "10.10.5.99"}), encoding="utf-8")
+    _git(repo, "commit", "-qam", "unmerged branch work")
+    (repo / "configs" / "dns.yaml").write_text(
+        _dns_yaml({"dirty.w1.lv": "10.10.5.98"}), encoding="utf-8")
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+
+    records, source = verify.load_router_dns_records()
+
+    assert [r["name"] for r in records] == ["nas.w1.lv"]
+    assert source.startswith("mikrotik-infra origin/main ")
+
+
+def test_load_router_dns_records_honours_ref_override(monkeypatch, tmp_path) -> None:
+    from truenas_infra.modules import verify
+
+    repo = _make_mikrotik_clone(tmp_path, _dns_yaml({"nas.w1.lv": "10.10.5.10"}))
+    (repo / "configs" / "dns.yaml").write_text(
+        _dns_yaml({"branch-only.w1.lv": "10.10.5.99"}), encoding="utf-8")
+    _git(repo, "commit", "-qam", "branch work, synced to the router by hand")
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+    monkeypatch.setenv("MIKROTIK_DNS_REF", "HEAD")
+
+    records, source = verify.load_router_dns_records()
+
+    assert [r["name"] for r in records] == ["branch-only.w1.lv"]
+    assert source.startswith("mikrotik-infra HEAD ")
+
+
+def test_load_router_dns_records_raises_naming_missing_clone(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    from truenas_infra.modules import verify
+
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(tmp_path / "no-such-clone"))
+    with pytest.raises(RuntimeError, match="clone not found at .*no-such-clone"):
+        verify.load_router_dns_records()
+
+
+def test_load_router_dns_records_raises_when_ref_unknown(monkeypatch, tmp_path) -> None:
+    """A clone that was never fetched has no origin/main."""
+    import pytest
+
+    from truenas_infra.modules import verify
+
+    repo = _make_mikrotik_clone(tmp_path, _dns_yaml({"nas.w1.lv": "10.10.5.10"}))
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+    with pytest.raises(RuntimeError, match="origin/main"):
+        verify.load_router_dns_records()
+
+
+def test_load_router_dns_records_raises_when_file_absent_at_ref(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    from truenas_infra.modules import verify
+
+    repo = _make_mikrotik_clone(tmp_path, None)
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+    with pytest.raises(RuntimeError, match="configs/dns.yaml"):
+        verify.load_router_dns_records()
+
+
+def test_load_router_dns_records_raises_when_no_records(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    from truenas_infra.modules import verify
+
+    repo = _make_mikrotik_clone(tmp_path, "records: []\n")
+    monkeypatch.setenv("MIKROTIK_INFRA_DIR", str(repo))
+    with pytest.raises(RuntimeError, match="declares no records"):
+        verify.load_router_dns_records()
 
 
 def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
@@ -315,6 +503,19 @@ def test_check_dns_records_fails_when_any_record_wrong(monkeypatch) -> None:
     r = verify.check_dns_records(records=records, internal_resolver="10.10.0.1")
     assert r.passed is False
     assert "mc.w1.lv" in r.message
+
+
+def test_check_dns_records_fails_when_nothing_to_check(monkeypatch) -> None:
+    """0 checked is not "0/0 resolve correctly": an empty declaration, or one
+    where every record is `preserve: true`, must not read as a clean matrix."""
+    from truenas_infra.modules import verify
+
+    monkeypatch.setattr(verify, "_dig_short", lambda *a, **k: "10.10.0.1")
+    for records in ([], [{"name": "ntp.w1.lv", "address": "10.10.0.1", "preserve": True}]):
+        r = verify.check_dns_records(records=records, source="src-label")
+        assert r.passed is False
+        assert "no records to check" in r.message
+        assert "src-label" in r.message
 
 
 def test_run_fails_when_a_new_app_is_missing(monkeypatch) -> None:
