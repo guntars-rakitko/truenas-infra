@@ -59,7 +59,7 @@ BUCKETS=(
 # ─── Apply ───────────────────────────────────────────────────────────────────
 for alias in "${ALIASES[@]}"; do
     if ! mc ls "$alias" >/dev/null 2>&1; then
-        echo "SKIP  $alias (alias unreachable — set up `mc alias set` first)"
+        echo "SKIP  $alias (alias unreachable — set up \`mc alias set\` first)"
         continue
     fi
 

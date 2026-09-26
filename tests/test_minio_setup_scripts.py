@@ -159,3 +159,17 @@ def test_lifecycle_never_expires_a_bucket_whose_client_owns_deletion(
     assert {t for t in ilm if t.split("/", 1)[1] in NO_ILM_BUCKETS} == set()
     # A rule on a bucket that is never created is a live "SKIP", exit 0.
     assert ilm - created == set()
+
+
+@pytest.mark.parametrize("script", [BUCKETS_SH, ENCRYPTION_SH], ids=lambda p: p.name)
+def test_unreachable_alias_is_skipped_without_running_mc_alias(
+    script: Path, tmp_path: Path
+) -> None:
+    # setup-minio-buckets.sh used to put `mc alias set` in backticks inside a
+    # double-quoted echo, so an unreachable alias RAN `mc alias set` (usage
+    # error) instead of printing the hint. Only the reachability probes may run.
+    proc, calls = _run(script, tmp_path, unreachable=" ".join(ALIASES))
+    assert proc.returncode == 0, proc.stderr
+    assert calls == [f"mc ls {a}" for a in ALIASES]
+    for a in ALIASES:
+        assert f"SKIP  {a} (alias unreachable — set up `mc alias set` first)" in proc.stdout
