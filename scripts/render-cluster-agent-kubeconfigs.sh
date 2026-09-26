@@ -35,10 +35,52 @@
 #   ./scripts/render-cluster-agent-kubeconfigs.sh --apply      # + Doppler + redeploy
 #   ./scripts/render-cluster-agent-kubeconfigs.sh --duration 8760h
 #
+#   # MS-A2 cutover: point ONE cluster at its new admin kubeconfig
+#   ./scripts/render-cluster-agent-kubeconfigs.sh \
+#     --prd-kubeconfig ~/github/kube-infra/talos-os/kubeconfig-msa2-prd
+#
+# ## Which cluster each key points at
+#
+# `dev` / `prd` here are the agent's two Doppler keys (KUBECONFIG_DEV /
+# KUBECONFIG_PRD), not a statement about hardware. Each is minted from its
+# own admin kubeconfig:
+#
+#   --dev-kubeconfig PATH   default $KUBECONFIG_DIR/kubeconfig-dev (kub-dev)
+#   --prd-kubeconfig PATH   default $KUBECONFIG_DIR/kubeconfig-prd (kub-prd)
+#
+# The defaults are the Q170S1 clusters. At the MS-A2 cutover (kube-infra
+# plan docs/superpowers/plans/2026-09-23-msa2-phase-2-build.md § Cutover
+# inventory row 16) each key moves to kubeconfig-msa2-<env> one cluster at a
+# time; in the mixed period prd = msa2-prd while dev is still kub-dev, so
+# pass only --prd-kubeconfig. Re-minting the unchanged cluster as well is
+# harmless (a fresh token for the same cluster).
+#
+# ## Pre-flight (runs before ANY token is minted)
+#
+# For each key: the kubeconfig exists, its server is printed, and so are the
+# nodes it reaches (a read), so you see which cluster each key will point
+# at. Then it REFUSES:
+#
+#   - a server on an MS-A2 BUILD address (10.10.5.17 prd / .18 dev). Talos
+#     makes the cluster endpoint the service-account token ISSUER, so the
+#     re-address to the final address (.11 / .12) invalidates every token
+#     issued before it (plan D12, row 16(a)). A token minted at the build
+#     address works until that re-address and then fails every run — the
+#     exact silent blindness this script exists to end. Re-mint only after
+#     the box has moved. --allow-build-address overrides, for a deliberate
+#     short-lived test.
+#   - dev and prd resolving to the SAME server: the agent would digest one
+#     cluster twice under two names and watch nothing on the other.
+#
+# After minting, the token's own `iss` claim is checked against the build
+# addresses too. The issuer is the real invariant; the kubeconfig's server
+# is only a proxy for it (a hostname server would slip past the first check).
+#
 # ## Prereqs
 #
 #   - kubectl with admin kubeconfigs at kube-infra/talos-os/kubeconfig-{dev,prd}
-#     (override with KUBECONFIG_DIR)
+#     (override the directory with KUBECONFIG_DIR, or one cluster with
+#     --dev-kubeconfig / --prd-kubeconfig)
 #   - doppler CLI authenticated (only for --apply)
 #   - ssh to the NAS as truenas_admin, and a working truenas-infra
 #     manage.sh (Doppler infrastructure/ops access) — only for --apply
@@ -71,12 +113,28 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # that matters.
 DURATION="8760h"
 APPLY=0
+ALLOW_BUILD_ADDRESS=0
+
+# Per-key source kubeconfig — see "Which cluster each key points at" above.
+declare -A SRC=(
+  [dev]="$KUBECONFIG_DIR/kubeconfig-dev"
+  [prd]="$KUBECONFIG_DIR/kubeconfig-prd"
+)
+
+# MS-A2 BUILD addresses (kube-infra msa2 plan § Cutover inventory row 3:
+# prd .17 -> .11, dev .18 -> .12). Delete this list once both boxes sit at
+# their final addresses; until then a token minted here is a token that dies.
+BUILD_ADDRESSES=(10.10.5.17 10.10.5.18)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --apply)    APPLY=1; shift ;;
-    --duration) DURATION="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,48p' "$0"; exit 0 ;;
+    --apply)                APPLY=1; shift ;;
+    --duration)             DURATION="$2"; shift 2 ;;
+    --dev-kubeconfig)       SRC[dev]="$2"; shift 2 ;;
+    --prd-kubeconfig)       SRC[prd]="$2"; shift 2 ;;
+    --allow-build-address)  ALLOW_BUILD_ADDRESS=1; shift ;;
+    # The whole leading comment block, so the help cannot drift from it.
+    -h|--help)  awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"; exit 0 ;;
     *)          echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -86,8 +144,28 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+# Host part of a URL: https://10.10.5.18:6443/x -> 10.10.5.18. (IPv4 or a
+# hostname; nothing here uses an IPv6 literal.)
+url_host() {
+  local h="${1#*://}"
+  h="${h%%/*}"
+  printf '%s' "${h%:*}"
+}
+
+# True when the URL's host is an MS-A2 build address. Exact match, so a
+# near miss like 10.10.5.1 or 10.10.5.170 is not a hit.
+is_build_address() {
+  local host a
+  host="$(url_host "$1")"
+  for a in "${BUILD_ADDRESSES[@]}"; do
+    [[ "$host" == "$a" ]] && return 0
+  done
+  return 1
+}
+
 # Decode a JWT's payload and print the `exp` claim as a human date plus
-# the remaining lifetime. Reads what the SERVER issued, not what we asked.
+# the remaining lifetime, then the subject and issuer. Reads what the
+# SERVER issued, not what we asked.
 jwt_expiry() {
   python3 - "$1" <<'PY'
 import base64, datetime, json, sys
@@ -103,24 +181,68 @@ delta = exp - now
 secs = int(abs(delta.total_seconds()))
 span = f"{secs // 86400}d {secs % 86400 // 3600}h {secs % 3600 // 60}m"
 human = f"{span} remaining" if delta.total_seconds() > 0 else f"*** ALREADY EXPIRED {span} ago ***"
-print(f"{exp.isoformat(timespec='seconds')}|{human}|{claims.get('sub','')}")
+print(f"{exp.isoformat(timespec='seconds')}|{human}|{claims.get('sub','')}|{claims.get('iss','')}")
 PY
 }
+
+# ─── 0. Pre-flight — nothing is minted until every key passes ───────────────
+# Server + CA come out of the admin kubeconfig so the rendered file always
+# matches the live cluster (Q170S1: the VIP, 10.10.5.2 prd / .3 dev; MS-A2:
+# the node's own address, no VIP).
+declare -A SERVER CA_DATA
+
+for CLUSTER in dev prd; do
+  KCFG="${SRC[$CLUSTER]}"
+  [[ -f "$KCFG" ]] || { echo "FATAL: $CLUSTER admin kubeconfig not found: $KCFG" >&2; exit 1; }
+
+  SERVER[$CLUSTER]="$(KUBECONFIG="$KCFG" kubectl config view --minify \
+                        -o jsonpath='{.clusters[0].cluster.server}')"
+  CA_DATA[$CLUSTER]="$(KUBECONFIG="$KCFG" kubectl config view --raw --minify \
+                         -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
+  [[ -n "${SERVER[$CLUSTER]}" && -n "${CA_DATA[$CLUSTER]}" ]] \
+    || { echo "FATAL: could not read server/CA for $CLUSTER from $KCFG" >&2; exit 1; }
+
+  echo "==> $CLUSTER: $KCFG -> ${SERVER[$CLUSTER]}"
+
+  if is_build_address "${SERVER[$CLUSTER]}"; then
+    if [[ "$ALLOW_BUILD_ADDRESS" -eq 1 ]]; then
+      echo "    WARNING : MS-A2 BUILD address — this token dies at the re-address (--allow-build-address)" >&2
+    else
+      echo "FATAL: $CLUSTER server ${SERVER[$CLUSTER]} is an MS-A2 BUILD address." >&2
+      echo "       The endpoint is the token issuer, so the re-address to the final" >&2
+      echo "       address invalidates this token (kube-infra msa2 plan D12, § Cutover" >&2
+      echo "       inventory row 16(a)). Re-mint after the box has moved." >&2
+      exit 1
+    fi
+  fi
+
+  NODES="$(KUBECONFIG="$KCFG" kubectl get nodes -o name --request-timeout=15s \
+             | sed 's|^node/||' | paste -sd, -)" \
+    || { echo "FATAL: cannot list nodes on $CLUSTER (${SERVER[$CLUSTER]}) — nothing minted" >&2; exit 1; }
+  [[ -n "$NODES" ]] || { echo "FATAL: $CLUSTER reports no nodes — nothing minted" >&2; exit 1; }
+  echo "    nodes   : $NODES"
+done
+
+if [[ "${SERVER[dev]}" == "${SERVER[prd]}" ]]; then
+  echo "FATAL: dev and prd both point at ${SERVER[dev]} — the agent would watch one" >&2
+  echo "       cluster twice and the other not at all. Check --dev/--prd-kubeconfig." >&2
+  exit 1
+fi
 
 # ─── 1-4. Mint, verify, render — per cluster ─────────────────────────────────
 declare -A RENDERED
 
 for CLUSTER in dev prd; do
-  KCFG="$KUBECONFIG_DIR/kubeconfig-$CLUSTER"
-  [[ -f "$KCFG" ]] || { echo "FATAL: admin kubeconfig not found: $KCFG" >&2; exit 1; }
+  KCFG="${SRC[$CLUSTER]}"
 
   echo "==> $CLUSTER: minting token for $SA_NAMESPACE/$SA_NAME (requested $DURATION)"
   TOKEN="$(KUBECONFIG="$KCFG" kubectl -n "$SA_NAMESPACE" create token "$SA_NAME" \
              --duration="$DURATION")"
 
   # ── Step 2: what did we ACTUALLY get? ──
-  IFS='|' read -r EXP_AT REMAINING SUBJECT <<<"$(jwt_expiry "$TOKEN")"
+  IFS='|' read -r EXP_AT REMAINING SUBJECT ISSUER <<<"$(jwt_expiry "$TOKEN")"
   echo "    subject : $SUBJECT"
+  echo "    issuer  : $ISSUER"
   echo "    expires : $EXP_AT  ($REMAINING)"
 
   if [[ "$SUBJECT" != "system:serviceaccount:$SA_NAMESPACE:$SA_NAME" ]]; then
@@ -128,13 +250,13 @@ for CLUSTER in dev prd; do
     exit 1
   fi
 
-  # Pull server + CA out of the admin kubeconfig so the rendered file
-  # always matches the live cluster (VIP: 10.10.5.2 prd / 10.10.5.3 dev).
-  SERVER="$(KUBECONFIG="$KCFG" kubectl config view --raw --minify \
-              -o jsonpath='{.clusters[0].cluster.server}')"
-  CA_DATA="$(KUBECONFIG="$KCFG" kubectl config view --raw --minify \
-               -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
-  [[ -n "$SERVER" && -n "$CA_DATA" ]] || { echo "FATAL: could not read server/CA for $CLUSTER" >&2; exit 1; }
+  # The pre-flight judged the kubeconfig's server; this judges the token's
+  # own issuer, which is what the re-address actually invalidates.
+  if is_build_address "$ISSUER" && [[ "$ALLOW_BUILD_ADDRESS" -ne 1 ]]; then
+    echo "FATAL: $CLUSTER token issuer $ISSUER is an MS-A2 BUILD address — it dies at" >&2
+    echo "       the re-address (plan D12). Nothing was published." >&2
+    exit 1
+  fi
 
   OUT="$WORKDIR/cluster-agent-$CLUSTER.kubeconfig"
   cat > "$OUT" <<YAML
@@ -143,8 +265,8 @@ kind: Config
 clusters:
   - name: $CLUSTER
     cluster:
-      server: $SERVER
-      certificate-authority-data: $CA_DATA
+      server: ${SERVER[$CLUSTER]}
+      certificate-authority-data: ${CA_DATA[$CLUSTER]}
 users:
   - name: $SA_NAME
     user:

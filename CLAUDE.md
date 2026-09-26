@@ -557,6 +557,20 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > `services/proxy` path work, and with `--apply` writes Doppler and
 > redeploys. Run it without `--apply` first.
 >
+> **MS-A2 cutover (kube-infra msa2 plan § Cutover inventory row 16).** The two
+> keys are minted from `--dev-kubeconfig` / `--prd-kubeconfig`, defaulting to
+> `kube-infra/talos-os/kubeconfig-{dev,prd}` (the Q170S1 clusters). Move each
+> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**, one
+> cluster at a time: in the mixed period prd = msa2-prd and dev = kub-dev, so
+> pass only `--prd-kubeconfig`. Before minting anything the script prints each
+> key's server and nodes, and **refuses** a server on an MS-A2 BUILD address
+> (`10.10.5.17` / `.18`) and dev == prd. Talos makes the endpoint the token
+> issuer, so a token minted at the build address dies at the re-address (plan
+> D12): the 14-day blindness above, again. After minting it also checks the
+> token's own `iss` claim against the same addresses. `--allow-build-address`
+> overrides both for a deliberate short-lived test. Rollback (row 16) is a
+> re-run with the default kubeconfigs.
+>
 > Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
 > / `ClusterAgentRunsFailing` in kube-infra
 > `flux-cd/infrastructure/configs/base/prometheus-rules-cluster-agent.yaml`.
@@ -1383,7 +1397,9 @@ scripts/
   setup-minio-{buckets,users,lifecycle}.sh    # one-shot MinIO bootstrap
   render-cluster-agent-kubeconfigs.sh         # rotate the agent's SA tokens
                                               # (mint + verify granted expiry
-                                              #  + prove services/proxy works)
+                                              #  + prove services/proxy works;
+                                              #  per-key source kubeconfig,
+                                              #  refuses MS-A2 build addresses)
 ```
 
 ---
