@@ -624,10 +624,18 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 
 **Daily-digest architecture (short version).** Each 06:00 fire:
 
-1. Pulls 24h of `ALERTS{alertstate="firing"}` from Prometheus,
-   aggregates per `(alertname, fingerprint)` with chronicity
-   classification (chronic / flapping / active / self_healed / transient).
-   Watchdog is silently skipped.
+1. Pulls 24h of `ALERTS{alertstate="firing", alertname!="InfoInhibitor"}`
+   from Prometheus, aggregates per `(alertname, fingerprint)` with
+   chronicity classification (chronic / flapping / active / self_healed /
+   transient). **`InfoInhibitor` is dropped in the query** (2026-09-26,
+   kube-infra #1286). It is a severity=none meta-alert that restates "an
+   info alert exists in this namespace", and it also fires for info alerts
+   that are only *pending*. So it flapped with every CPUThrottlingHigh and
+   was filed as findings. **Watchdog is kept in the pull on purpose** and
+   skipped later (summary tables + the prompt). It keeps the history
+   non-empty, and `run_async` returns *before* log mining and the summary
+   when the history is empty. Excluding it would silently drop the tripwire
+   scan on every alert-quiet day.
 2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
    alerts (not for self_healed/transient — presumed noise).
 3. **P3: Mines Loki for notable log patterns** — namespaces with
@@ -637,6 +645,24 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    `certificate_expired`, `x509_expired`, `connection_refused`,
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
+   **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26, kube-infra
+   #1263/#1268/#1287). These negative filters drop lines that *record* a
+   keyword instead of reporting an event:
+   - apiserver `audit.k8s.io` records;
+   - the ARC runner's `INFO Worker]` job-message dump (PR bodies and
+     commit messages);
+   - indented lines that start with a quote. These are pretty-printed JSON
+     documents, in practice Trivy scan reports: kube-infra prints them
+     uncompressed (`scanJob.compressLogs: "false"`, #820), so every CVE
+     description that says "can panic" used to trip `panic`;
+   - Loki's own query log (`org_id=… query="…"`). Any Loki search for a
+     keyword, including this digest's own ratio query, used to plant that
+     keyword in `monitoring/loki-0` and trip the next digest.
+
+   Real failures keep matching. `digest_aggregator.py` documents the
+   measured evidence per filter, and the tests evaluate each tripwire
+   against captured record lines and real event lines (e.g. trivy's
+   `FATAL … image scan error`, the #1312 signal).
 4. **Reconciles state.db against live GH issue state** (2026-07-16,
    `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
    remaining open dedup_keys from state.db (LLM avoids semantic
@@ -763,6 +789,14 @@ preview. Yesterday's auto-closes when today's is filed. Body groups
 alerts by chronicity (chronic / flapping / active / self-healed /
 transient), with a `rolled into` column linking back to the per-
 Finding issues. Watchdog is silently excluded from the rendering.
+**Since 2026-09-26 the body also names every Loki query that failed**
+in a `⚠ Log-mining coverage gaps` section, for example
+`tripwire OOMKilled: ReadTimeout`. A tripwire that timed out was never
+checked, and before this it looked exactly like one that found nothing.
+Measured the day it was added: 8 of kub-dev's 10 tripwire queries hit the
+60s timeout (dev Loki is swamped by trivy-system's ~8M lines/h of runner
+re-scans, a kube-infra issue). The only trace was a WARNING in the
+container log.
 
 Email body is the same markdown rendered as plain-text + HTML
 alternative (HTML wraps in `<pre>` so monospace tables stay aligned

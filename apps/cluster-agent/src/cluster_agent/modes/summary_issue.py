@@ -244,6 +244,24 @@ def _render_log_patterns_table(patterns: list[LogPattern]) -> str:
     return "\n".join(rows) + "\n"
 
 
+def _render_log_mining_gaps(failures: list[str]) -> str:
+    """Name the Loki queries that failed this run.
+
+    A tripwire whose query timed out was never evaluated, so the absence
+    of a pattern for it is not a clean result. Without this section the
+    summary looks identical whether a tripwire found nothing or never
+    ran.
+    """
+    lines = "\n".join(f"- `{f}`" for f in failures)
+    return (
+        f"## ⚠ Log-mining coverage gaps ({len(failures)})\n\n"
+        "These Loki queries FAILED, so their signal was **not checked** "
+        "this run. No pattern for them means nothing. Repeated timeouts "
+        "point at Loki capacity (cluster-agent runbook, slow-Loki row).\n\n"
+        + lines + "\n"
+    )
+
+
 def render_summary_body(
     *,
     cluster: str,
@@ -254,6 +272,7 @@ def render_summary_body(
     window_hours: int,
     model: str,
     digest_summary: str,
+    log_mining_failures: list[str] | None = None,
 ) -> str:
     """Produce the markdown body for the per-cluster daily summary issue.
 
@@ -330,6 +349,8 @@ def render_summary_body(
             f"## Log patterns ({len(log_patterns)})\n\n"
             + _render_log_patterns_table(log_patterns)
         )
+    if log_mining_failures:
+        sections.append(_render_log_mining_gaps(log_mining_failures))
     sections.append(
         "---\n"
         f"`digest-summary:{cluster}:"
@@ -517,6 +538,7 @@ def emit_summary(
     window_hours: int,
     model: str,
     digest_summary: str,
+    log_mining_failures: list[str] | None = None,
 ) -> dict[str, bool]:
     """Top-level summary-delivery orchestrator.
 
@@ -541,6 +563,7 @@ def emit_summary(
         window_hours=window_hours,
         model=model,
         digest_summary=digest_summary,
+        log_mining_failures=log_mining_failures,
     )
 
     results: dict[str, bool] = {}

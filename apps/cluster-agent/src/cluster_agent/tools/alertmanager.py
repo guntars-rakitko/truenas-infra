@@ -26,6 +26,34 @@ _AM_NAMESPACE = "monitoring"
 _AM_SERVICE = "kube-prometheus-stack-alertmanager"
 _AM_PORT = 9093
 
+# The 24h history query behind the daily digest.
+#
+# `InfoInhibitor` is excluded at the source (kube-infra #1286). It is
+# kube-prometheus-stack's severity=none meta-alert from `general.rules`:
+#
+#     group by (namespace) (ALERTS{severity="info"} == 1)
+#       unless on (namespace) (... any firing warning|critical ...)
+#
+# It carries no information of its own. It restates "some info alert
+# exists in this namespace", and because its selector has no alertstate
+# matcher it also fires for info alerts that are only PENDING. So it
+# flaps with every CPUThrottlingHigh that crosses its threshold and
+# drops back before its `for:` elapses. Measured on prd 2026-09-26:
+# doppler-operator-system InfoInhibitor had 37 firing samples in 24h
+# while the CPUThrottlingHigh it mirrors had 2 firing and 34 pending.
+# The digest read that as "flapping 13x" and filed a finding (#1286,
+# plus the InfoInhibitor halves of #1263/#1312/#1313). An info alert
+# that actually fires still arrives as its own group.
+#
+# `Watchdog` is deliberately NOT excluded here. It is dropped later
+# (summary rendering + the digest prompt). Because it always fires, the
+# history is never empty on a healthy cluster, and
+# `daily_digest.run_async` returns early on an empty history BEFORE log
+# mining and the summary run. Excluding Watchdog at the source would
+# turn every alert-quiet day into a digest with no tripwire scan and no
+# summary.
+_ALERTS_HISTORY_PROMQL = 'ALERTS{alertstate="firing", alertname!="InfoInhibitor"}'
+
 
 @audit(tool="alertmanager_alerts")
 def alertmanager_alerts(
@@ -71,9 +99,10 @@ def alertmanager_history(
     into fire→resolve cycles and computes chronicity.
 
     We query with `alertstate="firing"` only (pending state is internal
-    to AM's grouping window; nothing we'd want to surface). step=60s
-    matches Prom's scrape interval — finer granularity would just
-    duplicate samples, coarser would lose short fires.
+    to AM's grouping window; nothing we'd want to surface), and without
+    the `InfoInhibitor` meta-alert (see `_ALERTS_HISTORY_PROMQL`).
+    step=60s matches Prom's scrape interval — finer granularity would
+    just duplicate samples, coarser would lose short fires.
     """
     import datetime as _dt
     from .prometheus import prometheus_query_range
@@ -81,7 +110,7 @@ def alertmanager_history(
     start = end - _dt.timedelta(hours=since_hours)
     return prometheus_query_range(
         cluster,
-        promql='ALERTS{alertstate="firing"}',
+        promql=_ALERTS_HISTORY_PROMQL,
         start=start.isoformat(timespec="seconds").replace("+00:00", "Z"),
         end=end.isoformat(timespec="seconds").replace("+00:00", "Z"),
         step=f"{step_seconds}s",
