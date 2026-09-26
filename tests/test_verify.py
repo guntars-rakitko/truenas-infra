@@ -116,8 +116,6 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
     monkeypatch.setattr(verify, "_dig_short",
                         lambda host, resolver: {
                             "nas.w1.lv": "10.10.5.10",
-                            "mc.w1.lv": "10.10.5.20",
-                            "pxe.w1.lv": "10.10.5.20",
                             "minio-prd.w1.lv": "10.10.5.20",
                             "minio-dev.w1.lv": "10.10.5.20",
                             "s3-prd.w1.lv": "10.10.10.10",
@@ -130,8 +128,6 @@ def test_run_returns_zero_when_all_pass(monkeypatch) -> None:
                             "kub-dev-03.w1.lv": "10.10.5.16",
                             "traefik-nas.w1.lv": "10.10.5.20",
                             "wiki.w1.lv": "10.10.5.20",
-                            "home.w1.lv": "10.10.5.20",
-                            "amtctl.w1.lv": "10.10.5.20",
                             "router.w1.lv": "10.10.0.1",
                             "sw-data.w1.lv": "10.10.0.2",
                             "sw-mgmt.w1.lv": "10.10.0.3",
@@ -190,14 +186,13 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"id": 1, "service": "nfs", "state": "RUNNING", "enable": True}],
         [{"id": 2, "service": "cifs", "state": "RUNNING", "enable": True}],
         [{"id": 3, "service": "ups", "state": "RUNNING", "enable": True}],
-        [{"name": "pxe", "state": "RUNNING"}],
+        # apps — the enabled apps of config/apps.yaml, as in the test above,
+        # so the ONLY failure is the missing pool
         [{"name": "minio-prd", "state": "RUNNING"}],
         [{"name": "minio-dev", "state": "RUNNING"}],
-        [{"name": "meshcentral", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
-        [{"name": "homepage", "state": "RUNNING"}],
-        [{"name": "amtctl", "state": "RUNNING"}],
+        [{"name": "cluster-agent", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 

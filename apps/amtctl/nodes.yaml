@@ -1,8 +1,12 @@
-# Node inventory for the amtctl dashboard.
+# Q170S1 AMT fleet inventory. The amtctl dashboard that owned this file was
+# retired 2026-09-23 (#149); it survives ONLY because bios-config's AMT tools
+# read it cross-repo (../truenas-infra/apps/amtctl/nodes.yaml) — see README.md.
+# Nothing in truenas-infra reads it. Move it to bios-config, then delete it.
+#
 # AMT endpoints — each ASUS Q170S1 node's ME firmware listens on
 # mgmt VLAN. Hostnames resolve via MikroTik DNS to 10.10.5.11..16.
 #
-# Role is descriptive only — drives the card subtitle in the UI.
+# Role is descriptive only.
 
 nodes:
   - name: kub-prd-01

@@ -28,7 +28,7 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
 - **NUT / MinIO services** — live here on the NAS; referenced by `kube-infra`. (The PXE server that `bios-config` also used was retired 2026-09-23 — see § Planned Services.)
-- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92.
+- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*` is no longer read by this repo — amtctl is retired; bios-config's AMT tools still read it, and it goes at the Q170S1 teardown, kube-infra plan § Cutover inventory row 19.)
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
 Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
@@ -924,10 +924,6 @@ wildcards.
 - `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`, `MINIO_KMS_SECRET_KEY_PRD`, `MINIO_AISTOR_LICENSE`
 - `minio-dev` → `MINIO_ROOT_USER_DEV`, `MINIO_ROOT_PASSWORD_DEV`, `MINIO_KMS_SECRET_KEY_DEV`, `MINIO_AISTOR_LICENSE` (one shared, org-scoped license key)
 - `cluster-agent` → its own Doppler project `cluster-agent/prd` (`_DOPPLER_PROJECT_PER_APP`), not `infrastructure/ops` — key list in § cluster-agent ops
-
-⚠ The dict still carries `amtctl` and `homepage` entries. Both apps were
-retired 2026-09-23 and are no longer in `config/apps.yaml`, so those entries
-are never read — dead legacy awaiting removal from `modules/apps.py`.
 
 **Inspect / edit:**
 

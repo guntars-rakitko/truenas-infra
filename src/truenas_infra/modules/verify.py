@@ -281,7 +281,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         checks.append(CheckResult("dns records", False, f"config load failed: {exc}"))
 
     # HTTPS endpoint probes — the user-facing URLs our services expose.
-    # Host headers go through Traefik (mc/pxe/minio-prd/minio-dev) or direct
+    # Host headers go through Traefik (minio-prd/minio-dev/wiki) or direct
     # (nas/traefik-nas/s3-prd/s3-dev). All must present a cert whose SAN
     # covers the host.
     # ⚠ TRIMMED 2026-09-23. This list was hardcoded and had drifted the same way

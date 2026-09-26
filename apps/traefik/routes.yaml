@@ -39,7 +39,6 @@ http:
       service: wiki
       entryPoints: [websecure]
       tls: {}
-    # Homepage dashboard — service catalog + widgets, declarative YAML only.
   services:
     minio-prd-console:
       loadBalancer:

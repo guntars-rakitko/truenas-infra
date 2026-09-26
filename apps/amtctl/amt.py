@@ -1,1 +1,0 @@
-../../../bios-config/amt/amt.py
