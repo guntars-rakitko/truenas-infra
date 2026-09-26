@@ -421,3 +421,184 @@ def test_connection_refused_tripwire_excludes_longhorn_detached_engine_noise():
     cr_query = next(q for (label, q) in _TRIPWIRE_PATTERNS if label == "connection_refused")
     assert '!= "Failed to get clone status"' in cr_query
     assert '!= "Failed to get purge status"' in cr_query
+
+
+# ── Record-not-event exclusions (kube-infra #1263/#1268/#1286/#1287) ──
+#
+# The tripwires are LogQL line filters executed by Loki, so "is the
+# filter string present" proves little. The tests below EVALUATE each
+# tripwire's filter chain against real log-line shapes captured from
+# dev/prd Loki on 2026-09-26, with a minimal evaluator for exactly the
+# LogQL subset `_TRIPWIRE_PATTERNS` uses. The evaluator raises on
+# anything else, so a future filter it cannot read fails loudly instead
+# of being silently skipped.
+
+import json as _json
+import re as _re
+
+_LOGQL_TOKEN = _re.compile(r'\s*(\|=|!=|\|~|!~|or\b|"(?:[^"\\]|\\.)*"|`[^`]*`)')
+
+
+def _logql_line_filter_matches(expr: str, line: str) -> bool:
+    """True if `line` passes every stage of a LogQL line-filter chain.
+
+    Supports only: `|=` / `!=` / `|~` / `!~`, each followed by one or
+    more `or`-joined double-quoted or backtick strings. Regex stages use
+    unanchored search, like Loki's RE2 MatchString.
+    """
+    expr = expr.strip()
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(expr):
+        m = _LOGQL_TOKEN.match(expr, pos)
+        if not m:
+            raise ValueError(f"unsupported LogQL at {expr[pos:]!r}")
+        tokens.append(m.group(1))
+        pos = m.end()
+
+    def literal(idx: int) -> str:
+        if idx >= len(tokens):
+            raise ValueError(f"filter stage without a value in {expr!r}")
+        tok = tokens[idx]
+        if tok.startswith("`"):
+            return tok[1:-1]
+        if tok.startswith('"'):
+            return _json.loads(tok)
+        raise ValueError(f"expected a string literal, got {tok!r}")
+
+    i = 0
+    while i < len(tokens):
+        op = tokens[i]
+        if op not in ("|=", "!=", "|~", "!~"):
+            raise ValueError(f"expected a filter operator, got {op!r}")
+        values = [literal(i + 1)]
+        i += 2
+        while i < len(tokens) and tokens[i] == "or":
+            values.append(literal(i + 1))
+            i += 2
+        if op in ("|~", "!~"):
+            hit = any(_re.search(v, line) for v in values)
+        else:
+            hit = any(v in line for v in values)
+        if hit != (op in ("|=", "|~")):
+            return False
+    return True
+
+
+def test_logql_evaluator_rejects_syntax_it_does_not_understand():
+    """Guard for the guard: an unparseable stage must raise, not pass."""
+    with pytest.raises(ValueError):
+        _logql_line_filter_matches('|= "x" | json', "x")
+    with pytest.raises(ValueError):
+        _logql_line_filter_matches('|= "x" |= ', "x")
+
+
+def _tripwire(label: str) -> str:
+    from cluster_agent.modes.digest_aggregator import _TRIPWIRE_PATTERNS
+    return next(q for (lbl, q) in _TRIPWIRE_PATTERNS if lbl == label)
+
+
+def test_every_tripwire_carries_every_record_exclusion():
+    from cluster_agent.modes.digest_aggregator import (
+        _TRIPWIRE_PATTERNS, _AUDIT_EXCLUDE, _RUNNER_JOB_MESSAGE_EXCLUDE,
+        _JSON_DOCUMENT_EXCLUDE, _LOKI_QUERY_LOG_EXCLUDE,
+    )
+    assert len(_TRIPWIRE_PATTERNS) == 10
+    for label, logql in _TRIPWIRE_PATTERNS:
+        for part in (_AUDIT_EXCLUDE, _RUNNER_JOB_MESSAGE_EXCLUDE,
+                     _JSON_DOCUMENT_EXCLUDE, _LOKI_QUERY_LOG_EXCLUDE):
+            assert part in logql, f"tripwire {label!r} is missing {part!r}"
+
+
+# (tripwire label, log line) pairs that are RECORDS of a keyword and must
+# NOT surface. Shapes copied from Loki, 2026-09-26.
+_RECORD_LINES = [
+    # Trivy scan report (compressLogs=false), trivy-system — #1263/#1268
+    ("panic", '          "Description": "Parsing an invalid SVCB or HTTPS RR can '
+              'panic when the size of a parameter value overflows the message buffer.",'),
+    ("panic", '          "Title": "golang.org/x/crypto/ssh: CertChecker callback can panic",'),
+    ("panic", '            "https://securityinfinity.com/research/'
+              'buger-jsonparser-negative-slice-panic-dos-2026",\n'),
+    ("fatal", '          "created_by": "RUN /bin/sh -c set -eux; apk add --no-cache '
+              'gcc make; ./configure --enable-fatal-warnings",'),
+    ("fatal", '          "Description": "brace-expansion through 5.0.7 hits a fatal '
+              'out-of-memory error on crafted input",'),
+    ("connection_refused",
+              '          "Description": "a peer closing early surfaces as connection refused",'),
+    # GitHub Actions runner job-message dump, actions-runner-system — #1287
+    ("OOMKilled", '[WORKER 2026-09-24 23:30:30Z INFO Worker]                       '
+                  '"v": "## Summary\\n\\nrunner pod was OOMKilled during Task D1b"'),
+    ("fatal",     '[WORKER 2026-09-26 10:14:26Z INFO Worker]                           '
+                  '"v": "fix(bootstrap): talosctl config new refuses: fatal: path exists"'),
+    ("evicted",   '[WORKER 2026-09-25 19:23:30Z INFO Worker]   "v": "pods Evicted during drain"'),
+    # Loki's own query log, monitoring/loki-0 (the digest's ratio query)
+    ("panic", 'level=info ts=2026-09-26T03:01:30.665988516Z caller=engine.go:274 '
+              'component=querier org_id=fake msg="executing query" '
+              'query="sum by (namespace)(count_over_time({namespace=~\\".+\\"} '
+              '|= \\"panic\\" or \\"fatal\\"[1d]))" query_hash=3073272766 type=range'),
+    ("fatal", 'level=info ts=2026-09-26T03:02:00.319641969Z caller=metrics.go:237 '
+              'component=querier org_id=fake latency=slow query="sum by (namespace)'
+              '(count_over_time({namespace=~\\".+\\"} |= \\"fatal\\"[1d]))" '
+              'query_hash=3073272766 query_type=metric'),
+    ("OOMKilled", 'ts=2026-09-26T11:38:37.527561108Z caller=spanlogger.go:152 '
+                  'middleware=QueryShard.astMapperware org_id=fake user=fake level=warn '
+                  'msg="failed mapping AST" err="context canceled" '
+                  'query="{namespace=~\\".+\\"} |= \\"OOMKilled\\""'),
+    # kube-apiserver audit record (pre-existing exclusion, kept)
+    ("OOMKilled", '{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata",'
+                  '"requestURI":"/api/v1/pods","reason":"OOMKilled"}'),
+]
+
+# (tripwire label, log line) pairs that are real EVENTS and must still
+# surface. The first two are the kube-infra #1312 image-scan failure: the
+# positive control the triage asked for.
+_EVENT_LINES = [
+    ("fatal", '2026-09-26T05:10:24Z\tFATAL\tFatal error\trun error: image scan error: '
+              'scan error: unable to initialize a scan service: unable to initialize '
+              'container image: unable to find the specified image "quay.io/minio/mc"'),
+    ("fatal", '{"level":"error","ts":"2026-09-26T08:50:29Z","logger":"reconciler.scan job",'
+              '"msg":"Scan job container","job":"trivy-system/scan-vulnerabilityreport-x",'
+              '"container":"uploader","status.message":"FATAL\\tFatal error\\trun error"}'),
+    ("panic", "panic: runtime error: invalid memory address or nil pointer dereference"),
+    ("panic", "\t/usr/local/go/src/runtime/panic.go:262 +0x1d"),
+    ("fatal", "fatal error: concurrent map writes"),
+    ("fatal", 'level=fatal ts=2026-09-26T03:00:00Z msg="failed to start" '
+              'err="open /data/wal: permission denied"'),
+    ("permission_denied", 'level=fatal ts=2026-09-26T03:00:00Z msg="failed to start" '
+                          'err="open /data/wal: permission denied"'),
+    ("OOMKilled", "Container runner in pod arc-runner-x was OOMKilled (exit code 137)"),
+    # Loki's REAL errors carry org_id= but no query= field: must still match.
+    ("connection_refused",
+              'level=error ts=2026-09-26T03:00:00Z caller=flush.go:143 org_id=fake '
+              'msg="failed to flush" err="dial tcp 10.10.10.10:9000: connect: connection refused"'),
+    # The runner's own errors are ERR, not INFO Worker: must still match.
+    ("connection_refused",
+              "[RUNNER 2026-09-24 23:30:30Z ERR  JobDispatcher] dial tcp: connection refused"),
+]
+
+
+_RECORD_IDS = ['trivy-description', 'trivy-title', 'trivy-reference-url', 'trivy-created-by', 'trivy-description-fatal', 'trivy-description-conn-refused', 'runner-job-message-oom', 'runner-job-message-fatal', 'runner-job-message-evicted', 'loki-query-log-engine', 'loki-query-log-metrics', 'loki-query-log-spanlogger', 'apiserver-audit-record']
+_EVENT_IDS = ['trivy-image-scan-FATAL-1312', 'trivy-operator-scan-job-error', 'go-panic', 'go-stack-frame', 'go-fatal-error', 'logfmt-fatal', 'logfmt-permission-denied', 'oomkilled-event', 'loki-real-flush-error', 'runner-ERR-line']
+assert len(_RECORD_IDS) == len(_RECORD_LINES) and len(_EVENT_IDS) == len(_EVENT_LINES)
+
+@pytest.mark.parametrize("label,line", _RECORD_LINES, ids=_RECORD_IDS)
+def test_tripwire_drops_record_lines(label, line):
+    assert not _logql_line_filter_matches(_tripwire(label), line), (
+        f"tripwire {label!r} still matches a record line: {line[:90]!r}"
+    )
+
+
+@pytest.mark.parametrize("label,line", _EVENT_LINES, ids=_EVENT_IDS)
+def test_tripwire_keeps_real_event_lines(label, line):
+    assert _logql_line_filter_matches(_tripwire(label), line), (
+        f"tripwire {label!r} no longer matches a real event: {line[:90]!r}"
+    )
+
+
+@pytest.mark.parametrize("label,line", _RECORD_LINES, ids=_RECORD_IDS)
+def test_record_lines_do_contain_the_keyword(label, line):
+    """Positive control for the drop test: each record line WOULD match
+    its tripwire's keyword stage without the exclusions, so a pass above
+    means the exclusions removed it, not a keyword typo."""
+    keyword_stage = _tripwire(label).split(" != ")[0].split(" !~ ")[0]
+    assert _logql_line_filter_matches(keyword_stage, line), (label, line[:90])

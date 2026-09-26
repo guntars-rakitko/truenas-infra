@@ -645,6 +645,24 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    `certificate_expired`, `x509_expired`, `connection_refused`,
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
+   **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26, kube-infra
+   #1263/#1268/#1287). These negative filters drop lines that *record* a
+   keyword instead of reporting an event:
+   - apiserver `audit.k8s.io` records;
+   - the ARC runner's `INFO Worker]` job-message dump (PR bodies and
+     commit messages);
+   - indented lines that start with a quote. These are pretty-printed JSON
+     documents, in practice Trivy scan reports: kube-infra prints them
+     uncompressed (`scanJob.compressLogs: "false"`, #820), so every CVE
+     description that says "can panic" used to trip `panic`;
+   - Loki's own query log (`org_id=… query="…"`). Any Loki search for a
+     keyword, including this digest's own ratio query, used to plant that
+     keyword in `monitoring/loki-0` and trip the next digest.
+
+   Real failures keep matching. `digest_aggregator.py` documents the
+   measured evidence per filter, and the tests evaluate each tripwire
+   against captured record lines and real event lines (e.g. trivy's
+   `FATAL … image scan error`, the #1312 signal).
 4. **Reconciles state.db against live GH issue state** (2026-07-16,
    `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
    remaining open dedup_keys from state.db (LLM avoids semantic

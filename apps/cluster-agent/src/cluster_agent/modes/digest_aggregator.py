@@ -240,8 +240,15 @@ def enrich_with_annotations(
 # benchmarks. The 5 failing patterns (panic/fatal/cert_expired/x509/
 # evicted) all used regex with backtracking quantifiers — exactly the
 # anti-pattern Loki docs warn against.
-# Negative filter applied to EVERY tripwire query: kube-apiserver
-# audit events (`audit.k8s.io/v1` JSON records) contain crash-keyword
+#
+# ── Negative filters: drop lines that RECORD a keyword ────────────────
+# Every tripwire query carries `_RECORD_EXCLUDE` (built below). Each
+# part drops a class of line that contains a crash keyword because it
+# is a RECORD of something (an API call, a CVE report, a job payload,
+# a query string), not because a component crashed.
+#
+# Part 1: kube-apiserver audit events (`audit.k8s.io/v1` JSON
+# records) contain crash-keyword
 # strings (OOMKilled, CrashLoopBackOff, panic, fatal, etc.) inside
 # their `requestURI` / `responseObject` fields — those are records of
 # API CALLS describing other pods' state, not actual component crashes.
@@ -254,17 +261,74 @@ def enrich_with_annotations(
 # #39 + #44).
 _AUDIT_EXCLUDE = ' != "audit.k8s.io"'
 
+# Part 2: GitHub Actions runner job-message dumps (kube-infra #1287,
+# earlier #912). The runner's Worker component logs the whole job
+# message at INFO. Each line looks like
+# `[WORKER 2026-09-24 23:30:30Z INFO Worker]   "v": "<PR body>"`, so PR
+# bodies and commit messages end up in Loki. In this homelab those texts
+# routinely discuss panics, OOMKills and refused connections. Measured on
+# dev 2026-09-26 (72h): EVERY actions-runner-system hit for panic (7),
+# fatal (28), OOMKilled (7), connection refused (7) and evicted (7) was
+# one of these lines. The filter matches only the Worker component's INFO
+# lines; the runner's ERR/WARN lines still reach the tripwires.
+_RUNNER_JOB_MESSAGE_EXCLUDE = ' != "INFO Worker]"'
+
+# Part 3: pretty-printed JSON documents, in practice Trivy scan reports
+# (kube-infra #1263/#1268). kube-infra's trivy-operator HelmRelease forces
+# `scanJob.compressLogs: "false"` (required: the compressed report
+# overflowed etcd, #820). So every scan job prints its full indented
+# report JSON to stdout and Alloy ships it to Loki. CVE descriptions say
+# "can panic" and "fatal". Measured on prd 2026-09-26 (24h): of 1000
+# trivy-system panic hits, 989 were `"Description":`, 2 `"Title":` and 9
+# were bare `"https://…panic-dos…",` entries from a `References` array.
+# The triage's key-list filter (Description/Title/created_by) would have
+# let those 9 through and kept the tripwire firing. So this filter is
+# structural: an indented line that starts with a quote is a member or
+# array element of a pretty-printed JSON document. It is data, not an
+# event. Real failures do not have that shape: trivy's
+# `<ts>\tFATAL\tFatal error\trun error: image scan error…` (the #1312
+# signal), the operator's compact `{"level":"error",…}`, Go's
+# `panic: …` at column 0 and stack frames (`\t/usr/…`, a slash after the
+# tab, not a quote) all survive. Live check on dev and prd (24h, all 10
+# tripwires, every namespace except trivy-system): the filter removed 0
+# lines. A regex is fine here: Loki applies it only to lines that already
+# passed the tripwire's `|=` substring filter.
+_JSON_DOCUMENT_EXCLUDE = r' !~ `^\s+"`'
+
+# Part 4: Loki's own query log. Loki logs every query it runs with the
+# full LogQL text (`caller=metrics.go|engine.go|roundtrip.go|
+# spanlogger.go … org_id=fake … query="…"`). Any query that contains a
+# keyword therefore plants that keyword in monitoring/loki-0's log. That
+# covers this digest's own ratio-outlier query, which lists
+# panic/fatal, as well as any operator or agent who searched Loki for
+# "OOMKilled". The next digest's tripwire then reports it: on 2026-09-26
+# the prd and dev OOMKilled tripwires both returned monitoring/loki
+# lines and nothing else. The filter needs `org_id=` before ` query="`,
+# so Loki's real errors (flush/ingest `level=error … org_id=fake
+# msg=… err="… connection refused"`, which carry no query field) still
+# match.
+_LOKI_QUERY_LOG_EXCLUDE = r' !~ `org_id=.* query="`'
+
+# Cheap substring filters first, regexes last. Loki evaluates the stages
+# left to right, so the regexes only see what is left.
+_RECORD_EXCLUDE = (
+    _AUDIT_EXCLUDE
+    + _RUNNER_JOB_MESSAGE_EXCLUDE
+    + _JSON_DOCUMENT_EXCLUDE
+    + _LOKI_QUERY_LOG_EXCLUDE
+)
+
 _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
-    ("panic",                '|= "panic" or "Panic" or "PANIC"' + _AUDIT_EXCLUDE),
-    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"' + _AUDIT_EXCLUDE),
-    ("OOMKilled",            '|= "OOMKilled"' + _AUDIT_EXCLUDE),
-    ("CrashLoopBackOff",     '|= "CrashLoopBackOff"' + _AUDIT_EXCLUDE),
-    ("ImagePullBackOff",     '|= "ImagePullBackOff"' + _AUDIT_EXCLUDE),
+    ("panic",                '|= "panic" or "Panic" or "PANIC"' + _RECORD_EXCLUDE),
+    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"' + _RECORD_EXCLUDE),
+    ("OOMKilled",            '|= "OOMKilled"' + _RECORD_EXCLUDE),
+    ("CrashLoopBackOff",     '|= "CrashLoopBackOff"' + _RECORD_EXCLUDE),
+    ("ImagePullBackOff",     '|= "ImagePullBackOff"' + _RECORD_EXCLUDE),
     # certificate/x509 expiry — two AND-chained substrings replace the
     # `.{0,30}` quantifier regex. Loki processes left-to-right, so
     # `certificate` filters down first, then `expired` on the survivors.
-    ("certificate_expired",  '|= "certificate" |= "expired"' + _AUDIT_EXCLUDE),
-    ("x509_expired",         '|= "x509" |= "expired"' + _AUDIT_EXCLUDE),
+    ("certificate_expired",  '|= "certificate" |= "expired"' + _RECORD_EXCLUDE),
+    ("x509_expired",         '|= "x509" |= "expired"' + _RECORD_EXCLUDE),
     # Simpler than the original — most "dial tcp ... connect: connection
     # refused" lines contain exactly this substring, no need for the
     # full structured match.
@@ -277,13 +341,14 @@ _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
     # refused because the engine pod doesn't exist. Not a real failure
     # signal — expected lifecycle. Hit on 2026-05-28 (cluster-agent-
     # sandbox #43, renovate-cache pvc-0ce5a477).
-    ("connection_refused",   '|= "connection refused"' + _AUDIT_EXCLUDE
+    ("connection_refused",   '|= "connection refused"'
                              + ' != "Failed to get clone status"'
-                             + ' != "Failed to get purge status"'),
-    ("permission_denied",    '|= "permission denied"' + _AUDIT_EXCLUDE),
+                             + ' != "Failed to get purge status"'
+                             + _RECORD_EXCLUDE),
+    ("permission_denied",    '|= "permission denied"' + _RECORD_EXCLUDE),
     # Kubelet emits `Evicted` in Pod event reasons (capital E); some
     # kubelet log paths use lowercase. Cover both.
-    ("evicted",              '|= "Evicted" or "evicted"' + _AUDIT_EXCLUDE),
+    ("evicted",              '|= "Evicted" or "evicted"' + _RECORD_EXCLUDE),
 ]
 
 # Secret-redaction regexes — applied to every log line before it's
