@@ -86,37 +86,65 @@
 #      whose PKI no longer matches the staged config. Polling such an address
 #      would read "up" until the 300 s backstop — the exact burn the kube-infra
 #      cutover inventory warns about (row 15). So an MS-A2 address joins the poll
-#      only if its shutdown call returned 0. rc!=0 means no node of THAT cluster
-#      accepted it (no route / dial timeout / capped by rule (c), rc=124 / x509
-#      unknown authority / maintenance mode), so nothing this script does would
-#      bring that address down and waiting for it only drains the battery.
-#   b) --wait=false, so rc is exactly "the node accepted the Shutdown RPC". With
-#      the default --wait, talosctl then tracks events and a tracker error after
-#      the RPC succeeded would ALSO be rc!=0 — which (a) would misread as "not
+#      only if its shutdown call returned 0. rc!=0 means the shutdown was not
+#      delivered to a node of THAT cluster (no route / dial timeout / capped by
+#      rule (c), rc=124 / x509 unknown authority / maintenance mode), so nothing
+#      this script does would bring that address down and waiting for it only
+#      drains the battery.
+#      ⚠ This protects an address that is ONLY in an MS-A2 list: the BUILD
+#      addresses. The FINAL addresses are ALSO in PRD_NODES — see "BOTH
+#      addresses" below.
+#   b) --wait=false, so rc=0 means the Version pre-check AND the Shutdown RPC
+#      both succeeded, and rc!=0 means the shutdown was not delivered. (talosctl
+#      v1.14's --wait=false branch first runs helpers.ClientVersionCheck — a
+#      Version RPC — and returns before any Shutdown if it fails, so os:operator
+#      must keep Version access; the setup script's --print-checks `version`
+#      call proves that pre-flight for every pair.) With the default --wait,
+#      talosctl instead tracks events after the RPC, and a tracker error after a
+#      delivered shutdown would ALSO be rc!=0 — which (a) would misread as "not
 #      delivered". Waiting is the poll's job here, as it is for every node.
-#   c) Every MS-A2 call is capped at MSA2_CALL_TIMEOUT via coreutils `timeout`,
-#      so an address that swallows packets can never hold up the wait loop (and
-#      with it the poll and the NAS halt) for the other clusters.
+#   c) Every MS-A2 call is capped at MSA2_CALL_TIMEOUT via coreutils `timeout`.
+#      That BOUNDS the delay, it does not remove it: the poll, and so the NAS
+#      halt, starts only after every call has returned, so an address that
+#      swallows packets holds everything up by at most MSA2_CALL_TIMEOUT+5 s.
+#      Today the ~187 s Q170S1 calls hide it; after the cutovers those fail fast
+#      and the cap is the delay (see MSA2_CALL_TIMEOUT for why 60 s).
 #   --force stays (see the paragraph above): a single-node drain cannot finish.
 #
 # BOTH addresses of each box are listed — BUILD first, FINAL (cutover) second:
 # msa2-prd 10.10.5.17 → 10.10.5.11, msa2-dev 10.10.5.18 → 10.10.5.12 (kube-infra
-# talos-os/estates.yaml, plan D12). Rule (a) makes the address that is not the
-# box's today a no-op, so this script needs NO edit at either cutover or at a
-# rollback. Today .11/.12 are kub-prd-01/-02: the msa2 config is rejected there
-# (x509 — another cluster's CA), which executes nothing, and those two are
-# polled through the Q170S1 list regardless. After prd's cutover .11 is msa2-prd:
-# the Q170S1 prd config is rejected there instead, the msa2-prd config is
-# accepted, and .11 is polled once (the poll set is de-duplicated). Even a
-# mis-aimed ACCEPTED shutdown would be harmless: this script exists to shut
-# down every node on the rack.
+# talos-os/estates.yaml, plan D12), so this script needs NO edit at either
+# cutover or at a rollback. The address that is not the box's today is rejected
+# (x509 — another cluster's CA — or no route), which executes nothing. Today
+# .11/.12 are kub-prd-01/-02, polled through the Q170S1 list. After prd's
+# cutover .11 is msa2-prd: the Q170S1 prd config is rejected there instead, the
+# msa2-prd config is accepted, and .11 is polled once (the poll set is
+# de-duplicated). Even a mis-aimed ACCEPTED shutdown would be harmless: this
+# script exists to shut down every node on the rack.
+#
+# ⚠ RULE (a) DOES NOT REACH THE FINAL ADDRESSES. .11 and .12 are also in
+# PRD_NODES, and the Q170S1 rule polls those whatever the rc. So from prd's
+# cutover until PRD_NODES is deleted at prd's teardown, an msa2 box at .11 (or
+# .12) that does NOT accept its shutdown — maintenance mode, config not staged,
+# a stale PKI — is polled to the 300 s backstop, exactly like a Q170S1 node that
+# rejects. That box is not shut down either way; the cost is 300 s of battery.
+# Pinned by tests/test_ups_orchestrator.py (test_final_address_that_does_not_
+# accept_is_polled_to_the_backstop). The mitigation is procedural: re-stage
+# after every `bootstrap.sh msa2-<env>` menu 10 and run --print-checks.
 #
 # ⚠ UNKNOWN (2026-09-26): whether the MS-A2 boxes are on this NAS's UPS (apc1).
+#   The DESIGN assumes they are (kube-infra docs/msa2-audit/02-design-decisions.md
+#   § 10 gate 7 plans a real UPS drill to "confirm both new boxes go down" and
+#   sizes the UPS load as "~2×65–100 W + NAS 25 W + networking 70 W") — but
+#   nothing confirms it physically. Either way every Drill A (`upsmon -c fsd`)
+#   now takes the msa2 clusters down too: power-cycled back up if on apc1, left
+#   OFF if not.
 #   ON apc1 → shut down cleanly here; apc1's kill-power cycle + BIOS "AC power
 #     loss: Always On" (both boxes; kube-infra plan G1 / H2) boots them again,
 #     like the Q170S1 nodes.
 #   NOT on apc1, real outage → they lost power when the mains did; the call fails
-#     fast (no route) and rule (a) keeps them out of the poll.
+#     fast (no route) and rule (a) keeps them out of the poll (at a FINAL address
+#     the Q170S1 list still probes it, and a dark box reads as down).
 #   NOT on apc1 but still powered (a drill on mains, or a second UPS) → they are
 #     shut down cleanly and STAY OFF until someone powers them on, because their
 #     AC never drops. An availability cost, never a data one — and the opposite
@@ -164,15 +192,19 @@ LOG=${UPS_ORCH_LOG:-/mnt/tank/system/nut/last-node-shutdown.log}
 # below hardcodes a count.
 #
 # Q170S1 (kub-prd, kub-dev) — LIVE until each cluster's cutover, then its
-# rollback target. Keep both lists and both configs staged until teardown
-# (kube-infra plan § Cutover inventory row 15); DELETE them only then.
+# rollback target. Keep both lists and both configs staged until that cluster's
+# teardown (kube-infra plan § Cutover inventory row 15). ⚠ Teardown is a code
+# change with its own PR, not a deletion of these lines: under `set -u` a
+# leftover reference to a deleted list aborts this script BEFORE it fires the
+# msa2 shutdowns or halts the NAS. CLAUDE.md § UPS / NUT "At teardown" lists
+# every reference, here and in setup-talos-shutdown-orchestrator.sh.
 DEV_NODES="10.10.5.14 10.10.5.15 10.10.5.16"
 PRD_NODES="10.10.5.11 10.10.5.12 10.10.5.13"
 Q170S1_NODES="$DEV_NODES $PRD_NODES"
 
 # MS-A2 (msa2-prd, msa2-dev) — one node each, BUILD address then FINAL address.
-# Both stay listed through cutover and rollback (see "MS-A2" in the header for
-# why that is safe); drop the BUILD address at teardown.
+# Both stay listed through cutover and rollback (see "MS-A2" in the header);
+# drop the BUILD address at that cluster's teardown.
 MSA2_PRD_NODES="10.10.5.17 10.10.5.11"
 MSA2_DEV_NODES="10.10.5.18 10.10.5.12"
 
@@ -181,9 +213,15 @@ TIMEOUT=${UPS_ORCH_TIMEOUT:-300}  # 5 min poll backstop so the NAS never hangs f
               # down (poll then needed only 8s), so this is pure cushion.
 POLL=${UPS_ORCH_POLL:-10}         # seconds between apid liveness sweeps
 MSA2_CALL_TIMEOUT=${UPS_ORCH_MSA2_CALL_TIMEOUT:-60}  # cap per MS-A2 shutdown call (rule c).
-              # --wait=false returns as soon as the RPC is answered; an absent
-              # box fails in ~3 s (no ARP reply) and a silently-dropping one in
-              # ~20 s (talosctl's MinConnectTimeout), so 60 s is pure headroom.
+              # A delivered shutdown returns in well under a second (--wait=false);
+              # an absent box fails in ~3 s (no ARP reply) and a silently-dropping
+              # one in ~20 s (talosctl's MinConnectTimeout), so neither needs the
+              # cap. It is for a call that connects and then hangs, and it stays
+              # HIGH on purpose: a cap that fires on a slow but delivered shutdown
+              # reads as rc=124, keeps that box out of the poll, and lets the NAS
+              # halt (and apc1 cut power 90 s later) while it is still stopping
+              # Postgres. A high cap costs at most 65 s of battery, and only when
+              # a call hangs. Pinned by a test; re-measure before lowering it.
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
@@ -268,13 +306,17 @@ for entry in "${pids[@]}"; do
       if [ "$rc" -eq 0 ]; then
         accepted="$accepted $ip"
       else
-        log "  $cl $ip did not accept — NOT polled (no box here, maintenance mode, or another cluster's PKI)"
+        case " $Q170S1_NODES " in
+          *" $ip "*) log "  $cl $ip did not accept — still polled, via the Q170S1 list (a FINAL address: see the header)" ;;
+          *) log "  $cl $ip did not accept — NOT polled (no box here, maintenance mode, or another cluster's PKI)" ;;
+        esac
       fi ;;
   esac
 done
 
-# The poll set: every Q170S1 node, whatever its rc (unchanged behaviour), plus
-# the accepted MS-A2 addresses, each address once.
+# The poll set: every Q170S1 node, whatever its rc (unchanged behaviour — and
+# that includes the FINAL addresses .11/.12, see the header), plus the accepted
+# MS-A2 addresses, each address once.
 POLL_NODES="$Q170S1_NODES"
 for ip in $accepted; do
   case " $POLL_NODES " in

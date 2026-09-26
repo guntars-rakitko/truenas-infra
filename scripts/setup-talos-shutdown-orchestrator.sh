@@ -18,10 +18,12 @@
 # The msa2 configs are OPTIONAL on purpose: a cluster that is not built yet
 # (msa2-prd until kube-infra plan Part H) has no key, and its absence must not
 # block re-staging the live path. The orchestrator skips a cluster whose config
-# is not staged. ⚠ An msa2 config is never DELETED from the NAS by this script:
-# a stale one is harmless (its shutdown is rejected, and a rejected address is
-# not waited for), but re-run this script after every `bootstrap.sh <msa2-env>`
-# menu 10 so the staged copy tracks Doppler.
+# is not staged. ⚠ An msa2 config is never DELETED from the NAS by this script,
+# and a STALE one is not harmless: its shutdown is rejected, so that box is not
+# shut down at all, and at a FINAL address (.11/.12, also in the Q170S1 prd list
+# until prd's teardown) the orchestrator then polls it to the 300 s backstop.
+# Re-run this script after every `bootstrap.sh <msa2-env>` menu 10 so the
+# staged copy tracks Doppler, and run the printed check.
 #
 # `--print-checks` prints the authenticated post-staging check (below) and exits;
 # it needs no credentials and touches nothing.
@@ -81,8 +83,11 @@
 #     menu 10 (`TALOS_NAS_SHUTDOWN_CONFIG_$(_doppler_suffix)`: msa2-dev →
 #     MSA2_DEV), 10-year os:operator, against that cluster's OWN CA.
 #
-# Run it as (the orchestrator's staged copy is whatever this checkout holds, so
-# run it from an up-to-date `main`):
+# Run it as (the orchestrator it uploads is whatever THIS checkout holds, so
+# bring `main` up to date first — a stale checkout re-stages the old script and
+# every credential check still passes; the printed check compares the staged
+# script's sha256 with this checkout's):
+#   cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline
 #   doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh
 #
 # Pin TALOSCTL_VERSION to the RUNNING cluster version.
@@ -133,33 +138,49 @@ check_pairs() {
 
 # The post-staging check (kube-infra plan § Cutover inventory row 15, S1-10/S1-33):
 # the STAGED binary + STAGED configs, as root on the NAS, against every address
-# the orchestrator targets. One ssh, one sudo prompt (talosctl is not on
+# the orchestrator targets, plus the sha256 of the STAGED orchestrator — the
+# credential checks alone cannot tell whether the NAS runs this checkout's
+# script or an older one. One ssh, one sudo prompt (talosctl is not on
 # truenas_admin's NOPASSWD allowlist, so it needs the TTY).
 print_checks() {
-  local pairs body
+  local pairs body want head
   pairs="$(check_pairs | tr '\n' ' ')"
   pairs="${pairs% }"
   [[ -n "$pairs" ]] || return 1
+  want="$(shasum -a 256 "$ORCH_LOCAL" | awk '{print $1}')"
+  head="$(git -C "$REPO" log -1 --format='%h %s' 2>/dev/null || echo 'not a git checkout')"
+  if [[ -n "$(git -C "$REPO" status --porcelain -- scripts/nas-ups-orchestrator.sh 2>/dev/null)" ]]; then
+    head="$head — ⚠ WITH UNCOMMITTED EDITS to nas-ups-orchestrator.sh"
+  fi
   # Single-quoted: the \$ reach the NAS login shell, which turns them into $
   # for `bash -c`.
   # shellcheck disable=SC2016
-  body='T=/mnt/tank/system/talos; \$T/talosctl version --client --short; for p in PAIRS; do c=\${p%@*}; n=\${p#*@}; echo; echo == \$c @ \$n; if [ -f \$T/\$c ]; then \$T/talosctl --talosconfig \$T/\$c -n \$n -e \$n version --short; else echo not staged; fi; done'
+  body='T=/mnt/tank/system/talos; sha256sum \$T/nas-ups-orchestrator.sh; \$T/talosctl version --client --short; for p in PAIRS; do c=\${p%@*}; n=\${p#*@}; echo; echo == \$c @ \$n; if [ -f \$T/\$c ]; then \$T/talosctl --talosconfig \$T/\$c -n \$n -e \$n version --short; else echo not staged; fi; done'
   body="${body/PAIRS/$pairs}"
   echo "  Authenticated check of every staged (config, node) pair — one sudo prompt:"
   echo
   printf "  ssh -t truenas_admin@%s 'sudo bash -c \"%s\"'\n" "${TRUENAS_HOST:-nas.w1.lv}" "$body"
   echo
-  echo "  Expect Client: ${TALOSCTL_VERSION}, then per pair ONE of:"
-  echo "    - Server: v1.14.x — the address is that cluster's node and the config works;"
+  echo "  Expect first the staged orchestrator's sha256, which must be"
+  echo "    ${want}"
+  echo "  (this checkout: ${head})."
+  echo "  A different hash means the NAS runs another version of the script,"
+  echo "  whatever the checks below say."
+  echo "  Then Client: ${TALOSCTL_VERSION}, then per pair ONE of:"
+  echo "    - Server: v1.14.x — the address is that cluster's node and the config works"
+  echo "      (this is also the Version pre-check an msa2 shutdown makes first);"
   echo "    - x509 / unknown authority — the address is ANOTHER cluster's node (before"
   echo "      the cutovers msa2-*@10.10.5.11 and @.12; after them prd@.11, prd@.12), or"
   echo "      that cluster's box is in Talos maintenance mode;"
   echo "    - a dial error / timeout — no box answers (msa2-prd until it is built, an"
   echo "      old node whose cord is pulled);"
   echo "    - 'not staged' — that msa2 cluster's Doppler key did not exist at staging."
-  echo "  The orchestrator skips all but the first, BY DESIGN. So read the result per"
-  echo "  box: every box that is up and installed must show Server: for its OWN config"
-  echo "  at its CURRENT address — anything else there means it would NOT be shut down."
+  echo "  Read the result per box: every box that is up and installed must show"
+  echo "  Server: for its OWN config at its CURRENT address — anything else there"
+  echo "  means it would NOT be shut down. The orchestrator does not wait for an msa2"
+  echo "  BUILD address (.17/.18) that fails BY DESIGN; but .11/.12 are also in the"
+  echo "  Q170S1 prd list until prd's teardown, so an msa2 box there that fails is"
+  echo "  also polled to the 300 s backstop."
 }
 
 if [[ "${1:-}" == "--print-checks" ]]; then

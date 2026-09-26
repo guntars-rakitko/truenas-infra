@@ -85,13 +85,18 @@ unit is the post-RMA "v2" and has **no eMMC**: the `boot-pool` lives on the
    - Confirm `/mnt/tank/system/talos/{talosctl,dev-shutdown.talosconfig,prd-shutdown.talosconfig,nas-ups-orchestrator.sh}`
      survived the pool import — plus `msa2-{dev,prd}-shutdown.talosconfig` for
      each MS-A2 cluster whose `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_*` key exists
-     (list names only — never read the configs); if not, re-run
-     `doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh`.
-     Then prove every credential still authenticates, in one ssh: run
-     `./scripts/setup-talos-shutdown-orchestrator.sh --print-checks` and paste
-     the command it prints (it lists every config/address pair the orchestrator
-     targets and which failures are expected — `CLAUDE.md` § UPS / NUT, *MS-A2
-     in the fan-out*).
+     (list names only — never read the configs); if not, re-stage from an
+     up-to-date `main` (the script uploads whatever the checkout holds):
+     ```bash
+     cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline
+     doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh
+     ```
+     Then prove the staged orchestrator is this checkout's and every credential
+     still authenticates, in one ssh: run
+     `cd ~/github/truenas-infra && ./scripts/setup-talos-shutdown-orchestrator.sh --print-checks`
+     and paste the command it prints (it checks the staged script's sha256 and
+     every config/address pair the orchestrator targets, and says which failures
+     are expected — `CLAUDE.md` § UPS / NUT, *MS-A2 in the fan-out*).
    - Re-validate the chain with **Drill A** (see
      `wiki/docs/runbooks/ups-operations.md`).
 

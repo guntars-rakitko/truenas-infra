@@ -20,11 +20,15 @@ Every external the script touches is stubbed. The model of the rack:
 
 The Q170S1 tests pin the old path: the six calls keep their exact argv, run
 unbounded, and a Q170S1 node is polled whatever its rc — the legacy behaviour
-this change keeps on purpose while the old estate is live.
+this change keeps on purpose while the old estate is live. Because the msa2
+FINAL addresses (.11/.12) are also in the Q170S1 prd list, that legacy rule
+reaches them too: test_final_address_that_does_not_accept_is_polled_to_the_
+backstop pins it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -173,8 +177,10 @@ def run_orchestrator(
     talosctl: bool = True,
     timeout: int = 20,
     poll: int = 1,
-    msa2_call_timeout: int = 60,
+    msa2_call_timeout: int | None = 60,
 ) -> Run:
+    """msa2_call_timeout=None leaves UPS_ORCH_MSA2_CALL_TIMEOUT unset, so the
+    script's own production default applies."""
     state, talos_dir, bindir = tmp_path / "state", tmp_path / "talos", tmp_path / "bin"
     for d in (
         state,
@@ -210,8 +216,11 @@ def run_orchestrator(
         UPS_ORCH_HALT=str(bindir / "halt"),
         UPS_ORCH_TIMEOUT=str(timeout),
         UPS_ORCH_POLL=str(poll),
-        UPS_ORCH_MSA2_CALL_TIMEOUT=str(msa2_call_timeout),
     )
+    if msa2_call_timeout is None:
+        env.pop("UPS_ORCH_MSA2_CALL_TIMEOUT", None)
+    else:
+        env["UPS_ORCH_MSA2_CALL_TIMEOUT"] = str(msa2_call_timeout)
     t0 = time.monotonic()
     proc = subprocess.run([bash, str(ORCH)], env=env, capture_output=True, text=True, timeout=120)
     elapsed = time.monotonic() - t0
@@ -302,7 +311,9 @@ def test_msa2_reachable_is_shut_down_with_force_and_waited_for(tmp_path: Path, b
     # its FINAL address is kub-prd-02 today: another CA, so rejected, and that
     # rejection must not add a poll entry (.12 is polled once, via Q170S1)
     assert f"] msa2-dev {MSA2_DEV_FINAL} shutdown --force rc=1\n" in run.log
-    assert f"msa2-dev {MSA2_DEV_FINAL} did not accept — NOT polled" in run.log
+    assert (
+        f"msa2-dev {MSA2_DEV_FINAL} did not accept — still polled, via the Q170S1 list" in run.log
+    )
 
 
 # ── MS-A2 unreachable / not built / maintenance mode ─────────────────────────
@@ -325,17 +336,61 @@ def test_msa2_unbuilt_and_maintenance_mode_never_burn_the_backstop(
     assert "polling apid on 6 node(s)" in run.log
 
 
-def test_msa2_call_that_hangs_is_capped_and_blocks_nothing(tmp_path: Path, bash: str) -> None:
-    """An address that swallows packets must not hold up the wait loop — and with
-    it the poll and the NAS halt — for everybody else."""
+def _log_time(line: str) -> int:
+    """Epoch seconds of a `[%F %T] …` log line."""
+    stamp = line[1:20]
+    return int(time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S")))
+
+
+def test_msa2_call_that_hangs_delays_the_poll_by_at_most_the_cap(tmp_path: Path, bash: str) -> None:
+    """An address that swallows packets is BOUNDED, not free: the poll (and so the
+    NAS halt) starts only after every call has returned, so a hung msa2 call
+    delays it by up to the cap — never longer."""
+    cap = 2
     nodes = q170s1_live()
     nodes[MSA2_PRD_BUILD] = Node(MSA2_PRD, hang=True)
-    run = run_orchestrator(tmp_path, bash, nodes, staged=(PRD, DEV, MSA2_PRD), msa2_call_timeout=2)
+    run = run_orchestrator(
+        tmp_path, bash, nodes, staged=(PRD, DEV, MSA2_PRD), msa2_call_timeout=cap
+    )
     assert_clean_finish(run)
     assert run.elapsed < 15, f"took {run.elapsed:.1f}s — the hung call was not capped"
     assert f"] msa2-prd {MSA2_PRD_BUILD} shutdown --force rc=124\n" in run.log
     assert f"{MSA2_PRD_BUILD} did not accept — NOT polled" in run.log
-    assert all(w.startswith("--kill-after=5 2 ") for w in run.lines("timeout.log"))
+    assert all(w.startswith(f"--kill-after=5 {cap} ") for w in run.lines("timeout.log"))
+    lines = run.log.splitlines()
+    t_start = _log_time(next(ln for ln in lines if "orchestrator START" in ln))
+    t_poll = _log_time(next(ln for ln in lines if "until down:" in ln))
+    # the Q170S1 calls return at once here, so the gap is the hung call's cap
+    assert cap - 1 <= t_poll - t_start <= cap + 2, (t_start, t_poll)
+
+
+def test_msa2_call_cap_production_default_is_60s(tmp_path: Path, bash: str) -> None:
+    """Every other test overrides the cap through the seam; this one leaves it
+    unset, so an edit to the script's default turns it red."""
+    nodes = q170s1_live()
+    nodes[MSA2_DEV_BUILD] = Node(MSA2_DEV)
+    run = run_orchestrator(
+        tmp_path, bash, nodes, staged=(PRD, DEV, MSA2_PRD, MSA2_DEV), msa2_call_timeout=None
+    )
+    assert_clean_finish(run)
+    wrapped = run.lines("timeout.log")
+    assert len(wrapped) == 4, wrapped
+    assert all(w.startswith("--kill-after=5 60 ") for w in wrapped), wrapped
+
+
+def test_production_defaults_are_pinned() -> None:
+    """The UPS_ORCH_* seams replace these in every run, so pin the literals the
+    NAS actually runs with."""
+    text = ORCH.read_text()
+    for literal in (
+        "UPS_ORCH_TALOS_DIR:-/mnt/tank/system/talos}",
+        "UPS_ORCH_HALT:-/sbin/shutdown}",
+        "UPS_ORCH_LOG:-/mnt/tank/system/nut/last-node-shutdown.log}",
+        "UPS_ORCH_TIMEOUT:-300}",
+        "UPS_ORCH_POLL:-10}",
+        "UPS_ORCH_MSA2_CALL_TIMEOUT:-60}",
+    ):
+        assert text.count(literal) == 1, literal
 
 
 # ── the address moves: no edit needed at cutover or rollback ─────────────────
@@ -354,6 +409,28 @@ def test_after_prd_cutover_no_edit_needed(tmp_path: Path, bash: str) -> None:
     assert run.log.count("until down:") == 1
     polled = run.log.split("until down: ", 1)[1].split("\n", 1)[0].split()
     assert sorted(polled) == sorted(set(polled)), polled
+
+
+def test_final_address_that_does_not_accept_is_polled_to_the_backstop(
+    tmp_path: Path, bash: str
+) -> None:
+    """KNOWN LIMITATION, pinned so it stays visible: rule (a) protects only the
+    BUILD addresses. After prd's cutover msa2-prd sits at .11, which is ALSO in
+    the Q170S1 prd list, and that list is polled whatever the rc. So msa2-prd at
+    .11 in Talos maintenance mode (config staged, shutdown rejected) burns the
+    backstop until PRD_NODES is deleted at prd's teardown."""
+    nodes = {ip: Node(DEV) for ip in Q170S1_DEV}
+    nodes[MSA2_PRD_FINAL] = Node(MAINTENANCE)
+    nodes[MSA2_DEV_BUILD] = Node(MSA2_DEV)
+    run = run_orchestrator(tmp_path, bash, nodes, staged=(PRD, DEV, MSA2_PRD, MSA2_DEV), timeout=3)
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert f"] msa2-prd {MSA2_PRD_FINAL} shutdown --force rc=1\n" in run.log
+    assert (
+        f"msa2-prd {MSA2_PRD_FINAL} did not accept — still polled, via the Q170S1 list" in run.log
+    )
+    assert MSA2_PRD_FINAL in run.probes
+    assert "TIMEOUT 3s reached (1/7 still up) — halting NAS anyway" in run.log
+    assert len(run.halts) == 1
 
 
 def test_after_both_cutovers_no_edit_needed(tmp_path: Path, bash: str) -> None:
@@ -414,9 +491,27 @@ def test_print_checks_covers_every_pair_and_its_quoting_survives_the_nas_shell(
     (talos / "talosctl").chmod(0o755)
     for cfg in (PRD, DEV, MSA2_DEV):  # msa2-prd deliberately NOT staged
         (talos / cfg).write_text("context: stub\n")
+    # the staged orchestrator: a byte copy of this checkout's
+    (talos / "nas-ups-orchestrator.sh").write_bytes(ORCH.read_bytes())
     replay = remote.removeprefix("sudo ").replace("/mnt/tank/system/talos", str(talos))
-    res = subprocess.run(["bash", "-c", replay], capture_output=True, text=True, timeout=30)
+    replay_env = dict(os.environ)
+    if shutil.which("sha256sum") is None:  # the NAS has GNU sha256sum; stub it here
+        stub = tmp_path / "bin"
+        stub.mkdir()
+        (stub / "sha256sum").write_text('#!/bin/bash\nexec shasum -a 256 "$@"\n')
+        (stub / "sha256sum").chmod(0o755)
+        replay_env["PATH"] = f"{stub}:{replay_env['PATH']}"
+    res = subprocess.run(
+        ["bash", "-c", replay], capture_output=True, text=True, timeout=30, env=replay_env
+    )
     assert res.returncode == 0, res.stderr
+
+    # the staged script's hash comes first, and print-checks names the value it
+    # must have: this checkout's
+    want = hashlib.sha256(ORCH.read_bytes()).hexdigest()
+    printed = out.stdout.split("which must be", 1)[1].split()[0]
+    assert printed == want, (printed, want)
+    assert res.stdout.split()[0] == want, res.stdout[:200]
 
     calls = record.read_text().splitlines()
     assert calls[0] == "version --client --short"

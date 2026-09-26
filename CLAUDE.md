@@ -972,8 +972,11 @@ Migration tracking: kube-infra #92.
 primary UPS (`apc1`) protects the NAS + all 6 K8s nodes + networking
 gear; the second UPS is reserved as a hot spare. ⚠ Whether the two MS-A2
 boxes (msa2-dev, msa2-prd) are on `apc1` is **not recorded anywhere**
-(2026-09-26) — the orchestrator is built to be safe either way (§ *MS-A2 in
-the fan-out*); record the answer here once someone looks. Battery replaced
+(2026-09-26). The design assumes they are: kube-infra
+`docs/msa2-audit/02-design-decisions.md` § 10 gate 7 plans a real UPS drill to
+"confirm both new boxes go down" and sizes the load as "~2×65–100 W + NAS 25 W
++ networking 70 W". The orchestrator is built to be safe either way (§ *MS-A2
+in the fan-out*); record the answer here once someone looks. Battery replaced
 **2026-06-13** (APC RBC7 pair + AP9620 swap, ~3-year expected lifespan;
 next due ~2029).
 
@@ -1004,7 +1007,8 @@ K8s nodes (×6 Q170S1 + the MS-A2 boxes)
   └─ NOT NUT clients. The nut-client extension was stripped from the Talos
      image (schematic daef782b, 2026-06-02). They are shut down out-of-band
      by the NAS orchestrator via `talosctl shutdown --force` (os:operator
-     cred staged at /mnt/tank/system/talos/{dev,prd}-shutdown.talosconfig).
+     creds staged at /mnt/tank/system/talos/{dev,prd,msa2-dev,msa2-prd}-
+     shutdown.talosconfig; an msa2 one only once its Doppler key exists).
 ```
 
 ⚠ **`--force` is load-bearing for TWO reasons, not one (found 2026-07-29).**
@@ -1053,17 +1057,23 @@ below has run it still fans out to the six Q170S1 nodes only.
 | addresses | `.11-.13`, `.14-.16` | **both** of each box's: BUILD then FINAL — prd `10.10.5.17` + `.11`, dev `10.10.5.18` + `.12` (kube-infra `talos-os/estates.yaml`, plan D12) |
 | config | `{prd,dev}-shutdown.talosconfig` | `msa2-{prd,dev}-shutdown.talosconfig`, from `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{PRD,DEV}` (bootstrap.sh menu 10); a cluster with no staged config is **skipped** |
 | call | `shutdown --force` (unchanged, byte for byte) | `shutdown --force --wait=false`, capped at 60 s by coreutils `timeout` |
-| polled? | always, whatever the rc (unchanged) | **only if the call returned 0** |
+| polled? | always, whatever the rc (unchanged) | **only if the call returned 0** — true at a BUILD address only: a FINAL address is also in the Q170S1 prd list (the ⚠ bullet below) |
 
 - **Why only-if-accepted.** apid's `:50000` probe is unauthenticated: a box in
   Talos maintenance mode, or one whose PKI no longer matches the staged config,
   answers it for ever, and the poll would burn the whole 300 s backstop on
-  battery. A shutdown that returned non-zero was not accepted by a node of
+  battery. A shutdown that returned non-zero was not delivered to a node of
   that cluster (no route / timeout / capped, rc 124 / x509 / maintenance mode),
   so nothing the script does would bring it down — waiting for it only drains
   the battery.
-  `--wait=false` is what makes rc mean exactly "the node accepted": with the
-  default `--wait`, a tracker error after a successful RPC would also be rc≠0.
+  `--wait=false` is what makes rc mean "delivered": rc=0 means talosctl's
+  Version pre-check **and** the Shutdown RPC both succeeded, rc≠0 that the
+  shutdown was not delivered. (In talosctl v1.14.0/v1.14.1 the `--wait=false`
+  branch first runs `helpers.ClientVersionCheck`, a Version RPC, and returns
+  before any Shutdown if it fails — so `os:operator` must keep Version access;
+  the `--print-checks` `version` call proves that pre-flight for every pair.)
+  With the default `--wait`, a tracker error after a delivered shutdown would
+  also be rc≠0.
 - **Why both addresses.** The address that is not the box's today is rejected
   (another cluster's CA, or no box at all), so it is a no-op — the script needs
   **no edit at either cutover or at a rollback**. Before prd's cutover
@@ -1071,33 +1081,75 @@ below has run it still fans out to the six Q170S1 nodes only.
   is msa2-prd, the old prd config is rejected there, msa2-prd's is accepted,
   and `.11` is polled once (the poll set is de-duplicated). Tests pin all of
   these: `tests/test_ups_orchestrator.py`.
+- ⚠ **Only-if-accepted covers the BUILD addresses, not the FINAL ones.** `.11`
+  and `.12` are also in `PRD_NODES`, and the Q170S1 rule polls them whatever
+  the rc. So from prd's cutover until `PRD_NODES` is deleted at prd's teardown,
+  an msa2 box at `.11` (or `.12`) that does **not** accept its shutdown —
+  maintenance mode, config not staged, a stale PKI — is polled to the 300 s
+  backstop, like a Q170S1 node that rejects. That box is not shut down either
+  way; the cost is 300 s of battery (LB fires at `battery.runtime.low` 420 s).
+  Pinned by `test_final_address_that_does_not_accept_is_polled_to_the_backstop`;
+  the mitigation is procedural — re-stage after every menu 10 and run the
+  printed check, which must show `Server:` for the box at its current address.
+- **The cap bounds a hung msa2 call; it does not hide it.** The poll, and so
+  the NAS halt, starts only after every shutdown call has returned, so an msa2
+  address that connects and then hangs delays it by up to 65 s (60 s + the 5 s
+  `--kill-after`). The ~187 s Q170S1 calls hide that today; after the cutovers
+  they fail fast and the cap is the delay. 60 s is deliberate: a cap that fires
+  on a slow but delivered shutdown reads as rc 124, keeps that box out of the
+  poll, and lets the NAS halt (and `apc1` cut power 90 s later) while it is
+  still stopping Postgres. An absent box fails in ~3 s and a silently-dropping
+  one in ~20 s on their own. A test pins the production default.
 - **The Q170S1 path is deliberately unchanged**, including its known weakness
   (a Q170S1 node that rejects its shutdown is still polled to the backstop) —
-  it is live until each cutover and the rollback target after it. It goes at
-  teardown, with the BUILD addresses.
-- **Is msa2 on `apc1`? Unknown — safe either way.** On `apc1`: shut down
-  cleanly, and `apc1`'s kill-power cycle plus BIOS *AC power loss: Always On*
-  boots it again. Off `apc1` in a real outage: already dark, its call fails
-  fast, it is not polled. Off `apc1` but still powered (a drill on mains, or a
-  second UPS): shut down cleanly and **stays off** until powered on by hand,
-  because its AC never drops — an availability cost, never a data one.
+  it is live until each cutover and the rollback target after it.
+- **Is msa2 on `apc1`? Unknown — safe either way** (the design assumes yes: see
+  *Hardware* above). On `apc1`: shut down cleanly, and `apc1`'s kill-power
+  cycle plus BIOS *AC power loss: Always On* boots it again. Off `apc1` in a
+  real outage: already dark, its call fails fast and a dark box reads as down.
+  Off `apc1` but still powered (a drill on mains, or a second UPS): shut down
+  cleanly and **stays off** until powered on by hand, because its AC never
+  drops — an availability cost, never a data one. ⚠ Either way **every Drill A
+  (`upsmon -c fsd`) now takes the msa2 clusters down too**: power-cycled back
+  up if they are on `apc1`, left off if not. Plan the drill for both.
 - **Re-stage** (main session; staging is non-disruptive — `shutdowncmd` is not
-  touched) from an up-to-date `main`, then run the check it prints:
+  touched). The script uploads whatever **this checkout** holds, so bring
+  `main` up to date first — a stale checkout re-stages the old orchestrator
+  and every credential check still passes:
   ```sh
-  cd ~/github/truenas-infra
+  cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline
   doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh
   ./scripts/setup-talos-shutdown-orchestrator.sh --print-checks   # just the check, any time
   ```
-  Re-stage after every `bootstrap.sh msa2-<env>` menu 10 (it re-mints the
-  msa2 config), and after msa2-prd is built (Task H) so its config is staged.
-  An msa2 key missing from Doppler is a WARN, not an error: that cluster is
-  skipped until the next re-stage.
+  Then paste the one `ssh -t …` command it prints. Its first line is the
+  sha256 of the **staged** orchestrator, which must equal the value printed
+  with it (this checkout's): that, not the credential checks, proves the NAS
+  runs the merged script. Re-stage after every `bootstrap.sh msa2-<env>` menu
+  10 (it re-mints the msa2 config), and after msa2-prd is built (Task H) so
+  its config is staged. An msa2 key missing from Doppler is a WARN, not an
+  error: that cluster is skipped until the next re-stage.
 - **At cutover:** nothing in the orchestrator. Row 15's remaining items stand:
   re-stage `talosctl` at the msa2 version (`TALOSCTL_VERSION`, v1.14.0 today —
   same minor as msa2's v1.14.1), run the printed check, and **re-measure the
   shutdown time** in a drill rather than carrying 187 s.
-  **At teardown:** delete `DEV_NODES`/`PRD_NODES`, the two Q170S1 configs and
-  the BUILD addresses from the MS-A2 lists.
+- **At teardown — a code change with its own PR and tests, not a two-line
+  deletion.** Under `set -u` a leftover reference to a deleted list aborts the
+  orchestrator **before** it fires the msa2 shutdowns or halts the NAS, and the
+  setup script's `check_pairs` fails on a list it cannot read. prd's teardown
+  comes first (before dev's cutover); per torn-down cluster `<X>` (`PRD`, then
+  `DEV`) remove:
+  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its part
+    of `Q170S1_NODES`, and that msa2 cluster's BUILD address
+    (`MSA2_<X>_NODES` keeps only the FINAL one);
+  - `setup-talos-shutdown-orchestrator.sh`: `<X>` in `check_pairs`'s loop, its
+    required-key line (`TALOS_NAS_SHUTDOWN_CONFIG_<X>`), its `base64 -d` line,
+    its entry in the initial `CFGS`, and the header lines naming it;
+  - `tests/test_ups_orchestrator.py`: that cluster's Q170S1 expectations.
+  After the second teardown delete what is left of the Q170S1 block —
+  `Q170S1_NODES`, the rejection-log `case`, the Q170S1 tests. Run the suite,
+  re-stage, run the printed check. The staged `{dev,prd}-shutdown.talosconfig`
+  are then unused; the setup script never deletes a file, so remove them from
+  the NAS by hand.
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary.
