@@ -51,7 +51,7 @@ edit the matching wiki page in the same commit set.
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
 | `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
-| `docs/{pxe-operator,talos-updater-setup,bios-apply-pxe-setup}.md` | _Auto-synced_ — ⚠ **retirement tombstones since PXE was retired 2026-09-23.** Delete them only together with their `wiki/sync-map.yaml` mappings, `.gitignore` lines and `.pages` entries in one coordinated wiki change: a deleted source with a live mapping makes `sync_repos.py` fail hard. `apps/pxe/` and `config/talos.yaml` are dead code awaiting the same removal (pool-rebuild plan Task 9a). |
+| `docs/{pxe-operator,talos-updater-setup,bios-apply-pxe-setup}.md` | _Auto-synced_ — ⚠ **retirement tombstones since PXE was retired 2026-09-23.** Delete them only together with their `wiki/sync-map.yaml` mappings, `.gitignore` lines and `.pages` entries in one coordinated wiki change: a deleted source with a live mapping makes `sync_repos.py` fail hard. `apps/pxe/` and `config/talos.yaml` were deleted 2026-09-26 (pool-rebuild plan Task 9a); only these three tombstones remain. |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
 | Doppler `infrastructure/ops` (add/remove key) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
 | "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |

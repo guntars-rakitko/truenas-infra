@@ -20,7 +20,6 @@ parent (`tank/kube/prd`, `tank/kube/dev`):
     ├── shared/
     │   └── general         quota=1T
     └── system/
-        ├── pxe/{config,assets}
         └── apps-config/{nut,...}
 
 Idempotent. Re-running adjusts properties to match `config/storage.yaml` but
