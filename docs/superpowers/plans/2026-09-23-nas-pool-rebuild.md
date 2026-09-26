@@ -647,7 +647,7 @@ ssh truenas_admin@nas.w1.lv "sudo -n midclt call app.query" | grep -i pxe || ech
 
 ### 9b — `mikrotik-infra` ⚠ the router will NOT converge by itself
 
-- [ ] **Step 1: Edit `configs/fleet.yaml`**
+- [x] **Step 1: Edit `configs/fleet.yaml`** ✅ mikrotik-infra#51 (2026-09-26), in one commit with Step 2
 
 Remove the three PXE keys from the mgmt network:
 
@@ -667,7 +667,7 @@ option_name: pxe-bootfile
 option_value: "'ipxe.efi'"
 ```
 
-- [ ] **Step 2: Edit `configs/templates/01-router.rsc.j2`**
+- [x] **Step 2: Edit `configs/templates/01-router.rsc.j2`** ✅ mikrotik-infra#51; the render lost exactly the two option lines and three params on the mgmt `network add` line
 
 Delete the two unconditional emits (lines 16-17):
 ```
@@ -681,6 +681,17 @@ unconditionally, so removing only the fleet.yaml keys makes rendering fail.
 
 - [ ] **Step 3: ⚠⚠ REMOVE THE LIVE OPTIONS BY HAND — the tooling cannot**
 
+> ⚠ **Corrected 2026-09-26 (mikrotik-infra#51): the tooling can.** Delta's `set` has unset
+> dropped params since mikrotik-infra#28 (`_unset_params`), so even the default additive mode
+> runs the `network set` below, and `--prune` emits the two removes. Run against the old render
+> as "live" (no device), the engine's plan is exactly the three commands below, in this order.
+> Use `manage.sh` option 3 → router → delta with `--prune`, and check that the dry-run lists
+> exactly these three (`--prune` removes every live-only extra). Only if it lists more, run them
+> by hand. The `[find]` values are now QUOTED, as the engine emits them: unquoted, an address
+> in `[find]` can match nothing and still return ok (measured on `/ip address`, see
+> `_find_clause` in mikrotik-infra `tools/_fleet_delta.py`). The heading and the paragraph
+> below are the original text.
+
 `tools/apply_fleet.py` delta mode is **additive-only**. Its own docstring:
 *"extras are legitimately preserved, MISSING never is."* So deleting the config removes the
 **intent** but leaves the RB5009 still advertising `next-server=10.10.5.10` and
@@ -691,9 +702,9 @@ Not worth it for three properties. Remove them manually, in this order (the netw
 references the option-set, so the reference goes first):
 
 ```
-/ip dhcp-server network set [find address=10.10.5.0/24] !boot-file-name !dhcp-option-set !next-server
-/ip dhcp-server option sets remove [find name=pxe-boot]
-/ip dhcp-server option remove [find name=pxe-bootfile]
+/ip dhcp-server network set [find address="10.10.5.0/24"] !boot-file-name !dhcp-option-set !next-server
+/ip dhcp-server option sets remove [find name="pxe-boot"]
+/ip dhcp-server option remove [find name="pxe-bootfile"]
 ```
 
 ⚠ Use a single SSH ControlMaster session — RouterOS trips `login-failure-limit` on rapid
@@ -707,7 +718,9 @@ cd ~/github/mikrotik-infra && ./manage.sh   # audit
 
 Expected: **green**, with no live-only extras for `dhcp-server option` / `network`.
 ⚠ A green audit *before* Step 3 would be the additive-only blind spot, not success — run the
-audit only after the manual removal.
+audit only after the manual removal. *(Corrected 2026-09-26: the audit cannot be green before
+Step 3. It diffs the live export against the render and reports live-only lines as drift, so
+before Step 3 it shows these three lines on the router.)*
 
 - [ ] **Step 5: Confirm a client still gets a lease**
 
@@ -791,7 +804,9 @@ DHCP options in 9b Step 3.
 > **additive-only** (*"extras are legitimately preserved, MISSING never is"*). Assuming the
 > fleet behaviour for DNS would leave you hand-deleting records that were already gone;
 > assuming the DNS behaviour for DHCP leaves the router advertising a dead boot server
-> forever. 9b Step 3 exists precisely because of that asymmetry.
+> forever. 9b Step 3 exists precisely because of that asymmetry. *(Corrected 2026-09-26: delta
+> is additive-only for REMOVES, but an update unsets dropped params, and `--prune` removes extras.
+> See the note under 9b Step 3.)*
 
 - [ ] **Step 5: Verify nothing dangles**
 
@@ -874,6 +889,8 @@ additive-only (*"extras are legitimately preserved, MISSING never is"*), so dele
 router config removes the intent but **not** the live options. Task 9b Step 3 removes them by
 hand rather than reaching for `--mode full-reset`, which reboots the only router in the house.
 A green audit run *before* that manual step would be the blind spot, not success.
+*(Corrected 2026-09-26, mikrotik-infra#51: delta `--prune` removes them, and the audit reports
+them as drift until it does. See the note under 9b Step 3.)*
 
 **Known unknowns, surfaced rather than assumed:**
 - whether the MS-A2 can be re-imaged without the PXE `extras` tree — flagged in § Retire,
