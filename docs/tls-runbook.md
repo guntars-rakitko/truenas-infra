@@ -3,8 +3,25 @@
 The Let's Encrypt wildcard `*.w1.lv` is TrueNAS-ACME-managed with DNS-01
 against CloudFlare. TrueNAS auto-renews; the hourly `tls-rotate`
 cronjob propagates the new cert to `/mnt/tank/system/tls/` and
-redeploys MinIO prd+dev. Traefik file-watches and hot-reloads on its
-own.
+redeploys **traefik**. MinIO prd+dev pick the new files up on their own and
+are **not** redeployed.
+
+> ⚠ **This page had the two apps backwards until 2026-09-26.** It said Traefik
+> hot-reloads and MinIO needs a redeploy. The 2026-09-14 renewal measured the
+> opposite, because `tls-rotate.sh` redeployed nothing (a `set -e` bug killed
+> it first) and so showed what each app does on its own:
+>
+> - **MinIO reloads by itself.** Both `s3-{prd,dev}.w1.lv:9000` served the new
+>   cert on the 04:00:08 UTC blackbox sample, seconds after the 04:00 export,
+>   with `probe_success=1` on every 30 s sample (no restart).
+> - **Traefik does not.** Its file provider watches only `/etc/traefik/dynamic`
+>   (where `routes.yaml` lives), not the cert in `/etc/traefik/certs`.
+>   `wiki.w1.lv` served the pre-renewal cert for nine days, until the
+>   2026-09-23 pool-rebuild restart reloaded it by accident
+>   (`BlackboxCertExpiringWarn`, kube-infra #1252 / #1253).
+>
+> If an endpoint serves an old cert, see
+> [§ Cert renewed but an endpoint still serves the old one](#cert-renewed-but-an-endpoint-still-serves-the-old-one).
 
 ## Routine ops
 
@@ -86,9 +103,13 @@ midclt call cronjob.run <id>
 
 # 5. Verify propagation:
 #    - /mnt/tank/system/tls/{fullchain,privkey,public,private}.* mtime updated
-#    - MinIO prd+dev redeployed (check `app.query` state)
-#    - https://wiki.w1.lv/ (via Traefik) and https://s3-prd.w1.lv:9000
-#      (MinIO direct) show the new cert fingerprint
+#    - /mnt/tank/system/tls/tls-rotate.log shows "cert rotated — redeploying
+#      TLS consumers: traefik", "traefik: redeploy triggered", then "done"
+#    - /mnt/tank/system/tls/.tls-redeploy-pending does NOT exist
+#    - https://wiki.w1.lv/ (Traefik, redeployed) and https://s3-prd.w1.lv:9000
+#      (MinIO direct, reloads on its own) show the new serial:
+#        openssl s_client -connect wiki.w1.lv:443 -servername wiki.w1.lv \
+#          </dev/null 2>/dev/null | openssl x509 -noout -serial -enddate
 
 # 6. Restore renew_days to 30
 midclt call certificate.update <id> '{"renew_days": 30}'
@@ -126,8 +147,44 @@ midclt call certificate.delete <wildcard-id> '{"job": true}'
 ./manage.sh phase tls --apply
 ```
 
-Reissuing takes ~2 minutes for DNS-01. New cert id, UI rebinds, Traefik
-hot-reloads, MinIO redeploys.
+Reissuing takes ~2 minutes for DNS-01. New cert id and the UI rebinds. The
+next hourly `tls-rotate` (or a forced `cronjob.run`, § Force a renewal step 4)
+exports it: MinIO picks it up on its own, and Traefik is redeployed onto it.
+
+### Cert renewed but an endpoint still serves the old one
+
+Symptom: `certificate.query` shows a fresh `until`, but
+`openssl s_client … | openssl x509 -noout -serial -enddate` against
+`wiki.w1.lv:443`, `minio-{prd,dev}.w1.lv:443` or `s3-{prd,dev}.w1.lv:9000`
+still shows the old cert. TrueNAS renews at 30 days left, so a missed
+redeploy surfaces as `BlackboxCertExpiringWarn` (<21 d) about nine days after
+the renewal, and as `MinioCertExpiringSoon` (<14 d) about sixteen days after.
+
+```sh
+# 1. Did the export run, and what did the redeploys do?
+tail -n 50 /mnt/tank/system/tls/tls-rotate.log
+# 2. Anything still waiting for a retry? (one app name per line)
+cat /mnt/tank/system/tls/.tls-redeploy-pending 2>/dev/null
+# 3. Redeploy the stale app by hand (a few seconds of blip for traefik,
+#    ~30 s of S3 for a MinIO)
+midclt call app.redeploy traefik
+```
+
+A **MinIO** endpoint on an old cert is new information: MinIO reloaded on its
+own at the 2026-09-14 renewal. Redeploy it by hand, then add it to
+`TLS_CONSUMERS` in `apps/tls/tls-rotate.sh`. Also remove it from
+`RELOADS_ON_ITS_OWN` in `tests/test_tls_rotate.py`, and record what changed
+there (an AIStor upgrade is the likely suspect).
+
+`tls-export.sh` reports a change exactly **once**. The next run finds the
+pool copy already matching and exits 0. So `tls-rotate.sh` writes the apps it
+still has to redeploy to `.tls-redeploy-pending` *before* the first redeploy,
+drops each one that succeeds, and retries whatever is left every hour. The
+script exits **3** while anything is still pending. A pending file that never
+drains means `midclt call app.redeploy <app>` itself fails; run it by hand to
+see why. ⚠ `midclt call app.redeploy` returns once the job is *queued*, so
+"redeploy triggered" does not prove the new container came up. Check the
+served serial.
 
 ### CloudFlare API token revoked or expired
 
@@ -199,7 +256,9 @@ fails first — the runbooks you would be recovering from.
 - **Traefik on `10.10.5.20:443` (new sub-IP)**: fronts the mgmt-plane
   web UIs (minio-prd/dev consoles + wiki — `apps/traefik/routes.yaml`).
   It has no dashboard (every Traefik dashboard was removed 2026-09-13).
-  Hot-reloads its cert from `/mnt/tank/system/tls` without restarting.
+  Hot-reloads `routes.yaml` edits, but **not** its cert. The cert is
+  mounted from `/mnt/tank/system/tls` at `/etc/traefik/certs`, which the file
+  provider does not watch, so `tls-rotate` redeploys it.
 - **MinIO S3 direct on `10.10.{10,15}.10:9000`**: data plane. Native
   port kept — `:443` on data VLANs reserved for future services.
 - **MinIO consoles on `10.10.5.10:{9001,9011}`**: bound to mgmt VLAN IP
@@ -209,5 +268,10 @@ fails first — the runbooks you would be recovering from.
 - **Hourly cronjob `tls-rotate`**: diffs `/etc/certificates/` vs pool
   copy by SHA-256; on change, copies (with both generic fullchain/
   privkey AND MinIO-conventional public.crt/private.key names) + calls
-  `app.redeploy` on MinIO prd/dev. Traefik NOT redeployed — it
-  file-watches.
+  `app.redeploy` on every app in `TLS_CONSUMERS`, which today is only
+  `traefik`. A failed redeploy is retried hourly from `.tls-redeploy-pending`.
+  `tests/test_tls_rotate.py` requires every enabled app whose compose mounts
+  `/mnt/tank/system/tls` to be either in `TLS_CONSUMERS` or in
+  `RELOADS_ON_ITS_OWN` with evidence (minio-prd, minio-dev). Traefik broke
+  exactly this invariant. Blast radius per rotation: a few seconds of Traefik
+  (wiki + MinIO consoles), about once every 60 days. S3 is untouched.

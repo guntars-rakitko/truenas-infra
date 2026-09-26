@@ -12,8 +12,13 @@ services:
       - "10.10.5.20:443:443"
       - "10.10.5.20:80:80"         # HTTP entry point for HTTPS redirect
     volumes:
-      # Wildcard cert — hot-reloaded via file-watch when tls-rotate
-      # updates these files.
+      # Wildcard cert. ⚠ NOT hot-reloaded: the file provider below watches
+      # only /etc/traefik/dynamic, so a renewed cert here is never re-read.
+      # apps/tls/tls-rotate.sh redeploys this app when the cert changes.
+      # (Until 2026-09-26 this comment claimed a hot-reload, and Traefik was
+      # left out of the redeploy. It served the pre-renewal cert for nine days
+      # after the 2026-09-14 renewal.) Keep this a DIRECTORY mount: a file
+      # mount would pin the old inode that `install` replaces.
       - /mnt/tank/system/tls:/etc/traefik/certs:ro
       # File-provider dynamic config (routers + services + TLS block).
       # Re-synced on every `phase apps --apply` by the ensure_file_on_nas
@@ -27,7 +32,9 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.web.http.redirections.entrypoint.permanent=true
-      # File provider — watches /etc/traefik/dynamic for changes
+      # File provider — watches /etc/traefik/dynamic for changes (routes.yaml
+      # edits hot-reload). It does NOT watch the certFile paths that routes.yaml
+      # points at in /etc/traefik/certs.
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       # NO --api.dashboard / --api.insecure. The dashboard was removed
