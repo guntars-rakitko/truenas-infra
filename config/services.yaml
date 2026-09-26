@@ -279,9 +279,11 @@ nut:
   # The NAS NUT SHUTDOWNCMD is the SOLE host-poweroff path on TrueNAS
   # (ups.upssched_event SHUTDOWN only runs `upsmon -c fsd`). Path B points it at
   # the NAS-side orchestrator: on FSD/LB it fires `talosctl shutdown --force` at
-  # all 6 nodes (least-privilege os:operator cred staged at
-  # /mnt/tank/system/talos/), polls apid until 0/6, THEN runs `/sbin/shutdown -P
-  # now` so the NAS halts LAST and the #57 Init/Shutdown hook arms the UPS.
+  # all 6 Q170S1 nodes and the MS-A2 boxes (least-privilege os:operator creds
+  # staged at /mnt/tank/system/talos/), polls apid until 0/N (N = the Q170S1
+  # nodes + each MS-A2 address that accepted — CLAUDE.md § UPS / NUT, "MS-A2 in
+  # the fan-out"), THEN runs `/sbin/shutdown -P now` so the NAS halts LAST and
+  # the #57 Init/Shutdown hook arms the UPS.
   #
   # VALIDATED live (drill 2026-06-01, `upsmon -c fsd`): orchestrator fired
   # instantly (0 secondaries → no HOSTSYNC wait), all 6 nodes down in 187s
