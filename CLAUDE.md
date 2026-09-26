@@ -1026,8 +1026,9 @@ Migration tracking: kube-infra #92.
 > the old NUT-secondary FSD path. What's live + codified in `config/services.yaml`:
 > (1) `ups.config.shutdowncmd` = `nas-ups-orchestrator.sh` — fires
 > `talosctl shutdown --force` at all 6 nodes (os:operator cred) — plus the two
-> MS-A2 boxes since 2026-09-26, ⚠ live only once re-staged (§ *MS-A2 in the
-> fan-out* below) — polls them down, then halts the NAS **last**; (2) the **nut-client extension is removed from the
+> MS-A2 boxes since 2026-09-26, ⚠ live only once re-staged, which waits for
+> the cutover gate (§ *MS-A2 in the fan-out* below) — polls them down, then
+> halts the NAS **last**; (2) the **nut-client extension is removed from the
 > nodes** (Talos schematic `daef782b`) → they're no longer NUT secondaries;
 > (3) `ups.delay.shutdown` = **90**; (4) **`sdtype = 5`** (apcsmart hard hibernate
 > `@`) so the #57-hook kill-power cuts + power-cycles **even on mains** (the
@@ -1039,14 +1040,18 @@ Migration tracking: kube-infra #92.
 > NOTE: some prose below is retained as HISTORY of how we got here.
 
 **Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
-primary UPS (`apc1`) protects the NAS + all 6 K8s nodes + networking
-gear; the second UPS is reserved as a hot spare. ⚠ Whether the two MS-A2
-boxes (msa2-dev, msa2-prd) are on `apc1` is **not recorded anywhere**
-(2026-09-26). The design assumes they are: kube-infra
-`docs/msa2-audit/02-design-decisions.md` § 10 gate 7 plans a real UPS drill to
-"confirm both new boxes go down" and sizes the load as "~2×65–100 W + NAS 25 W
-+ networking 70 W". The orchestrator is built to be safe either way (§ *MS-A2
-in the fan-out*); record the answer here once someone looks. Battery replaced
+primary UPS (`apc1`) protects the NAS + all 6 Q170S1 K8s nodes + networking
+gear; the second UPS is reserved as a hot spare. ⚠ The two MS-A2 boxes
+(msa2-dev, msa2-prd) are **NOT on `apc1`: they are on mains** until the
+cutover (operator, 2026-09-26; kube-infra plan § Cutover inventory row 15).
+The design puts them on it: kube-infra `docs/msa2-audit/02-design-decisions.md`
+§ 10 gate 7 plans a real UPS drill to "confirm both new boxes go down" and
+sizes the load as "~2×65–100 W + NAS 25 W + networking 70 W". Moving both PSUs
+onto `apc1`'s battery outlets (the Q170S1 nodes free the outlets and the load)
+is a **cutover gate**, and so is the re-stage that follows it (§ *MS-A2 in the
+fan-out*). Until then a hard power loss on msa2 is an accepted risk (msa2-dev
+holds a restored dev copy, msa2-prd no real data; Postgres replays its WAL).
+Battery replaced
 **2026-06-13** (APC RBC7 pair + AP9620 swap, ~3-year expected lifespan;
 next due ~2029).
 
@@ -1173,17 +1178,28 @@ below has run it still fans out to the six Q170S1 nodes only.
 - **The Q170S1 path is deliberately unchanged**, including its known weakness
   (a Q170S1 node that rejects its shutdown is still polled to the backstop) —
   it is live until each cutover and the rollback target after it.
-- **Is msa2 on `apc1`? Unknown — safe either way** (the design assumes yes: see
-  *Hardware* above). On `apc1`: shut down cleanly, and `apc1`'s kill-power
-  cycle plus BIOS *AC power loss: Always On* boots it again. Off `apc1` in a
-  real outage: already dark, its call fails fast and a dark box reads as down.
-  Off `apc1` but still powered (a drill on mains, or a second UPS): shut down
-  cleanly and **stays off** until powered on by hand, because its AC never
-  drops — an availability cost, never a data one. ⚠ Either way **every Drill A
-  (`upsmon -c fsd`) now takes the msa2 clusters down too**: power-cycled back
-  up if they are on `apc1`, left off if not. Plan the drill for both.
+- **Is msa2 on `apc1`? No — on mains until the cutover gate** (operator,
+  2026-09-26; *Hardware* above). The script is safe either way: on `apc1`,
+  shut down cleanly, and `apc1`'s kill-power cycle plus BIOS *AC power loss:
+  Always On* boots it again. Off `apc1` in a real outage: already dark, its
+  call fails fast and a dark box reads as down. Off `apc1` but still powered
+  (a drill on mains, or a second UPS): shut down cleanly and **stays off**
+  until powered on by hand, because its AC never drops — an availability
+  cost, never a data one. On mains, staging this script therefore buys no
+  protection and makes every Drill A (`upsmon -c fsd`) leave both msa2 boxes
+  off — which is why the re-stage below is **held** until the PSUs are on
+  `apc1`.
 - **Re-stage** (main session; staging is non-disruptive — `shutdowncmd` is not
-  touched). The script uploads whatever **this checkout** holds, so bring
+  touched). ⚠ **HELD until the cutover gate** (kube-infra plan § Cutover
+  inventory row 15): first move both MS-A2 PSUs onto `apc1`'s battery outlets
+  and re-measure the runtime at the new load, THEN re-stage, then re-measure
+  the shutdown time in a drill (don't carry 187 s). If the Q170S1 path has to
+  be re-staged before then (a talosctl bump after an upgrade), keep msa2 out
+  of it: `doppler run` injects `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV` (menu 10
+  minted it), and a set key is staged. Run it with that key unset —
+  `doppler run -p infrastructure -c ops -- env -u TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV -u TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD ./scripts/setup-talos-shutdown-orchestrator.sh`
+  — and the orchestrator skips both msa2 clusters (no staged config). The
+  script uploads whatever **this checkout** holds, so bring
   `main` up to date first — a stale checkout re-stages the old orchestrator
   and every credential check still passes:
   ```sh
@@ -1194,9 +1210,9 @@ below has run it still fans out to the six Q170S1 nodes only.
   Then paste the one `ssh -t …` command it prints. Its first line is the
   sha256 of the **staged** orchestrator, which must equal the value printed
   with it (this checkout's): that, not the credential checks, proves the NAS
-  runs the merged script. Re-stage after every `bootstrap.sh msa2-<env>` menu
-  10 (it re-mints the msa2 config), and after msa2-prd is built (Task H) so
-  its config is staged. An msa2 key missing from Doppler is a WARN, not an
+  runs the merged script. From the cutover gate on, re-stage after every
+  `bootstrap.sh msa2-<env>` menu 10 (it re-mints the msa2 config), and after
+  msa2-prd is built (Task H) so its config is staged. An msa2 key missing from Doppler is a WARN, not an
   error: that cluster is skipped until the next re-stage.
 - **At cutover:** nothing in the orchestrator. Row 15's remaining items stand:
   re-stage `talosctl` at the msa2 version (`TALOSCTL_VERSION`, v1.14.0 today —
@@ -1235,7 +1251,8 @@ only during a real outage.
 > plan Task 7), whose `TALOSCTL_VERSION` default is **v1.14.0** — same minor as
 > the old estate (v1.14.0) and msa2 (v1.14.1). ⚠ Confirm with the check below
 > (and `talosctl version --client` on the NAS) before relying on it; if it still
-> reports v1.13.2, the gap is real — re-stage.
+> reports v1.13.2, the gap is real — re-stage (until the MS-A2 cutover gate,
+> with the msa2 keys unset: § *MS-A2 in the fan-out*, *Re-stage*).
 > ⚠ msa2 has its own PKI, so it has its own `os:operator` configs
 > (`TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{DEV,PRD}`). Since the 2026-09-26 change
 > they are staged alongside the Q170S1 pair (once re-staged) and the
