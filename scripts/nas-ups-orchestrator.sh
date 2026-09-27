@@ -132,13 +132,15 @@
 # accept_is_polled_to_the_backstop). The mitigation is procedural: re-stage
 # after every `bootstrap.sh msa2-<env>` menu 10 and run --print-checks.
 #
-# ⚠ UNKNOWN (2026-09-26): whether the MS-A2 boxes are on this NAS's UPS (apc1).
-#   The DESIGN assumes they are (kube-infra docs/msa2-audit/02-design-decisions.md
-#   § 10 gate 7 plans a real UPS drill to "confirm both new boxes go down" and
-#   sizes the UPS load as "~2×65–100 W + NAS 25 W + networking 70 W") — but
-#   nothing confirms it physically. Either way every Drill A (`upsmon -c fsd`)
-#   now takes the msa2 clusters down too: power-cycled back up if on apc1, left
-#   OFF if not.
+# ⚠ ANSWERED (operator, 2026-09-26): the MS-A2 boxes are NOT on this NAS's UPS
+#   (apc1). They are on mains until the cutover, when moving their PSUs onto
+#   apc1 is a gate (kube-infra plan § Cutover inventory row 15). The DESIGN puts
+#   them there (kube-infra docs/msa2-audit/02-design-decisions.md § 10 gate 7
+#   plans a real UPS drill to "confirm both new boxes go down" and sizes the UPS
+#   load as "~2×65–100 W + NAS 25 W + networking 70 W"). So this version is NOT
+#   staged until that gate: staged while they are on mains, every Drill A
+#   (`upsmon -c fsd`) would take the msa2 clusters down and leave them OFF, for
+#   no protection. The cases below are why the script is safe either way.
 #   ON apc1 → shut down cleanly here; apc1's kill-power cycle + BIOS "AC power
 #     loss: Always On" (both boxes; kube-infra plan G1 / H2) boots them again,
 #     like the Q170S1 nodes.
