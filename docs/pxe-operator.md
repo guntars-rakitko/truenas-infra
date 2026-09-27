@@ -31,22 +31,23 @@ the MS-A2 (2026-09-24); ⚠ **unproven on a Q170S1**, because the pool-rebuild
 plan's Task 9 prerequisite covered only the MS-A2 stick. Prove it on a kub-dev
 node before depending on it.
 
-**kube-infra CLAUDE.md does not describe this:** its § PXE Boot and its amtctl
-"→ PXE" re-image note still present PXE as the install path, and are stale
-until they are rewritten. Do not follow them.
+kube-infra `CLAUDE.md` § Install media describes this (rewritten 2026-09-25;
+until then its § PXE Boot still presented PXE as the install path).
 
 The other PXE menus (BIOS apply, utilities, live CDs, netboot) have no NAS
 replacement. The Q170S1 BIOS is applied from a USB stick built by
 `bios-config/usb/prepare-usb.sh` (see bios-config).
 
-## Still pending
+## Cleanup
 
-- **Router DHCP options.** mikrotik-infra `configs/fleet.yaml` still declares
-  `pxe: true` / `pxe_bootfile: ipxe.efi` / `pxe_next_server: 10.10.5.10` on
-  `10.10.5.0/24` plus the `pxe-boot` option set, so mgmt DHCP may still
-  advertise a boot server that nothing serves (inert, but misleading; whether
-  the live router still carries it is unchecked). Removal: pool-rebuild plan
-  Task 9b.
+- ~~**Router DHCP options.**~~ Gone. They left mikrotik-infra
+  `configs/fleet.yaml` and the router template on 2026-09-26
+  (mikrotik-infra#51; pool-rebuild plan Task 9b Steps 1–2). A delta
+  `--prune` apply removed them from the live router on 2026-09-27 08:05Z
+  (Task 9b Steps 3–4): `next-server 10.10.5.10`, `boot-file-name=ipxe.efi`,
+  the `pxe-boot` option set and its option 67. Mgmt DHCP no longer
+  advertises a boot server. A router audit that shows them again means
+  something re-added them (mikrotik-infra `CLAUDE.md` § PXE Boot).
 - ~~**Dead code in this repo.**~~ `apps/pxe/` and `config/talos.yaml` were
   deleted 2026-09-26 (the rest of pool-rebuild plan Task 9a); `git show
   3244103:apps/pxe/` has them.
