@@ -40,13 +40,14 @@ replacement. The Q170S1 BIOS is applied from a USB stick built by
 
 ## Cleanup
 
-- **Router DHCP options.** Removed from mikrotik-infra `configs/fleet.yaml`
-  and the router template on 2026-09-26 (mikrotik-infra#51; pool-rebuild
-  plan Task 9b Steps 1–2): mgmt DHCP no longer declares `next-server
-  10.10.5.10` / `ipxe.efi` or the `pxe-boot` option set. The live router
-  drops them with that PR's delta `--prune` apply (Task 9b Steps 3–5); a
-  router audit that still shows them as drift means the apply has not run
-  (mikrotik-infra `CLAUDE.md` § PXE Boot).
+- ~~**Router DHCP options.**~~ Gone. They left mikrotik-infra
+  `configs/fleet.yaml` and the router template on 2026-09-26
+  (mikrotik-infra#51; pool-rebuild plan Task 9b Steps 1–2). A delta
+  `--prune` apply removed them from the live router on 2026-09-27 08:05Z
+  (Task 9b Steps 3–4): `next-server 10.10.5.10`, `boot-file-name=ipxe.efi`,
+  the `pxe-boot` option set and its option 67. Mgmt DHCP no longer
+  advertises a boot server. A router audit that shows them again means
+  something re-added them (mikrotik-infra `CLAUDE.md` § PXE Boot).
 - ~~**Dead code in this repo.**~~ `apps/pxe/` and `config/talos.yaml` were
   deleted 2026-09-26 (the rest of pool-rebuild plan Task 9a); `git show
   3244103:apps/pxe/` has them.

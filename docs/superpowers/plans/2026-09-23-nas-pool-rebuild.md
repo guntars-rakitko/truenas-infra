@@ -679,7 +679,24 @@ Delete the two unconditional emits (lines 16-17):
 ⚠ Steps 1 and 2 must land together — the template dereferences `fleet.dhcp.option_name`
 unconditionally, so removing only the fleet.yaml keys makes rendering fail.
 
-- [ ] **Step 3: ⚠⚠ REMOVE THE LIVE OPTIONS BY HAND — the tooling cannot**
+- [x] **Step 3: ⚠⚠ REMOVE THE LIVE OPTIONS BY HAND — the tooling cannot** ✅ **DONE 2026-09-27 08:05Z** by delta `--prune` (as-run note below)
+
+> ✅ **As run, 2026-09-27.** Three attempts, and only the last changed the router:
+> 1. 2026-09-26: `!boot-file-name` → `syntax error (line 1 column 59)`. Only `next-server` is
+>    unsettable in that menu; the free string `boot-file-name` clears with `=""`
+>    (mikrotik-infra#53).
+> 2. 2026-09-26 14:59Z: `dhcp-option-set=""` → `ambiguous value of dhcp-option-set, more than one
+>    possible value matches input`. The value is a reference, and `""` prefixes every allowed
+>    value. A read-only `/console/inspect request=completion` lists `pxe-boot` and the keyword
+>    `none` (mikrotik-infra#56).
+> 3. 2026-09-27 08:05Z, delta `--prune`: the dry-run listed exactly the three commands below, and
+>    all three returned ok.
+>
+> Both failures stopped at the first command, so the router was unchanged until the third run.
+> The accepted first command is
+> `/ip dhcp-server network set [find address="10.10.5.0/24"] boot-file-name="" dhcp-option-set=none !next-server`.
+> The command block further down keeps the original `!`-spellings, which RouterOS rejects: do
+> not copy it.
 
 > ⚠ **Corrected 2026-09-26 (mikrotik-infra#51): the tooling can.** Delta's `set` has unset
 > dropped params since mikrotik-infra#28 (`_unset_params`), so even the default additive mode
@@ -710,7 +727,7 @@ references the option-set, so the reference goes first):
 ⚠ Use a single SSH ControlMaster session — RouterOS trips `login-failure-limit` on rapid
 repeat logins and returns `Permission denied` for 1–5 minutes even with correct credentials.
 
-- [ ] **Step 4: Prove the router and the config agree**
+- [x] **Step 4: Prove the router and the config agree** ✅ 2026-09-27 08:05Z: the post-apply audit reported the router in sync with `fleet.yaml`, and a fresh login worked. A read at 08:12Z showed the mgmt network with no `next-server`, `boot-file-name` or `dhcp-option-set`, and no option set or option left.
 
 ```bash
 cd ~/github/mikrotik-infra && ./manage.sh   # audit
@@ -722,7 +739,7 @@ audit only after the manual removal. *(Corrected 2026-09-26: the audit cannot be
 Step 3. It diffs the live export against the render and reports live-only lines as drift, so
 before Step 3 it shows these three lines on the router.)*
 
-- [ ] **Step 5: Confirm a client still gets a lease**
+- [x] **Step 5: Confirm a client still gets a lease** ✅ 2026-09-27 10:58Z: `/ip dhcp-server lease print where server=mgmt-dhcp` showed every lease bound, and `10.10.5.17` had renewed at about 09:46Z, after the 08:05Z apply. The MS-A2 build reservation `10.10.5.18` is in place (`waiting`) for msa2-dev's maintenance-mode boot.
 
 ```bash
 ssh <router> '/ip dhcp-server lease print where server=mgmt-dhcp'
