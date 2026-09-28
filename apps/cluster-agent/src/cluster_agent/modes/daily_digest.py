@@ -88,6 +88,9 @@ async def run_async(*, cluster: str) -> DigestResult:
     if not groups:
         # Genuinely quiet 24h — no alerts fired at all
         cluster_agent_run_total.labels(mode="A", status="success_quiet").inc()
+        # A quiet day is a success: record it, or the gauge lags the counter
+        # by every quiet day (kube-infra ClusterAgentNoSuccessfulRun notes).
+        cluster_agent_last_success_timestamp.labels(mode="A").set(dt.datetime.now().timestamp())
         log.info("digest %s: quiet period — no alerts in last %dh", cluster, window_hours)
         return DigestResult(
             cluster=cluster, alert_groups_seen=0, findings_emitted=0,
