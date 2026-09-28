@@ -74,9 +74,9 @@ class NutSpec:
     mode: str = "MASTER"         # MASTER | SLAVE
     remoteport: int = 3493
     rmonitor: bool = False       # Allow remote NUT clients to connect to upsd. Required
-                                 # for the in-cluster nut-exporter (10.10.5.10:3493) plus
-                                 # any K8s-side `upsmon` slaves. Without it upsd binds only
-                                 # to 127.0.0.1 and remote queries fail with "Access denied".
+                                 # for the in-cluster nut-exporter (10.10.5.10:3493), which
+                                 # reads anonymously (GET/LIST need no login). Without it
+                                 # upsd listens on localhost only and remote reads fail.
                                  # Maps to TrueNAS `ups.config.rmonitor` (Remote Monitor
                                  # checkbox in the UI). Enabled live 2026-05-16.
     shutdown: str = "BATT"       # BATT | LOWBATT
