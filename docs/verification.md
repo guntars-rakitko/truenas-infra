@@ -47,6 +47,7 @@ serving everything it should, and nothing it shouldn't.
 | Service running | `midclt call service.query '[["service","=","ups"]]'` | `state=RUNNING` |
 | Reachable from Kube | each cluster's Prometheus: `up{job="nut-exporter"}` and `network_ups_tools_ups_status` (the Talos nodes are not NUT clients since 2026-06-02 and have no shell) | target UP, `ups_status` series present |
 | Not reachable from home | from VLAN 20: `nc -zv 10.10.5.10 3493` | refused (firewall) |
+| No cluster holds the master login | per cluster: `kubectl -n monitoring get deploy nut-exporter -o jsonpath='{.spec.template.spec.containers[0].args}'`; Doppler `infrastructure/shr` key list | no `--nut.username`, no `NUT_EXPORTER_PASSWORD` env; no `SHARED_TRUENAS_NUT_MONPWD` in `shr`. `upsmon` is `upsmon master` (can FSD = site shutdown), so only the NAS may hold it (CLAUDE.md § UPS / NUT) |
 
 ## TLS
 

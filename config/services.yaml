@@ -34,10 +34,14 @@ nut:
   # on the port globally and we rely on mikrotik-infra firewall + the fact
   # that only VLAN 5 routes to the NAS for management traffic.
   remoteport: 3493
-  # Remote Monitor — allow remote NUT clients (in-cluster nut-exporter on
-  # 10.10.5.10:3493, future Talos-side upsmon slaves) to connect to upsd.
-  # Without this, upsd refuses non-loopback queries with "Access denied"
-  # and the kube-infra nut-exporter scrape fails. Enabled live via UI on
+  # Remote Monitor — allow remote NUT clients (the in-cluster nut-exporter
+  # on every cluster) to connect to upsd on 10.10.5.10:3493. TrueNAS renders
+  # it as `LISTEN 0.0.0.0` in upsd.conf (off = loopback only). Without it the
+  # kube-infra nut-exporter scrape fails. The exporter reads ANONYMOUSLY: NUT
+  # serves LIST/GET to any client that connects, and only LOGIN/MASTER/FSD/
+  # SET/INSTCMD need a user (kube-infra base/nut-exporter.yaml "Auth"). So
+  # rmonitor exposes read-only telemetry and no control; the firewall still
+  # keeps 3493 on the mgmt VLAN. Enabled live via UI on
   # 2026-05-16; codified here so the next `phase nut --apply` won't drift
   # it back off. Maps to `ups.config.rmonitor`.
   rmonitor: true
@@ -57,7 +61,16 @@ nut:
   #   sudo midclt call ups.update '{"shutdowntimer": 30}'   (then RESTART ups)
   shutdown: LOWBATT
   shutdowntimer: 30                 # grace seconds after shutdown trigger fires
-  # monuser/monpwd for NUT clients (K8s nodes connect as these).
+  # monuser/monpwd — the NAS's OWN upsmon login. ⚠ NOT a read-only user:
+  # TrueNAS hardcodes the monuser block in upsd.users as `upsmon master`
+  # (middleware etc_files/local/nut/upsd.users.mako), and NUT gives that
+  # the actions login + master + FSD (server/user.c). FSD on apc1 makes the
+  # NAS upsmon run SHUTDOWNCMD (the Path B orchestrator below): every node
+  # and then the NAS power off. So monpwd must never leave the NAS or
+  # Doppler `ops`. No remote client uses it: nut-exporter reads anonymously,
+  # and the K8s nodes stopped being NUT clients on 2026-06-02. Until
+  # 2026-09-28 every cluster held it as Doppler `shr`
+  # SHARED_TRUENAS_NUT_MONPWD for nut-exporter; that key is removed.
   # monuser: declared here.
   # monpwd: NOT in YAML — read from Doppler `TRUENAS_NUT_MONPWD` by
   # modules/nut.py at runtime. Wiring this is REQUIRED on fresh installs:
@@ -180,12 +193,20 @@ nut:
   # TrueNAS `ups.config.extrausers`). The password comes from an env var
   # at apply time (Doppler-backed); never persisted in YAML.
   #
-  # Doctrine: TWO ROLES, ZERO OVERLAP.
-  #   - upsmon (declared above as `monuser`) — read-only, FSD-trigger.
-  #     Used by K8s nodes' Talos nut-client (cluster fleet auth).
+  # Doctrine: TWO ROLES, ZERO OVERLAP, AND NEITHER LEAVES THE OPERATOR SIDE.
+  #   - upsmon (declared above as `monuser`) — `upsmon master` = LOGIN +
+  #     MASTER + FSD, i.e. it can shut the whole site down. Used ONLY by the
+  #     NAS's own upsmon. NOT read-only (the "read-only" label here until
+  #     2026-09-28 was wrong).
   #   - upsadmin (this entry) — SET + INSTCMD ALL. Used by operator
   #     scripts via the NOPASSWD sudo allowlist (see truenas-infra
   #     CLAUDE.md § SSH + sudo). Never used by K8s clients.
+  # Remote READERS (the clusters' nut-exporter, dashboards) need NO user:
+  # LIST/GET are anonymous. A future remote client that must LOGIN (a NUT
+  # secondary, e.g. the sms-gateway boxes) gets its OWN entry here with no
+  # FSD, SET or INSTCMD. ⚠ `_render_extrausers` cannot write an `upsmon
+  # secondary` line yet; add that when the client exists. Never hand out
+  # `upsmon`.
   #
   # See `wiki/docs/runbooks/ups-operations.md` for the full doctrine
   # + drill procedures.
