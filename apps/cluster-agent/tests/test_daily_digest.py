@@ -24,11 +24,17 @@ async def test_daily_digest_quiet_day_no_findings(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-6")
     monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.50")
 
+    from prometheus_client import REGISTRY
+    before = dt.datetime.now().timestamp()
     result = await daily_digest.run_async(cluster="dev")
     assert result.quiet_period is True
     assert result.findings_emitted == 0
     assert result.alert_groups_seen == 0
     assert "No alerts fired" in result.summary
+    # A quiet day is a success, so the liveness gauge moves too.
+    stamp = REGISTRY.get_sample_value(
+        "cluster_agent_last_success_timestamp", {"mode": "A"})
+    assert stamp is not None and stamp >= before
 
 
 @pytest.mark.asyncio
