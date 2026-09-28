@@ -606,6 +606,14 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > `--apply` runs, so merge it and pull `main` BEFORE that re-mint. A
 > rollback reverts it with the kubeconfig.
 >
+> **So does its Grafana (kube-infra#1366).** `GRAFANA_URLS` in the same file
+> names the node the key's annotations go to, and `GRAFANA_SA_TOKEN_<KEY>` is
+> a service account in that cluster's Grafana: a key that moves needs both,
+> the token minted in the NEW cluster's Grafana (kube-infra `CLAUDE.md`
+> § Post-bootstrap operator tasks). The Q170S1 clusters keep the old
+> header path (kube-infra's legacy layer), so a rollback to them needs this
+> repository's #1366 change reverted too, or their annotations fail soft.
+>
 > Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
 > / `ClusterAgentRunsFailing` in kube-infra
 > `flux-cd/infrastructure/configs/base/prometheus-rules-cluster-agent.yaml`.
@@ -695,7 +703,10 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    gap). Spec: `docs/superpowers/specs/2026-07-16-finding-state-reconcile.md`.
 5. ONE LLM call → Report (alerts + log patterns + dedup context).
 6. Each Finding dispatched to Grafana annotation + GH issue +
-   state.db record.
+   state.db record. The annotation is best-effort: a failure is logged and
+   counted, never fatal (`dispatch.py`). It goes to the cluster's
+   `grafana-nas` NodePort with a service-account token (kube-infra#1366,
+   `tools/grafana.py`).
 
 Cost: ~$0.25-0.50/day on Sonnet 4.6 (cached prefix shared between
 dev + prd runs since they fire 60s apart).
@@ -860,10 +871,29 @@ its own (`Finding.cluster` `nas` / `global`) is its own label.
   `CLUSTER_AGENT_GH_APP_*`).
 - `KUBECONFIG_DEV` / `KUBECONFIG_PRD` / `KUBECONFIG_TEST_RESTORE_DEV` —
   base64-encoded kubeconfigs with SA tokens. These ALSO carry the auth
-  the agent uses to reach Loki / Prometheus / Alertmanager / Grafana
-  via apiserver-proxy — no separate annotation-auth token.
-- `GRAFANA_API_TOKEN_DEV` / `_PRD` — for `grafana_post_annotation` tool
-  (creates findings as Grafana annotations on the dev/prd Grafana).
+  the agent uses to reach Loki / Prometheus / Alertmanager via
+  apiserver-proxy (kube-infra's `cluster-agent-services-proxy` Role: those
+  three, `get` only). NOT Grafana, since kube-infra#1366.
+- `GRAFANA_SA_TOKEN_DEV` / `_PRD` — for `grafana_post_annotation`
+  (kube-infra#1366, 2026-09-28). The token of the Grafana service account
+  `cluster-agent` (Editor, the narrowest built-in role that may create
+  annotations) in THAT cluster's Grafana, sent as `Authorization: Bearer` to
+  the key's `grafana-nas` NodePort (`clusters.py` `GRAFANA_URLS`: the node's
+  mgmt address, port 30030; a kube-infra CNP admits only `10.10.5.10`). Minted
+  by hand through the Grafana API: kube-infra `CLAUDE.md` § Post-bootstrap
+  operator tasks. ⚠ Grafana's database is not backed up, so **every from-zero
+  rebuild of a cluster loses its account**: re-mint, then `manage.sh phase
+  apps --only cluster-agent --apply`. Until then annotations fail soft (the
+  finding still files; `ClusterAgentDispatchErrors` fires for
+  `grafana_annotation`). Both keys are in `_DOPPLER_KEYS_PER_APP`, so they
+  MUST exist in Doppler or `manage.sh phase apps` fails loud.
+  *(Until #1366 the annotations went through the apiserver proxy with an
+  `X-WEBAUTH-USER: cluster-agent` header. Grafana's auth.proxy trusts that
+  header from any pod-CIDR address, which the proxy arrives from, and it can
+  name any user: the read-only SA could act as Grafana `admin`. The older
+  `GRAFANA_API_TOKEN_{DEV,PRD}` keys, listed here until 2026-09-28, were dead
+  since 2026-05-26 (PR #42); delete them from Doppler if they are still
+  there.)*
 - `DIGEST_SUMMARY` (CSV, `email,issue` currently) /
   `DIGEST_SUMMARY_EMAIL_TO` — per-day summary delivery config (see
   "Daily summary delivery" subsection above).
