@@ -596,6 +596,13 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > overrides both for a deliberate short-lived test. Rollback (row 16) is a
 > re-run with the default kubeconfigs.
 >
+> **The key's issue label moves in the same cycle** (row 16, D1): the
+> key's entry in `apps/cluster-agent/src/cluster_agent/clusters.py`
+> (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
+> `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
+> `--apply` runs, so merge it and pull `main` BEFORE that re-mint. A
+> rollback reverts it with the kubeconfig.
+>
 > Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
 > / `ClusterAgentRunsFailing` in kube-infra
 > `flux-cd/infrastructure/configs/base/prometheus-rules-cluster-agent.yaml`.
@@ -790,7 +797,7 @@ Destinations are CSV-controlled via Doppler `DIGEST_SUMMARY`:
 | Value | Behavior |
 |---|---|
 | _(empty)_ | disabled — no summary delivery |
-| `issue` | GH issue only (label `digest-summary` + `kub-{dev,prd}` + `mode-A`) |
+| `issue` | GH issue only (label `digest-summary` + the key's cluster name + `mode-A`) |
 | `email` | email only (to `DIGEST_SUMMARY_EMAIL_TO`, From: `cluster-agent {cluster} <noreply@w1.lv>`) |
 | `email,issue` | both — current default |
 
@@ -818,10 +825,18 @@ canonical copy. Implementation: `modes/summary_issue.py` orchestrator
 + `tools/email.py` stdlib smtplib wrapper.
 
 **Label naming convention.** All GH issues created by the agent (both
-per-Finding and per-digest-summary) carry a cluster label of the form
-`kub-{dev,prd}` — matching the cluster label stamped on every Loki/
-Prometheus series. A GitHub inbox query `label:kub-prd` lines up with
-PromQL `{cluster="kub-prd"}` — same identifier, same vocabulary.
+per-Finding and per-digest-summary) carry a cluster label: the name of the
+cluster behind the key, as kube-infra names it (cluster-env
+`CLUSTER_NAME`, which Alloy stamps on every Loki stream as `cluster`). A
+GitHub inbox query `label:kub-prd` lines up with LogQL
+`{cluster="kub-prd"}` — same identifier, same vocabulary. The key → cluster
+map is **one place**, `apps/cluster-agent/src/cluster_agent/clusters.py`
+(`CLUSTER_NAMES`); no label site builds a name itself. It changes with the
+key's kubeconfig and only with it (§ *MS-A2 cutover* under the token
+warning above), and the key's old name goes into
+`PREVIOUS_NAMES` so the first run under the new name closes the last
+digest-summary issue filed under the old one. A key with no kubeconfig of
+its own (`Finding.cluster` `nas` / `global`) is its own label.
 
 **Doppler keys** (`cluster-agent/prd`):
 

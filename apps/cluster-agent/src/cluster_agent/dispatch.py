@@ -28,6 +28,7 @@ import dataclasses
 import logging
 import os
 
+from .clusters import cluster_name
 from .emit.metrics import DISPATCH_ERRORS
 from .schema import Finding
 from .state.db import StateDB
@@ -183,11 +184,13 @@ def dispatch(finding: Finding, action: DedupAction, *, db: StateDB) -> DispatchR
                         "needs-review",
                         f"mode-{finding.mode}",
                         f"severity-{finding.severity}",
-                        # `kub-{cluster}` matches the Loki/Prom cluster
-                        # label convention (`cluster=kub-prd` / `kub-dev`
-                        # is what gets stamped on every series). Keeps
-                        # GH issue labels grep-compatible with metrics.
-                        f"kub-{finding.cluster}",
+                        # The cluster behind the key, as kube-infra names
+                        # it (cluster-env CLUSTER_NAME, the `cluster`
+                        # label Alloy stamps on every Loki stream), so GH
+                        # labels stay grep-compatible with the logs. See
+                        # clusters.py: it moved kub-* → msa2-* at the
+                        # MS-A2 cutover.
+                        cluster_name(finding.cluster),
                     ],
                 )
                 gh_ref = f"{repo}#{resp['number']}"
