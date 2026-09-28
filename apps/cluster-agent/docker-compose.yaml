@@ -21,9 +21,11 @@
 # Observability auth: Loki/Prometheus/Alertmanager are reached via the K8s
 # API server's services/proxy endpoint using the kubeconfig SA token from
 # Doppler — no basic-auth credentials needed. The OIDC-gated *.w1.lv
-# hostnames are bypassed entirely. See tools/k8s_proxy.py.
-# NOTE: the cluster-agent-readonly ClusterRole (kube-infra) must gain
-# services/proxy GET on monitoring namespace before these tools work live.
+# hostnames are bypassed entirely. See tools/k8s_proxy.py. kube-infra's
+# `cluster-agent-services-proxy` Role grants `get` on those three only.
+# Grafana annotations go elsewhere since kube-infra#1366: a NodePort on each
+# cluster's node (clusters.py GRAFANA_URLS) with a Grafana service-account
+# token, GRAFANA_SA_TOKEN_{DEV,PRD} below. See tools/grafana.py.
 #
 # Image strategy: python:3.13-alpine base + persistent /venv. Self-healing
 # venv rebuilds on Python version drift. App code uploaded by
@@ -128,13 +130,21 @@ services:
       # Mode G is paused; the namespace + Role are removed in
       # kube-infra (same date). Re-provision via P0 Task 2 + 4 if
       # Mode G is ever revived.
-      # ── Observability — Loki/Prom/AM + Grafana annotation API all reach
-      # cluster services via apiserver-proxy (kubeconfig SA token), so no
-      # separate annotation auth token is needed. Grafana itself runs in
-      # auth.proxy mode (whitelist=""), trusts X-WEBAUTH-USER from the
-      # proxy + auto-creates the cluster-agent user with Admin role.
-      # (Old GRAFANA_API_TOKEN_{DEV,PRD} env vars dropped 2026-05-26 with
-      # PR #42 — they were dead since the apiserver-proxy switch.)
+      # ── Grafana annotations (kube-infra#1366, 2026-09-28). One Grafana
+      # service-account token per key (`cluster-agent`, Editor, in THAT
+      # cluster's Grafana), sent as `Authorization: Bearer` to the key's
+      # `grafana-nas` NodePort (clusters.py GRAFANA_URLS), which a CNP admits
+      # from 10.10.5.10 only. Loki/Prom/AM stay on apiserver-proxy (the
+      # kubeconfigs above). Until #1366 the annotations went through the
+      # apiserver proxy too, with an X-WEBAUTH-USER header that Grafana's
+      # auth.proxy trusted from any pod-CIDR address: it let the read-only SA
+      # act as any Grafana user, `admin` included. ⚠ Grafana's database is
+      # not backed up: a from-zero rebuild of a cluster loses its account, so
+      # re-mint the token (kube-infra CLAUDE.md § Post-bootstrap operator
+      # tasks); until then annotations fail soft. Both keys MUST exist in
+      # Doppler, or `manage.sh phase apps` fails loud.
+      - GRAFANA_SA_TOKEN_DEV=${GRAFANA_SA_TOKEN_DEV}
+      - GRAFANA_SA_TOKEN_PRD=${GRAFANA_SA_TOKEN_PRD}
       # ── S3 (Mode G backup verification) — keys removed 2026-05-27
       # (post-P3 wrap): MINIO_NAS_KEY_ID / MINIO_NAS_SECRET_KEY /
       # B2_KEY_ID / B2_APP_KEY were provisioned in P0 for the planned

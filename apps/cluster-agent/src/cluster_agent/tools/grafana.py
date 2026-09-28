@@ -1,64 +1,72 @@
-"""Grafana annotation API — via K8s apiserver-proxy.
+"""Grafana annotation API — a NodePort from the NAS, with a service-account token.
 
 Annotations are how Mode A surfaces findings on the Grafana time-series
 dashboards. Operator opens the kube-prometheus-stack dashboard, sees a
 vertical line at the moment the agent fired the finding, hovers for
 the text. Tags are filterable from the dashboard query.
 
-## Why apiserver-proxy and not direct HTTPS
+## The path (kube-infra#1366, 2026-09-28)
 
-Originally this tool POSTed direct to `https://grafana-{env}.w1.lv/api/
-annotations` (the OIDC-gated admin hostname) with a Grafana SA token
-as Bearer. That failed in production with `[Errno 113] Host is
-unreachable` because:
+  POST {GRAFANA_URLS[key]}/api/annotations
+  Authorization: Bearer <GRAFANA_SA_TOKEN_<KEY>>
 
-  - Grafana's traefik-admin LB IP is on the mgmt VLAN (e.g. 10.10.5.40)
-  - The NAS host is ALSO on the mgmt VLAN (10.10.5.10)
-  - Kernel sees the LB IP in its directly-connected /24 → ARPs locally
-    instead of routing via MikroTik (which has the BGP route)
-  - Nothing on the L2 segment answers ARP for the LB IP (it's a
-    Cilium-advertised host route, not bound to any L2 interface)
+`GRAFANA_URLS` (clusters.py) is kube-infra's `grafana-nas` Service, NodePort
+30030 on the node's mgmt address, which a CiliumNetworkPolicy admits from the
+NAS's 10.10.5.10 only. The token belongs to the Grafana service account
+`cluster-agent` (Editor) in THAT cluster's Grafana, minted by hand and kept in
+Doppler `cluster-agent/prd` as GRAFANA_SA_TOKEN_DEV / GRAFANA_SA_TOKEN_PRD.
+Grafana's database is not backed up, so a from-zero rebuild of a cluster loses
+the account: every post then gets 401 until it is re-minted (kube-infra
+CLAUDE.md § Post-bootstrap operator tasks).
 
-So we route through the apiserver-proxy instead — same pattern as
-Loki/Prom/AM. The NAS reaches the apiserver via VIP (held by a cluster
-node directly on the VLAN, ARP works). The apiserver then forwards
-internally to the Grafana pod via kube-proxy / CNI.
+⚠ Never send `X-WEBAUTH-*` headers here. From 10.10.5.10, outside Grafana's
+`[auth.proxy]` whitelist (the pod CIDR), Grafana refuses them, and the header
+path was the hole #1366 closed.
 
-URL shape:
-  {apiserver}/api/v1/namespaces/monitoring/services/kube-prometheus-stack-grafana:80/proxy/api/annotations
+A failure raises; `dispatch.dispatch` catches it, logs it and counts it
+(`cluster_agent_dispatch_errors_total{surface="grafana_annotation"}`, alert
+`ClusterAgentDispatchErrors`), so an annotation never breaks a Mode A run.
 
-Auth is two-layer:
-  1. K8s SA token from kubeconfig (apiserver authn) — the
-     `cluster-agent-services-proxy` Role grants `create` on
-     services/proxy for `kube-prometheus-stack-grafana[:80]` (kube-infra
-     PR #567 for this fix).
-  2. Grafana's `[auth.proxy]` mode — the cluster's Grafana is
-     configured to trust the proxy (whitelist="") and auto-create
-     users from the `X-WEBAUTH-USER` header (per kube-infra CLAUDE.md
-     SSO architecture section). Apiserver-proxy strips/ignores
-     `Authorization: Bearer <Grafana-SA-token>` so the original
-     Bearer-token approach returned 401; the X-WEBAUTH-USER header
-     passes through cleanly and Grafana auto-creates a "cluster-agent"
-     user with Admin role (auto_assign_org_role=Admin per the
-     chart's [auth.proxy] block).
+## History: why not the other paths
 
-History note: tried Grafana SA token via Bearer first (PR #39), got
-401 from Grafana after apiserver-proxy stripped/ignored it. Switched
-to X-WEBAUTH-USER 2026-05-26 — uses the same proxy-trust mechanism
-that interactive operator browser access already uses via
-traefik-admin's OIDC plugin.
+  - Direct HTTPS to `https://grafana-{env}.w1.lv/api/annotations` with a
+    Bearer token (the first version) failed with `[Errno 113] Host is
+    unreachable`: that name is traefik-admin's LB IP on the mgmt VLAN, which
+    the NAS shares. The kernel sees the address in its directly-connected /24
+    and ARPs for it on-link instead of routing via MikroTik (which has the
+    BGP route), and nothing on the L2 segment answers for a BGP-advertised
+    address. A node address does answer ARP, hence the NodePort.
+  - The apiserver's services/proxy with a Bearer token (PR #39) got 401: the
+    apiserver drops `Authorization` after authenticating the caller.
+  - The apiserver's services/proxy with `X-WEBAUTH-USER: cluster-agent`
+    (2026-05-26, PR #42, until kube-infra#1366): it worked, and it was the
+    hole. Grafana's auth.proxy trusts that header from any pod-CIDR address,
+    the apiserver proxy arrives from one, and the header can name any user,
+    `admin` included. So the "read-only" SA could act as Grafana Admin, and
+    the header-created `cluster-agent` user itself was an Admin.
 """
 from __future__ import annotations
-from typing import Iterable
 
+import os
+from collections.abc import Iterable
+
+import httpx
+
+from .. import clusters
 from .audit import audit
-from .k8s_proxy import proxy_post
 
 
-_GRAFANA_NAMESPACE = "monitoring"
-_GRAFANA_SERVICE = "kube-prometheus-stack-grafana"
-_GRAFANA_SERVICE_PORT = 80
-_GRAFANA_PROXY_USER = "cluster-agent"
+def _token(cluster: str) -> str:
+    """The key's Grafana service-account token, from the environment.
+
+    Stripped: a token piped into Doppler with a trailing newline would otherwise
+    make an invalid header. Missing or empty raises with the variable's NAME
+    only, never a value."""
+    var = f"GRAFANA_SA_TOKEN_{cluster.upper()}"
+    token = os.environ.get(var, "").strip()
+    if not token:
+        raise RuntimeError(f"{var} is not set: no Grafana service-account token for {cluster!r}")
+    return token
 
 
 @audit(tool="grafana_post_annotation")
@@ -69,10 +77,14 @@ def post_annotation(
     tags: Iterable[str],
     time_ms: int,
     time_end_ms: int | None = None,
+    timeout: float = 15.0,
 ) -> str:
-    """Post a Grafana annotation via apiserver-proxy + auth.proxy header."""
-    if cluster not in ("dev", "prd"):
-        raise ValueError(f"unknown cluster {cluster!r}; expected 'dev' or 'prd'")
+    """Post a Grafana annotation to `cluster`'s Grafana. Returns its id."""
+    base = clusters.GRAFANA_URLS.get(cluster)
+    if base is None:
+        raise ValueError(
+            f"unknown cluster {cluster!r}; expected one of {sorted(clusters.GRAFANA_URLS)}"
+        )
     payload: dict[str, object] = {
         "time": int(time_ms),
         "tags": list(tags),
@@ -80,21 +92,11 @@ def post_annotation(
     }
     if time_end_ms is not None:
         payload["timeEnd"] = int(time_end_ms)
-    resp = proxy_post(
-        cluster=cluster,
-        namespace=_GRAFANA_NAMESPACE,
-        service=_GRAFANA_SERVICE,
-        port=_GRAFANA_SERVICE_PORT,
-        path="api/annotations",
-        json_body=payload,
-        # auth.proxy mode: Grafana trusts the proxy + creates the user
-        # on first request. Same mechanism that traefik-admin uses on
-        # operator browser sessions (where the OIDC plugin sets these
-        # headers from validated Pocket-ID claims).
-        extra_headers={
-            "X-WEBAUTH-USER": _GRAFANA_PROXY_USER,
-            "X-WEBAUTH-EMAIL": "cluster-agent@w1.lv",
-            "X-WEBAUTH-NAME": "cluster-agent (Mode A)",
-        },
+    r = httpx.post(
+        f"{base.rstrip('/')}/api/annotations",
+        json=payload,
+        headers={"Authorization": f"Bearer {_token(cluster)}"},
+        timeout=timeout,
     )
-    return str(resp["id"])
+    r.raise_for_status()
+    return str(r.json()["id"])
