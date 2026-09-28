@@ -585,9 +585,12 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > **MS-A2 cutover (kube-infra msa2 plan § Cutover inventory row 16).** The two
 > keys are minted from `--dev-kubeconfig` / `--prd-kubeconfig`, defaulting to
 > `kube-infra/talos-os/kubeconfig-{dev,prd}` (the Q170S1 clusters). Move each
-> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**, one
-> cluster at a time: in the mixed period prd = msa2-prd and dev = kub-dev, so
-> pass only `--prd-kubeconfig`. Before minting anything the script prints each
+> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**. The
+> pre-flight lists nodes for BOTH keys and a key without a flag falls back to
+> its kub-* default, so once a kub-* cluster is dark a one-flag run stops with
+> `FATAL: cannot list nodes … nothing minted`. After the same-day cutover
+> (2026-09-28: kub-prd and kub-dev both dark) it is ONE run with both flags;
+> one flag alone only while the other kub-* cluster still answers. Before minting anything the script prints each
 > key's server and nodes, and **refuses** a server on an MS-A2 BUILD address
 > (`10.10.5.17` / `.18`) and dev == prd. Talos makes the endpoint the token
 > issuer, so a token minted at the build address dies at the re-address (plan
@@ -595,6 +598,13 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > token's own `iss` claim against the same addresses. `--allow-build-address`
 > overrides both for a deliberate short-lived test. Rollback (row 16) is a
 > re-run with the default kubeconfigs.
+>
+> **The key's issue label moves in the same cycle** (row 16, D1): the
+> key's entry in `apps/cluster-agent/src/cluster_agent/clusters.py`
+> (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
+> `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
+> `--apply` runs, so merge it and pull `main` BEFORE that re-mint. A
+> rollback reverts it with the kubeconfig.
 >
 > Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
 > / `ClusterAgentRunsFailing` in kube-infra
@@ -790,7 +800,7 @@ Destinations are CSV-controlled via Doppler `DIGEST_SUMMARY`:
 | Value | Behavior |
 |---|---|
 | _(empty)_ | disabled — no summary delivery |
-| `issue` | GH issue only (label `digest-summary` + `kub-{dev,prd}` + `mode-A`) |
+| `issue` | GH issue only (label `digest-summary` + the key's cluster name + `mode-A`) |
 | `email` | email only (to `DIGEST_SUMMARY_EMAIL_TO`, From: `cluster-agent {cluster} <noreply@w1.lv>`) |
 | `email,issue` | both — current default |
 
@@ -818,10 +828,19 @@ canonical copy. Implementation: `modes/summary_issue.py` orchestrator
 + `tools/email.py` stdlib smtplib wrapper.
 
 **Label naming convention.** All GH issues created by the agent (both
-per-Finding and per-digest-summary) carry a cluster label of the form
-`kub-{dev,prd}` — matching the cluster label stamped on every Loki/
-Prometheus series. A GitHub inbox query `label:kub-prd` lines up with
-PromQL `{cluster="kub-prd"}` — same identifier, same vocabulary.
+per-Finding and per-digest-summary) carry a cluster label: the name of the
+cluster behind the key, as kube-infra names it (cluster-env
+`CLUSTER_NAME`, which Alloy stamps on every Loki stream as `cluster`). A
+GitHub inbox query `label:msa2-prd` lines up with LogQL
+`{cluster="msa2-prd"}` — same identifier, same vocabulary (issues filed
+before a key's cutover keep its old `kub-*` label). The key → cluster
+map is **one place**, `apps/cluster-agent/src/cluster_agent/clusters.py`
+(`CLUSTER_NAMES`); no label site builds a name itself. It changes with the
+key's kubeconfig and only with it (§ *MS-A2 cutover* under the token
+warning above), and the key's old name goes into
+`PREVIOUS_NAMES` so the first run under the new name closes the last
+digest-summary issue filed under the old one. A key with no kubeconfig of
+its own (`Finding.cluster` `nas` / `global`) is its own label.
 
 **Doppler keys** (`cluster-agent/prd`):
 
@@ -1078,7 +1097,8 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │    `/mnt/tank/system/talos/nas-ups-orchestrator.sh`:
   │      talosctl shutdown --force × every node (one call PER NODE) →
   │      poll apid until 0/N → halt NAS LAST
-  │      (N = the 6 Q170S1 nodes + each MS-A2 address that ACCEPTED)
+  │      (N = the Q170S1 nodes + each MS-A2 address that ACCEPTED;
+  │       .11/.12 only if accepted once kub-prd is gone — rule (d))
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
@@ -1145,7 +1165,7 @@ below has run it still fans out to the six Q170S1 nodes only.
 | addresses | `.11-.13`, `.14-.16` | **both** of each box's: BUILD then FINAL — prd `10.10.5.17` + `.11`, dev `10.10.5.18` + `.12` (kube-infra `talos-os/estates.yaml`, plan D12) |
 | config | `{prd,dev}-shutdown.talosconfig` | `msa2-{prd,dev}-shutdown.talosconfig`, from `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{PRD,DEV}` (bootstrap.sh menu 10); a cluster with no staged config is **skipped** |
 | call | `shutdown --force` (unchanged, byte for byte) | `shutdown --force --wait=false`, capped at 60 s by coreutils `timeout` |
-| polled? | always, whatever the rc (unchanged) | **only if the call returned 0** — true at a BUILD address only: a FINAL address is also in the Q170S1 prd list (the ⚠ bullet below) |
+| polled? | always, whatever the rc (unchanged) — except `.11`/`.12` once kub-prd is gone (rule d) | **only if the call returned 0** |
 
 - **Why only-if-accepted.** apid's `:50000` probe is unauthenticated: a box in
   Talos maintenance mode, or one whose PKI no longer matches the staged config,
@@ -1169,16 +1189,28 @@ below has run it still fans out to the six Q170S1 nodes only.
   is msa2-prd, the old prd config is rejected there, msa2-prd's is accepted,
   and `.11` is polled once (the poll set is de-duplicated). Tests pin all of
   these: `tests/test_ups_orchestrator.py`.
-- ⚠ **Only-if-accepted covers the BUILD addresses, not the FINAL ones.** `.11`
-  and `.12` are also in `PRD_NODES`, and the Q170S1 rule polls them whatever
-  the rc. So from prd's cutover until `PRD_NODES` is deleted at prd's teardown,
-  an msa2 box at `.11` (or `.12`) that does **not** accept its shutdown —
-  maintenance mode, config not staged, a stale PKI — is polled to the 300 s
-  backstop, like a Q170S1 node that rejects. That box is not shut down either
-  way; the cost is 300 s of battery (LB fires at `battery.runtime.low` 420 s).
-  Pinned by `test_final_address_that_does_not_accept_is_polled_to_the_backstop`;
-  the mitigation is procedural — re-stage after every menu 10 and run the
-  printed check, which must show `Server:` for the box at its current address.
+- **Rule (d): a FINAL address follows kub-prd while it is live, and
+  only-if-accepted once it is gone.** `.11` and `.12` are in `PRD_NODES` as
+  well as in an MS-A2 list. While at least one kub-prd call returned 0 (before
+  prd's cutover, and after a rollback) they are polled whatever their rc — the
+  Q170S1 rule, unchanged. Once **no** kub-prd call returned 0 (after the
+  cutover the old nodes' power cords are out, kube-infra plan D12) each is
+  polled only if some call to it returned 0. Without it, from prd's cutover
+  until its teardown an msa2 box at `.11`/`.12` that does not accept —
+  maintenance mode, config not staged, a stale PKI — was polled to the 300 s
+  backstop (LB fires at `battery.runtime.low` 420 s, so that is most of the
+  reserve). That box is still not shut down, so re-stage after every menu 10
+  and run the printed check all the same.
+  ⚠ **Its one change to the live Q170S1 path** — an operator decision, and the
+  last commit on its own so it can be dropped: if **every** kub-prd call fails
+  while the old nodes are up, `.11`/`.12` are no longer waited for. For a
+  broken prd config that changes nothing in practice (`.13` still runs to the
+  backstop); for a `--wait` tracker error on all three after the shutdown was
+  delivered, the NAS can halt while `.11`/`.12` are still going down — gated
+  by `.13` and kub-dev, which shut down in parallel, and followed by `apc1`'s
+  90 s `ups.delay.shutdown`. A single failing kub-prd call changes nothing.
+  Tests pin both sides (`test_final_address_*`, `test_every_kub_prd_call_*`,
+  `test_tracker_error_on_every_kub_prd_call_*`).
 - **The cap bounds a hung msa2 call; it does not hide it.** The poll, and so
   the NAS halt, starts only after every shutdown call has returned, so an msa2
   address that connects and then hangs delays it by up to 65 s (60 s + the 5 s
@@ -1227,25 +1259,35 @@ below has run it still fans out to the six Q170S1 nodes only.
   `bootstrap.sh msa2-<env>` menu 10 (it re-mints the msa2 config), and after
   msa2-prd is built (Task H) so its config is staged. An msa2 key missing from Doppler is a WARN, not an
   error: that cluster is skipped until the next re-stage.
-- **At cutover:** nothing in the orchestrator. Row 15's remaining items stand:
-  re-stage `talosctl` at the msa2 version (`TALOSCTL_VERSION`, v1.14.0 today —
-  same minor as msa2's v1.14.1), run the printed check, and **re-measure the
-  shutdown time** in a drill rather than carrying 187 s.
+- **At cutover** (kube-infra cutover plan 2026-09-28, A5 / B5; row 15), in this
+  order: move the box's PSU onto `apc1` (one box at a time, prd first), wait
+  for the node, its Clusters and menu 33; re-measure the runtime at the new
+  load; merge rule (d) and the `talosctl` default bump (`TALOSCTL_VERSION`
+  v1.14.1, msa2's version; same minor as the Q170S1 rollback targets' v1.14.0)
+  — the one cutover PR here; then **Re-stage** above from an up-to-date
+  `main`, and run the printed check: every box that is up must show `Server:`
+  for its own config at its current address. Then **re-measure the shutdown
+  time** in a drill rather than carrying 187 s. The orchestrator's node lists
+  need no edit: both of each box's addresses are already in them.
 - **At teardown — a code change with its own PR and tests, not a two-line
   deletion.** Under `set -u` a leftover reference to a deleted list aborts the
   orchestrator **before** it fires the msa2 shutdowns or halts the NAS, and the
-  setup script's `check_pairs` fails on a list it cannot read. prd's teardown
-  comes first (before dev's cutover); per torn-down cluster `<X>` (`PRD`, then
-  `DEV`) remove:
-  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its part
-    of `Q170S1_NODES`, and that msa2 cluster's BUILD address
-    (`MSA2_<X>_NODES` keeps only the FINAL one);
+  setup script's `check_pairs` fails on a list it cannot read. The teardown
+  comes 7 days after dev's cutover (kube-infra cutover plan 2026-09-28, O4:
+  both clusters cut over the same day); per torn-down cluster `<X>` (`PRD`,
+  then `DEV`) remove:
+  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its
+    `poll_q170s1 <x>` line, its part of `Q170S1_NODES`, and that msa2
+    cluster's BUILD address (`MSA2_<X>_NODES` keeps only the FINAL one). Once
+    `PRD_NODES` is gone, `.11`/`.12` are MS-A2-only and rule (a) covers them
+    directly;
   - `setup-talos-shutdown-orchestrator.sh`: `<X>` in `check_pairs`'s loop, its
     required-key line (`TALOS_NAS_SHUTDOWN_CONFIG_<X>`), its `base64 -d` line,
     its entry in the initial `CFGS`, and the header lines naming it;
   - `tests/test_ups_orchestrator.py`: that cluster's Q170S1 expectations.
   After the second teardown delete what is left of the Q170S1 block —
-  `Q170S1_NODES`, the rejection-log `case`, the Q170S1 tests. Run the suite,
+  `Q170S1_NODES`, the FINAL-address branch of the rejection log, `live`,
+  `poll_q170s1`, the Q170S1 and rule-(d) tests. Run the suite,
   re-stage, run the printed check. The staged `{dev,prd}-shutdown.talosconfig`
   are then unused; the setup script never deletes a file, so remove them from
   the NAS by hand.
@@ -1261,17 +1303,18 @@ only during a real outage.
 > staged binary was **v1.13.2** against nodes on **v1.14.0** — a full-minor gap.
 > The 2026-09-23 pool rebuild destroyed `/mnt/tank/system/talos/` and the whole
 > path was re-staged with `setup-talos-shutdown-orchestrator.sh` (pool-rebuild
-> plan Task 7), whose `TALOSCTL_VERSION` default is **v1.14.0** — same minor as
-> the old estate (v1.14.0) and msa2 (v1.14.1). ⚠ Confirm with the check below
+> plan Task 7), whose `TALOSCTL_VERSION` default was then **v1.14.0** — same minor
+> as the old estate (v1.14.0) and msa2 (v1.14.1); it is **v1.14.1** from the cutover
+> PR on (§ *MS-A2 in the fan-out*, *At cutover*). ⚠ Confirm with the check below
 > (and `talosctl version --client` on the NAS) before relying on it; if it still
 > reports v1.13.2, the gap is real — re-stage (until the MS-A2 cutover gate,
 > with the msa2 keys unset: § *MS-A2 in the fan-out*, *Re-stage*).
 > ⚠ msa2 has its own PKI, so it has its own `os:operator` configs
 > (`TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{DEV,PRD}`). Since the 2026-09-26 change
 > they are staged alongside the Q170S1 pair (once re-staged) and the
-> orchestrator targets both of each box's addresses, so **no orchestrator edit
-> is due at cutover** — only the talosctl bump in kube-infra cutover row 15
-> (§ *MS-A2 in the fan-out*).
+> orchestrator targets both of each box's addresses, so **no node-list edit is
+> due at cutover** — only rule (d) and the talosctl bump, both in the cutover PR
+> (kube-infra cutover row 15; § *MS-A2 in the fan-out*, *At cutover*).
 >
 > ✅ **The CREDENTIALS are fine** — read from Doppler 2026-09-22 they are valid
 > `Jun 1 2026 → May 29 2036`. A suspicion that they had expired came from

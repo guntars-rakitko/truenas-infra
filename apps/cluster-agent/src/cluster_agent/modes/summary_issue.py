@@ -44,6 +44,7 @@ import logging
 import os
 from typing import Any
 
+from ..clusters import all_names, cluster_name
 from ..schema import AlertGroup, Finding, LogPattern
 from ..tools.email import send_email
 from ..tools.github import gh_issue_close, gh_issue_create, gh_issue_list
@@ -369,13 +370,23 @@ def _close_previous_summaries(
     raise, since the new issue creation is more important than the
     cleanup of old ones.
     """
-    try:
-        issues = gh_issue_list(
-            repo, labels=["digest-summary", f"kub-{cluster}"], state="open"
-        )
-    except Exception as e:
-        log.warning("close_previous_summaries: list failed: %r", e)
-        return 0
+    # Every name the key has had (clusters.py): the first run after a key
+    # moves cluster (the MS-A2 cutover) also closes the last summary filed
+    # under the old name. One list per name: GitHub ANDs a label filter.
+    issues: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for name in all_names(cluster):
+        try:
+            found = gh_issue_list(
+                repo, labels=["digest-summary", name], state="open"
+            )
+        except Exception as e:
+            log.warning("close_previous_summaries: list %s failed: %r", name, e)
+            continue
+        for issue in found:
+            if int(issue["number"]) not in seen:
+                seen.add(int(issue["number"]))
+                issues.append(issue)
 
     closed = 0
     for issue in issues:
@@ -517,7 +528,7 @@ def emit_summary_issue(
             repo,
             title=title,
             body=body,
-            labels=["digest-summary", f"kub-{cluster}", "mode-A"],
+            labels=["digest-summary", cluster_name(cluster), "mode-A"],
         )
         log.info("emit_summary_issue: filed %s#%s",
                  repo, resp.get("number"))

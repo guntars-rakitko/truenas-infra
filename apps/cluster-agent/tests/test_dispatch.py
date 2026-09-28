@@ -141,7 +141,8 @@ def test_dispatch_create_routes_to_findings_repo_with_review_labels(tmp_path, mo
     assert "cluster-agent" in labels
     assert "needs-review" in labels
     assert "severity-medium" in labels
-    assert "kub-dev" in labels
+    from cluster_agent.clusters import cluster_name
+    assert cluster_name("dev") in labels  # the cluster behind the key (test_clusters.py)
 
 
 def test_dispatch_comment_targets_ref_repo_not_env_repo(tmp_path, monkeypatch):

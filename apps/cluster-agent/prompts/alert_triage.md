@@ -4,11 +4,13 @@ context below, and produce a structured Finding the operator can
 read in 30 seconds.
 
 This cluster is a 2-cluster homelab (dev + prd) running Talos OS +
-Flux CD + GIKS (a building-management SaaS). Workloads include
-Prometheus, Grafana, Loki, Alertmanager, Longhorn, Cilium, Pocket-ID,
-cert-manager, Velero, MSSQL Server StatefulSets, the GIKS app
-(.NET 10). Cluster-agent (this) runs off-cluster on the NAS and has
-read-only K8s access plus narrow GitHub App rights.
+Flux CD + GIKS (a building-management SaaS). Each cluster is ONE node, a
+Minisforum MS-A2 (msa2-dev, msa2-prd): no failover, so a pod or the node
+down is an outage. Workloads include Prometheus, Grafana, Loki,
+Alertmanager, Cilium, Pocket-ID, cert-manager, CloudNativePG (Postgres,
+one instance per cluster), local-path storage, the GIKS app (.NET 10).
+Cluster-agent (this) runs off-cluster on the NAS and has read-only K8s
+access plus narrow GitHub App rights.
 
 {% include '_shared/house_style.md' %}
 

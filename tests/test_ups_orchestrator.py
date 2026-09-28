@@ -16,14 +16,17 @@ Every external the script touches is stubbed. The model of the rack:
     equals the node's PKI (a different cluster's CA -> x509 -> rc 1), exactly
     as the real TLS handshake behaves; an absent node -> "no route" -> rc 1;
   * an accepted shutdown takes the node down after `delay` seconds;
-  * `hang` makes the call block until something kills it.
+  * `hang` makes the call block until something kills it;
+  * `tracker_error` makes an ACCEPTED shutdown still exit 1, as the default
+    `--wait` tracker can after the RPC succeeded.
 
 The Q170S1 tests pin the old path: the six calls keep their exact argv, run
 unbounded, and a Q170S1 node is polled whatever its rc — the legacy behaviour
-this change keeps on purpose while the old estate is live. Because the msa2
-FINAL addresses (.11/.12) are also in the Q170S1 prd list, that legacy rule
-reaches them too: test_final_address_that_does_not_accept_is_polled_to_the_
-backstop pins it.
+this change keeps on purpose while the old estate is live. The msa2 FINAL
+addresses (.11/.12) are also in the Q170S1 prd list: they follow that legacy
+rule while kub-prd is live and rule (a) once it is gone (the script's rule
+(d)); the rule-(d) tests pin both sides, including its one change to the
+Q170S1 path.
 """
 
 from __future__ import annotations
@@ -96,6 +99,9 @@ if [ "$(basename "$cfg")" != "$(cat "$S/pki/$ip")" ]; then
 fi
 d=0; [ -f "$S/delay/$ip" ] && d=$(cat "$S/delay/$ip")
 echo $(( $(date +%s) + d )) > "$S/down_at/$ip"
+if [ -f "$S/tracker_error/$ip" ]; then
+  echo "error: $ip: tracker: event stream closed" >&2; exit 1
+fi
 echo "$ip: shutdown accepted"
 """
 
@@ -135,6 +141,7 @@ class Node:
     up: bool = True
     delay: int = 0
     hang: bool = False
+    tracker_error: bool = False
 
 
 @dataclass
@@ -186,7 +193,7 @@ def run_orchestrator(
         state,
         talos_dir,
         bindir,
-        *(state / s for s in ("pki", "up", "delay", "hang", "down_at")),
+        *(state / s for s in ("pki", "up", "delay", "hang", "down_at", "tracker_error")),
     ):
         d.mkdir(parents=True, exist_ok=True)
     for ip, n in nodes.items():
@@ -196,6 +203,8 @@ def run_orchestrator(
         (state / "delay" / ip).write_text(str(n.delay))
         if n.hang:
             (state / "hang" / ip).write_text("")
+        if n.tracker_error:
+            (state / "tracker_error" / ip).write_text("")
     for cfg in staged:
         (talos_dir / cfg).write_text("context: stub\n")
     stubs = {bindir / "nc": NC, bindir / "timeout": TIMEOUT, bindir / "halt": HALT}
@@ -311,9 +320,8 @@ def test_msa2_reachable_is_shut_down_with_force_and_waited_for(tmp_path: Path, b
     # its FINAL address is kub-prd-02 today: another CA, so rejected, and that
     # rejection must not add a poll entry (.12 is polled once, via Q170S1)
     assert f"] msa2-dev {MSA2_DEV_FINAL} shutdown --force rc=1\n" in run.log
-    assert (
-        f"msa2-dev {MSA2_DEV_FINAL} did not accept — still polled, via the Q170S1 list" in run.log
-    )
+    assert f"msa2-dev {MSA2_DEV_FINAL} did not accept (a FINAL address: rule (d)" in run.log
+    assert MSA2_DEV_FINAL in run.probes
 
 
 # ── MS-A2 unreachable / not built / maintenance mode ─────────────────────────
@@ -404,33 +412,114 @@ def test_after_prd_cutover_no_edit_needed(tmp_path: Path, bash: str) -> None:
     assert_clean_finish(run)
     assert "] prd 10.10.5.11 shutdown --force rc=1\n" in run.log  # old CA rejected
     assert f"] msa2-prd {MSA2_PRD_FINAL} shutdown --force rc=0\n" in run.log
-    # .11 is in both lists but polled once: 6 Q170S1 + .18
-    assert "polling apid on 7 node(s)" in run.log
+    # .11 is in both lists but polled once. .12 (empty, and no kub-prd node
+    # accepted) drops out by rule (d): .14-.16 + .13 + .11 + .18
+    assert "10.10.5.12 NOT polled — no prd node accepted" in run.log
+    assert "polling apid on 6 node(s)" in run.log
     assert run.log.count("until down:") == 1
     polled = run.log.split("until down: ", 1)[1].split("\n", 1)[0].split()
     assert sorted(polled) == sorted(set(polled)), polled
 
 
-def test_final_address_that_does_not_accept_is_polled_to_the_backstop(
-    tmp_path: Path, bash: str
-) -> None:
-    """KNOWN LIMITATION, pinned so it stays visible: rule (a) protects only the
-    BUILD addresses. After prd's cutover msa2-prd sits at .11, which is ALSO in
-    the Q170S1 prd list, and that list is polled whatever the rc. So msa2-prd at
-    .11 in Talos maintenance mode (config staged, shutdown rejected) burns the
-    backstop until PRD_NODES is deleted at prd's teardown."""
+# ── rule (d): a FINAL address, .11/.12 ──────────────────────────────────────
+def _post_prd_cutover_maintenance() -> tuple[dict[str, Node], tuple[str, ...]]:
+    """E1: msa2-prd at .11 in Talos maintenance mode (a reinstall), config staged."""
     nodes = {ip: Node(DEV) for ip in Q170S1_DEV}
     nodes[MSA2_PRD_FINAL] = Node(MAINTENANCE)
     nodes[MSA2_DEV_BUILD] = Node(MSA2_DEV)
+    return nodes, (PRD, DEV, MSA2_PRD, MSA2_DEV)
+
+
+def _post_prd_cutover_unstaged() -> tuple[dict[str, Node], tuple[str, ...]]:
+    """E2: msa2-prd installed at .11, but its config was never staged."""
+    nodes = {ip: Node(DEV) for ip in Q170S1_DEV}
+    nodes[MSA2_PRD_FINAL] = Node(MSA2_PRD)
+    return nodes, (PRD, DEV, MSA2_DEV)
+
+
+def _post_both_cutovers_maintenance() -> tuple[dict[str, Node], tuple[str, ...]]:
+    """E3: both cut over, PRD_NODES not yet deleted; msa2-dev at .12 in
+    maintenance mode."""
+    nodes = {MSA2_PRD_FINAL: Node(MSA2_PRD), MSA2_DEV_FINAL: Node(MAINTENANCE)}
+    return nodes, (PRD, DEV, MSA2_PRD, MSA2_DEV)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "final"),
+    [
+        (_post_prd_cutover_maintenance, MSA2_PRD_FINAL),
+        (_post_prd_cutover_unstaged, MSA2_PRD_FINAL),
+        (_post_both_cutovers_maintenance, MSA2_DEV_FINAL),
+    ],
+    ids=["E1-prd-cutover-maintenance", "E2-prd-cutover-unstaged", "E3-both-maintenance"],
+)
+def test_final_address_that_does_not_accept_never_burns_the_backstop_once_kub_prd_is_gone(
+    tmp_path: Path, bash: str, scenario, final: str
+) -> None:
+    """Rule (a) alone covered only the BUILD addresses: .11/.12 are also in the
+    Q170S1 prd list, which is polled whatever the rc, so before rule (d) each of
+    these ran to TIMEOUT. With kub-prd's cords pulled, no prd call is accepted,
+    and a FINAL address nothing accepted is not waited for."""
+    nodes, staged = scenario()
+    run = run_orchestrator(tmp_path, bash, nodes, staged=staged, timeout=8)
+    assert_clean_finish(run)
+    assert run.elapsed < 8, f"took {run.elapsed:.1f}s — waited on an unaccepted FINAL address"
+    assert f"{final} NOT polled — no prd node accepted" in run.log
+    assert final not in run.probes
+
+
+def test_final_address_rejecting_while_kub_prd_is_live_is_still_polled(
+    tmp_path: Path, bash: str
+) -> None:
+    """Rule (d) leaves the live Q170S1 path alone: kub-prd-01 at .11 rejects (a
+    rotated PKI), but .12/.13 accepted, so kub-prd is live and .11 is polled
+    whatever its rc — to the backstop, exactly as before this change."""
+    nodes = q170s1_live()
+    nodes[MSA2_PRD_FINAL] = Node("rotated-pki")
     run = run_orchestrator(tmp_path, bash, nodes, staged=(PRD, DEV, MSA2_PRD, MSA2_DEV), timeout=3)
     assert run.proc.returncode == 0, run.proc.stderr
-    assert f"] msa2-prd {MSA2_PRD_FINAL} shutdown --force rc=1\n" in run.log
-    assert (
-        f"msa2-prd {MSA2_PRD_FINAL} did not accept — still polled, via the Q170S1 list" in run.log
-    )
-    assert MSA2_PRD_FINAL in run.probes
-    assert "TIMEOUT 3s reached (1/7 still up) — halting NAS anyway" in run.log
+    assert "] prd 10.10.5.11 shutdown --force rc=1\n" in run.log
+    assert "10.10.5.11 still polled — a prd node accepted" in run.log
+    assert "TIMEOUT 3s reached (1/6 still up) — halting NAS anyway" in run.log
     assert len(run.halts) == 1
+
+
+def test_every_kub_prd_call_rejected_still_burns_the_backstop_via_13(
+    tmp_path: Path, bash: str
+) -> None:
+    """Rule (d)'s one change to the Q170S1 path, first case: EVERY kub-prd call
+    fails (a broken prd config). .11/.12 are no longer waited for — but .13,
+    which no MS-A2 list names, still is, so the backstop still burns, as it did
+    before."""
+    nodes = q170s1_live()
+    for ip in Q170S1_PRD:
+        nodes[ip] = Node("rotated-pki")
+    run = run_orchestrator(tmp_path, bash, nodes, timeout=3)
+    assert run.proc.returncode == 0, run.proc.stderr
+    for ip in ("10.10.5.11", "10.10.5.12"):
+        assert f"{ip} NOT polled — no prd node accepted" in run.log
+    assert "10.10.5.13" in run.probes
+    assert "TIMEOUT 3s reached (1/4 still up) — halting NAS anyway" in run.log
+
+
+def test_tracker_error_on_every_kub_prd_call_stops_waiting_for_11_and_12(
+    tmp_path: Path, bash: str
+) -> None:
+    """Rule (d)'s one change to the Q170S1 path, second case — the real trade-off,
+    pinned so it stays visible: all three kub-prd shutdowns are DELIVERED but
+    every call still exits 1 (the default --wait tracker failing after the RPC).
+    Then kub-prd reads as gone, and the NAS no longer waits for .11/.12 — here
+    it halts while .11 is still going down. Only .13 (and kub-dev) gate it."""
+    nodes = q170s1_live()
+    for ip in Q170S1_PRD:
+        nodes[ip] = Node(PRD, tracker_error=True)
+    nodes["10.10.5.11"].delay = 4
+    run = run_orchestrator(tmp_path, bash, nodes)
+    assert_clean_finish(run)
+    assert "10.10.5.11 NOT polled — no prd node accepted" in run.log
+    down_at = int((run.state / "down_at" / "10.10.5.11").read_text())
+    halted_at = int(run.halts[0].split()[0])
+    assert halted_at < down_at, (halted_at, down_at)
 
 
 def test_after_both_cutovers_no_edit_needed(tmp_path: Path, bash: str) -> None:

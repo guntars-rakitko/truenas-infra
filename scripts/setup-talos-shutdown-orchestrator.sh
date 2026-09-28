@@ -20,10 +20,10 @@
 # block re-staging the live path. The orchestrator skips a cluster whose config
 # is not staged. ⚠ An msa2 config is never DELETED from the NAS by this script,
 # and a STALE one is not harmless: its shutdown is rejected, so that box is not
-# shut down at all, and at a FINAL address (.11/.12, also in the Q170S1 prd list
-# until prd's teardown) the orchestrator then polls it to the 300 s backstop.
-# Re-run this script after every `bootstrap.sh <msa2-env>` menu 10 so the
-# staged copy tracks Doppler, and run the printed check.
+# shut down at all (the orchestrator does not wait for it either — its rules
+# (a)/(d) — so the battery is spared, but Postgres is hard-cut). Re-run this
+# script after every `bootstrap.sh <msa2-env>` menu 10 so the staged copy
+# tracks Doppler, and run the printed check.
 #
 # `--print-checks` prints the authenticated post-staging check (below) and exits;
 # it needs no credentials and touches nothing.
@@ -95,10 +95,11 @@
 # ⚠ MIXED ESTATE (2026-09-26): the Q170S1 nodes run v1.14.0 and the MS-A2 boxes
 # v1.14.1. One binary serves both; same MINOR is the compatibility line this file
 # already relies on (a client newer than a server only WARNS — talosctl
-# ClientVersionCheck). The default stays v1.14.0, the version the live Q170S1
-# path was re-staged with, so adding the msa2 clusters changes nothing about it.
-# Move to the msa2 version at the cutover (kube-infra plan § Cutover inventory
-# row 15), and re-run the checks from `--print-checks` against every node.
+# ClientVersionCheck). The default moved to v1.14.1, the msa2 version, AT THE
+# CUTOVER (kube-infra plan § Cutover inventory row 15; cutover plan 2026-09-28,
+# A5): from then on the msa2 boxes are the live path, and the Q170S1 nodes, on
+# v1.14.0, only the rollback target until the teardown. Re-run the checks from
+# `--print-checks` against every node after each re-stage.
 #
 # ⚠ WAS v1.13.2, PINNED TO A CLUSTER STATE THAT NO LONGER EXISTS. That pin dated
 # from a rollback off v1.13.3; both clusters have since rolled to **v1.14.0**
@@ -114,7 +115,7 @@
 #     -n <node-ip> version
 set -euo pipefail
 
-TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.0}"   # ⚠ must match the RUNNING nodes — see note above
+TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.1}"   # ⚠ must match the RUNNING nodes — see note above
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH_LOCAL="$REPO/scripts/nas-ups-orchestrator.sh"
@@ -178,9 +179,9 @@ print_checks() {
   echo "  Read the result per box: every box that is up and installed must show"
   echo "  Server: for its OWN config at its CURRENT address — anything else there"
   echo "  means it would NOT be shut down. The orchestrator does not wait for an msa2"
-  echo "  BUILD address (.17/.18) that fails BY DESIGN; but .11/.12 are also in the"
-  echo "  Q170S1 prd list until prd's teardown, so an msa2 box there that fails is"
-  echo "  also polled to the 300 s backstop."
+  echo "  address that fails, BY DESIGN (rules (a)/(d) in its header: while kub-prd"
+  echo "  is live, .11/.12 are still polled the Q170S1 way) — so a failure here costs"
+  echo "  that box a hard power-off, not the NAS its battery."
 }
 
 if [[ "${1:-}" == "--print-checks" ]]; then
