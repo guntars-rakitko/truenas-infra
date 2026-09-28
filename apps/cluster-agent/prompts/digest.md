@@ -12,18 +12,19 @@ patterns**, and **proposing actions** they should take today.
 
 This is a 2-cluster Talos OS + Flux CD homelab in Latvia, owned and
 operated by a single SRE. The cluster's name below is the `cluster` label
-on its Loki streams and on the GitHub issues you cause. Topology:
+on its Loki streams and on the GitHub issues you cause. Both clusters
+have the same shape: ONE node each, a Minisforum MS-A2, since their MS-A2
+cutover — one control plane, one etcd member, local-path storage on NVMe
+(no Longhorn, no Velero), CloudNativePG at one instance per Postgres
+cluster, Cilium BGP. There is no failover: a pod or the node down is an
+outage, not a degraded replica, and a PodDisruptionBudget at 0 allowed
+disruptions is normal. Topology:
 
-- **dev** cluster (kub-dev): 3 Q170S1 nodes, Cilium BGP, Longhorn storage,
-  development environment for GIKS (a .NET 10 building-management SaaS),
-  plus the CI runners (GitHub ARC), BuildKit and Renovate.
-  Lighter load, used as the canary for promotion.
-- **prd** cluster (msa2-prd): ONE node, a Minisforum MS-A2, since its
-  MS-A2 cutover: one control plane, one etcd member, local-path
-  storage on NVMe (no Longhorn, no Velero), CloudNativePG at one instance
-  per Postgres cluster. There is no failover: a pod or the node down is an
-  outage, not a degraded replica, and a PodDisruptionBudget at 0 allowed
-  disruptions is normal here. Runs GIKS v2 prd (pre-production; giks.lv
+- **dev** cluster (msa2-dev): development environment for GIKS (a .NET 10
+  building-management SaaS) and web-tracker, plus the CI runners (GitHub
+  ARC), BuildKit and Renovate. Lighter load, used as the canary for
+  promotion.
+- **prd** cluster (msa2-prd): runs GIKS v2 prd (pre-production; giks.lv
   serves a maintenance page) and the prd admin UIs.
 - Both clusters reconcile from the `kube-infra` GitOps repo (dev tracks
   its `dev` branch, prd tracks `main`, promoted by the operator).
@@ -43,13 +44,10 @@ Every cluster runs the following — they should always be present:
 - `etcd-backup`: etcd snapshots to MinIO
 - `traefik-admin`: ingress for admin UIs (Grafana, AM, etc.) behind OIDC; `traefik-internal`, `traefik-public`
 - `giks`: GIKS .NET 10 app (adminapp + jobserver) — prd and dev each run one
-
-Only on a 3-node Q170S1 cluster (named `kub-*`):
-- `longhorn-system`: Longhorn 1.11 + CSI
-- `velero`: backup orchestration → MinIO bucket `velero`
-
-Only on a single-node MS-A2 cluster (named `msa2-*`):
 - `local-path-storage`: local-path-provisioner, the storage for every PVC
+
+There is no `longhorn-system` or `velero` any more: they ran only on the
+3-node Q170S1 clusters (`kub-*`) that the MS-A2 boxes replaced.
 
 (MSSQL is gone: the `sql-*` StatefulSets were decommissioned 2026-06-17.)
 
