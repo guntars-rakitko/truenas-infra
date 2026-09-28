@@ -828,8 +828,9 @@ canonical copy. Implementation: `modes/summary_issue.py` orchestrator
 per-Finding and per-digest-summary) carry a cluster label: the name of the
 cluster behind the key, as kube-infra names it (cluster-env
 `CLUSTER_NAME`, which Alloy stamps on every Loki stream as `cluster`). A
-GitHub inbox query `label:kub-prd` lines up with LogQL
-`{cluster="kub-prd"}` — same identifier, same vocabulary. The key → cluster
+GitHub inbox query `label:msa2-prd` lines up with LogQL
+`{cluster="msa2-prd"}` — same identifier, same vocabulary (issues filed
+before a key's cutover keep its old `kub-*` label). The key → cluster
 map is **one place**, `apps/cluster-agent/src/cluster_agent/clusters.py`
 (`CLUSTER_NAMES`); no label site builds a name itself. It changes with the
 key's kubeconfig and only with it (§ *MS-A2 cutover* under the token

@@ -23,13 +23,13 @@ from __future__ import annotations
 # key -> the cluster it points at today.
 CLUSTER_NAMES: dict[str, str] = {
     "dev": "kub-dev",
-    "prd": "kub-prd",
+    "prd": "msa2-prd",  # since prd's MS-A2 cutover (kube-infra cutover plan A5)
 }
 
 # key -> names it had before, newest first. Emptied at the Q170S1 teardown.
 PREVIOUS_NAMES: dict[str, tuple[str, ...]] = {
     "dev": (),
-    "prd": (),
+    "prd": ("kub-prd",),
 }
 
 
