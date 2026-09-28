@@ -706,7 +706,13 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    state.db record. The annotation is best-effort: a failure is logged and
    counted, never fatal (`dispatch.py`). It goes to the cluster's
    `grafana-nas` NodePort with a service-account token (kube-infra#1366,
-   `tools/grafana.py`).
+   `tools/grafana.py`). Every surface's counter
+   (`cluster_agent_dispatch_errors_total{surface=…}`) starts at 0 when the
+   container starts (`emit/metrics.py` `DISPATCH_SURFACES`), so the first
+   failure after a restart is a rise that `ClusterAgentDispatchErrors`
+   (`increase(…[6h]) > 0`) sees. A series born at 1 has no earlier sample,
+   and that first failure never fired. A new surface goes into that tuple
+   (`tests/test_metrics.py` checks it).
 
 Cost: ~$0.25-0.50/day on Sonnet 4.6 (cached prefix shared between
 dev + prd runs since they fire 60s apart).
