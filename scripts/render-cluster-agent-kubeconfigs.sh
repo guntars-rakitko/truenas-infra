@@ -50,10 +50,13 @@
 #
 # The defaults are the Q170S1 clusters. At the MS-A2 cutover (kube-infra
 # plan docs/superpowers/plans/2026-09-23-msa2-phase-2-build.md § Cutover
-# inventory row 16) each key moves to kubeconfig-msa2-<env> one cluster at a
-# time; in the mixed period prd = msa2-prd while dev is still kub-dev, so
-# pass only --prd-kubeconfig. Re-minting the unchanged cluster as well is
-# harmless (a fresh token for the same cluster).
+# inventory row 16) each key moves to kubeconfig-msa2-<env>. The pre-flight
+# lists nodes for BOTH keys, and a key without a flag falls back to its
+# Q170S1 default: once a kub-* cluster is dark that fallback fails
+# ('FATAL: cannot list nodes … nothing minted'). So after a same-day cutover
+# (kub-prd AND kub-dev dark) run it ONCE with both flags; only while one
+# kub-* cluster still answers may you pass the other flag alone. Re-minting
+# an unchanged cluster is harmless (a fresh token for the same cluster).
 #
 # ## Pre-flight (runs before ANY token is minted)
 #

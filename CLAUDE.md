@@ -585,9 +585,12 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > **MS-A2 cutover (kube-infra msa2 plan § Cutover inventory row 16).** The two
 > keys are minted from `--dev-kubeconfig` / `--prd-kubeconfig`, defaulting to
 > `kube-infra/talos-os/kubeconfig-{dev,prd}` (the Q170S1 clusters). Move each
-> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**, one
-> cluster at a time: in the mixed period prd = msa2-prd and dev = kub-dev, so
-> pass only `--prd-kubeconfig`. Before minting anything the script prints each
+> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**. The
+> pre-flight lists nodes for BOTH keys and a key without a flag falls back to
+> its kub-* default, so once a kub-* cluster is dark a one-flag run stops with
+> `FATAL: cannot list nodes … nothing minted`. After the same-day cutover
+> (2026-09-28: kub-prd and kub-dev both dark) it is ONE run with both flags;
+> one flag alone only while the other kub-* cluster still answers. Before minting anything the script prints each
 > key's server and nodes, and **refuses** a server on an MS-A2 BUILD address
 > (`10.10.5.17` / `.18`) and dev == prd. Talos makes the endpoint the token
 > issuer, so a token minted at the build address dies at the re-address (plan
