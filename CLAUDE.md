@@ -886,7 +886,7 @@ deploy flow are fetched at deploy time by `_load_doppler_for_app` in
 **Per-script keys** (read by `manage.sh` top-level + Python config):
 
 - `TRUENAS_HOST`, `TRUENAS_API_KEY`, `TRUENAS_VERIFY_SSL`
-- `TRUENAS_NUT_MONPWD` — NUT `upsmon` (monitor) user password; written into upsd.users by TrueNAS at service start, and **required** — without it upsd exits silently (`config/services.yaml` § nut `monuser`). Used by the NAS's own upsmon master and by the in-cluster nut-exporter on every cluster — kub-dev and kub-prd, and the msa2 clusters declare the same (kube-infra `flux-cd/infrastructure/configs/base/nut-exporter.yaml`, `--nut.username=upsmon`). The K8s nodes are NOT NUT clients since 2026-06-02 (Path B). Role: read-only state queries, **no SET/INSTCMD**. ⚠ The clusters read the password from Doppler `infrastructure/shr` → `SHARED_TRUENAS_NUT_MONPWD` (DopplerSecret `nut-credentials`), a separate key that must equal this one — rotate both together, or make one a Doppler reference to the other.
+- `TRUENAS_NUT_MONPWD` — NUT `upsmon` (monitor) user password. TrueNAS writes it into upsd.users at service start, and it is **required**: without it upsd exits silently (`config/services.yaml` § nut `monuser`). ⚠ **It is a MASTER credential, not a read-only one.** TrueNAS renders the account as `upsmon master`, which NUT turns into LOGIN + MASTER + **FSD**. FSD on `apc1` runs the Path B orchestrator, which powers off every node and then the NAS. **Its only user is the NAS's own upsmon.** No remote client holds it: the clusters' nut-exporter reads anonymously since 2026-09-28 (kube-infra `flux-cd/infrastructure/configs/base/nut-exporter.yaml` § Auth), and the K8s nodes stopped being NUT clients on 2026-06-02 (Path B). The cluster copy (Doppler `infrastructure/shr` → `SHARED_TRUENAS_NUT_MONPWD`, rendered as DopplerSecret `nut-credentials` on all four clusters) is retired. Every cluster's `shr` token could read it. ⚠ Never put this password, or any copy of it, into `shr` or a cluster again. A remote NUT client that needs a login gets its own `nut.extra_users` entry.
 - `TRUENAS_NUT_ADMINPWD` — NUT `upsadmin` user password (operator-side, used for `upsrw` + `upscmd` writes). Role: **SET + INSTCMD ALL**, configured via TrueNAS UI → Services → UPS → Edit → **"Extra Users"** field (pasted from the doctrine block in `wiki/docs/runbooks/ups-operations.md`). Live since 2026-05-28. Apple Passwords mirror: `TrueNAS NUT upsadmin`. Add to **NOPASSWD allowlist** when extending NUT automation — see SSH section below.
 - `SHARED_CLOUDFLARE_API_TOKEN` (aliased to `CLOUDFLARE_API_TOKEN` after fetch — CloudFlare SDK convention)
 
@@ -1082,12 +1082,14 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
-      upsmon   (read-only)       → the in-cluster nut-exporter on every cluster
-                                   (kub-dev, kub-prd; msa2 declares the same)
-                                   + the NAS's own upsmon master. ⚠ NOT safe
-                                   to drop — upsd will not start without monpwd,
-                                   and dropping it kills UPS telemetry + alerting
-                                   on every cluster
+      upsmon   (`upsmon master` = LOGIN + MASTER + FSD)
+                                 → the NAS's own upsmon ONLY. ⚠ NOT safe to
+                                   drop (upsd will not start without monpwd),
+                                   and NOT read-only: FSD = site shutdown.
+                                   Never hand it to a remote client.
+      (no user) anonymous LIST/GET → the in-cluster nut-exporter on every
+                                   cluster (since 2026-09-28; before that it
+                                   logged in as upsmon)
 
 K8s nodes (×6 Q170S1 + the MS-A2 boxes)
   └─ NOT NUT clients. The nut-client extension was stripped from the Talos
@@ -1299,12 +1301,15 @@ which failures are the designed exclusions.
 
 | User | Password key | Perms | Used by | Where defined |
 |---|---|---|---|---|
-| `upsmon` | `TRUENAS_NUT_MONPWD` (clusters: `infrastructure/shr` `SHARED_TRUENAS_NUT_MONPWD`, must match) | monitor (read-only) | in-cluster nut-exporter (kub-dev, kub-prd; the msa2 clusters declare the same) + the local upsmon master | TrueNAS UI → Services → UPS → Edit → **Monitor User/Password** fields (managed via `ups.config` API; appears in upsd.users at service start) |
+| `upsmon` | `TRUENAS_NUT_MONPWD` (Doppler `ops` only) | `upsmon master` = LOGIN + MASTER + **FSD**. TrueNAS hardcodes it; this is NOT a read-only user | the local upsmon master ONLY | TrueNAS UI → Services → UPS → Edit → **Monitor User/Password** fields (managed via `ups.config` API; appears in upsd.users at service start) |
+| *(none)* | none | anonymous `LIST`/`GET` (NUT needs no login for reads) | the in-cluster nut-exporter on every cluster, since 2026-09-28 | nothing to define. `rmonitor: true` makes upsd listen beyond loopback |
 | `upsadmin` | `TRUENAS_NUT_ADMINPWD` | `actions = SET`, `instcmds = ALL` | Operator's `upsrw`/`upscmd` invocations | TrueNAS UI → Services → UPS → Edit → **Extra Users** field (`ups.config.extrausers`). Live since 2026-05-28. |
 
-Operator never uses `upsmon` for writes — `upsmon`'s purpose is read-only
-telemetry for the nut-exporters and the local master; the upsadmin user keeps
-that scope clean.
+Operator never uses `upsmon` for writes. It exists only for the local
+upsmon master; upsadmin handles writes. **Until 2026-09-28 the doctrine
+called `upsmon` "read-only", and that was wrong.** Every cluster's
+nut-exporter logged in with it, so any cluster could have sent `FSD apc1`
+and powered off the site. Telemetry needs no user at all.
 
 **UPS HID thresholds (live on UPS firmware, not in NUT config):**
 
