@@ -95,10 +95,11 @@
 # ⚠ MIXED ESTATE (2026-09-26): the Q170S1 nodes run v1.14.0 and the MS-A2 boxes
 # v1.14.1. One binary serves both; same MINOR is the compatibility line this file
 # already relies on (a client newer than a server only WARNS — talosctl
-# ClientVersionCheck). The default stays v1.14.0, the version the live Q170S1
-# path was re-staged with, so adding the msa2 clusters changes nothing about it.
-# Move to the msa2 version at the cutover (kube-infra plan § Cutover inventory
-# row 15), and re-run the checks from `--print-checks` against every node.
+# ClientVersionCheck). The default moved to v1.14.1, the msa2 version, AT THE
+# CUTOVER (kube-infra plan § Cutover inventory row 15; cutover plan 2026-09-28,
+# A5): from then on the msa2 boxes are the live path, and the Q170S1 nodes, on
+# v1.14.0, only the rollback target until the teardown. Re-run the checks from
+# `--print-checks` against every node after each re-stage.
 #
 # ⚠ WAS v1.13.2, PINNED TO A CLUSTER STATE THAT NO LONGER EXISTS. That pin dated
 # from a rollback off v1.13.3; both clusters have since rolled to **v1.14.0**
@@ -114,7 +115,7 @@
 #     -n <node-ip> version
 set -euo pipefail
 
-TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.0}"   # ⚠ must match the RUNNING nodes — see note above
+TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.1}"   # ⚠ must match the RUNNING nodes — see note above
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH_LOCAL="$REPO/scripts/nas-ups-orchestrator.sh"

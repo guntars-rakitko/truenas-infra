@@ -1240,16 +1240,23 @@ below has run it still fans out to the six Q170S1 nodes only.
   `bootstrap.sh msa2-<env>` menu 10 (it re-mints the msa2 config), and after
   msa2-prd is built (Task H) so its config is staged. An msa2 key missing from Doppler is a WARN, not an
   error: that cluster is skipped until the next re-stage.
-- **At cutover:** nothing in the orchestrator. Row 15's remaining items stand:
-  re-stage `talosctl` at the msa2 version (`TALOSCTL_VERSION`, v1.14.0 today —
-  same minor as msa2's v1.14.1), run the printed check, and **re-measure the
-  shutdown time** in a drill rather than carrying 187 s.
+- **At cutover** (kube-infra cutover plan 2026-09-28, A5 / B5; row 15), in this
+  order: move the box's PSU onto `apc1` (one box at a time, prd first), wait
+  for the node, its Clusters and menu 33; re-measure the runtime at the new
+  load; merge rule (d) and the `talosctl` default bump (`TALOSCTL_VERSION`
+  v1.14.1, msa2's version; same minor as the Q170S1 rollback targets' v1.14.0)
+  — the one cutover PR here; then **Re-stage** above from an up-to-date
+  `main`, and run the printed check: every box that is up must show `Server:`
+  for its own config at its current address. Then **re-measure the shutdown
+  time** in a drill rather than carrying 187 s. The orchestrator's node lists
+  need no edit: both of each box's addresses are already in them.
 - **At teardown — a code change with its own PR and tests, not a two-line
   deletion.** Under `set -u` a leftover reference to a deleted list aborts the
   orchestrator **before** it fires the msa2 shutdowns or halts the NAS, and the
-  setup script's `check_pairs` fails on a list it cannot read. prd's teardown
-  comes first (before dev's cutover); per torn-down cluster `<X>` (`PRD`, then
-  `DEV`) remove:
+  setup script's `check_pairs` fails on a list it cannot read. The teardown
+  comes 7 days after dev's cutover (kube-infra cutover plan 2026-09-28, O4:
+  both clusters cut over the same day); per torn-down cluster `<X>` (`PRD`,
+  then `DEV`) remove:
   - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its
     `poll_q170s1 <x>` line, its part of `Q170S1_NODES`, and that msa2
     cluster's BUILD address (`MSA2_<X>_NODES` keeps only the FINAL one). Once
@@ -1277,17 +1284,18 @@ only during a real outage.
 > staged binary was **v1.13.2** against nodes on **v1.14.0** — a full-minor gap.
 > The 2026-09-23 pool rebuild destroyed `/mnt/tank/system/talos/` and the whole
 > path was re-staged with `setup-talos-shutdown-orchestrator.sh` (pool-rebuild
-> plan Task 7), whose `TALOSCTL_VERSION` default is **v1.14.0** — same minor as
-> the old estate (v1.14.0) and msa2 (v1.14.1). ⚠ Confirm with the check below
+> plan Task 7), whose `TALOSCTL_VERSION` default was then **v1.14.0** — same minor
+> as the old estate (v1.14.0) and msa2 (v1.14.1); it is **v1.14.1** from the cutover
+> PR on (§ *MS-A2 in the fan-out*, *At cutover*). ⚠ Confirm with the check below
 > (and `talosctl version --client` on the NAS) before relying on it; if it still
 > reports v1.13.2, the gap is real — re-stage (until the MS-A2 cutover gate,
 > with the msa2 keys unset: § *MS-A2 in the fan-out*, *Re-stage*).
 > ⚠ msa2 has its own PKI, so it has its own `os:operator` configs
 > (`TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{DEV,PRD}`). Since the 2026-09-26 change
 > they are staged alongside the Q170S1 pair (once re-staged) and the
-> orchestrator targets both of each box's addresses, so **no orchestrator edit
-> is due at cutover** — only the talosctl bump in kube-infra cutover row 15
-> (§ *MS-A2 in the fan-out*).
+> orchestrator targets both of each box's addresses, so **no node-list edit is
+> due at cutover** — only rule (d) and the talosctl bump, both in the cutover PR
+> (kube-infra cutover row 15; § *MS-A2 in the fan-out*, *At cutover*).
 >
 > ✅ **The CREDENTIALS are fine** — read from Doppler 2026-09-22 they are valid
 > `Jun 1 2026 → May 29 2036`. A suspicion that they had expired came from
