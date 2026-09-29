@@ -761,9 +761,21 @@ Otherwise it logs `venv up to date (…)` and goes straight to uvicorn.
   the suite before merging any lock PR. `renovate.json` disables
   Renovate's `pip_requirements` manager for the generated file, so it never
   gets bumped on its own.
+  **Deploy-time backstop:** if a lock PR is merged without the re-export
+  anyway, `manage.sh phase apps` (cluster-agent) catches it. Before any
+  upload, dry-run included, `_verify_cluster_agent_requirements_export`
+  runs the same `uv export` in `apps/cluster-agent/` and REFUSES to deploy
+  when the committed file differs byte-for-byte. The error names the drifted
+  pins, and the phase stops before `ensure_custom_app` (a full `phase apps`
+  stops too; `--only <other-app>` is unaffected). It needs `uv`
+  (`$UV` or PATH; manage.sh adds `~/.local/bin` and `~/.cargo/bin`); no uv
+  is an error, never a skip. A clean check logs
+  `cluster_agent_requirements_export_verified … pins=N`. Fix a stale export
+  on a branch + PR, never by hand on the NAS.
 - **Deploying it:** `./manage.sh phase apps --only cluster-agent --apply`
-  uploads the file, but the app itself reports `noop` (the compose did not
-  change), so nothing restarts. Then run `sudo docker restart cluster-agent`.
+  verifies the export (above) and uploads the file, but the app itself
+  reports `noop` (the compose did not change), so nothing restarts. Then run
+  `sudo docker restart cluster-agent`.
   Verify with the stamp, not `/health`:
   `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent cat /venv/.requirements.stamp'`
   must equal `shasum -a 256 apps/cluster-agent/requirements.lock.txt` + ` cp313`.

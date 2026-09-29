@@ -35,7 +35,13 @@ done
 
 # uv is preferred (faster, bundles Python versions); fall back to python -m venv + pip.
 # uv's official install location is ~/.local/bin (per `curl | sh` installer),
-# which isn't on PATH in every shell — look there explicitly.
+# which isn't on PATH in every shell — look there explicitly. PATH is already
+# exported, so the prepend below reaches the Python CLI exec'd at the bottom.
+# ⚠ `phase apps` for cluster-agent REQUIRES uv (not just prefers it): it runs
+# `uv export` to prove apps/cluster-agent/requirements.lock.txt matches uv.lock
+# before deploying it, and fails with an install hint when uv is missing
+# (modules/apps.py _verify_cluster_agent_requirements_export). Other phases
+# still work on the pip fallback, so this script does not hard-require uv.
 if ! command -v uv &>/dev/null; then
     for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
         if [[ -x "$candidate" ]]; then

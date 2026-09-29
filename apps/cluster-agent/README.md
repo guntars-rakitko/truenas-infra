@@ -22,6 +22,10 @@ uv export --frozen --no-dev --no-emit-project --format requirements-txt > requir
 uv run --extra dev pytest    # tests/test_requirements_lock.py catches a stale export
 ```
 
+`./manage.sh phase apps` also runs that `uv export` and refuses to deploy
+(before any upload) if the committed file differs, so a Renovate lock PR
+merged without the re-export fails loudly instead of shipping the old pins.
+
 A lock-only change does not recreate the container. After
 `./manage.sh phase apps --only cluster-agent --apply`, run
 `sudo docker restart cluster-agent`. Details: truenas-infra `CLAUDE.md`
