@@ -21,7 +21,9 @@ docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md.
 from __future__ import annotations
 
 import base64
+import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -685,10 +687,10 @@ TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
 WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
-# cluster-agent — LLM-driven SRE assistant. Stock python:3.14-alpine base
-# image, app code on the pool, bind-mounted into /app. We upload src/ +
-# prompts/ only; data/ (SQLite state) and venv/ (self-healing,
-# Python-version-tied) are excluded deliberately.
+# cluster-agent — LLM-driven SRE assistant. Stock python:3.13-alpine base
+# image, app code on the pool, bind-mounted into /app. We upload main.py,
+# requirements.lock.txt, src/ and prompts/; data/ (SQLite state) and venv/
+# (built on the NAS from requirements.lock.txt) are excluded deliberately.
 # ⚠ This comment used to say "same deploy pattern as amtctl / stress-dashboard".
 # Both were retired 2026-09-23, so cluster-agent is now the ONLY app using the
 # code-on-pool bind-mount pattern — there is no sibling left to copy from.
@@ -696,6 +698,17 @@ CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
 CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
 CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
 CLUSTER_AGENT_MAIN_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "main.py"
+# `uv export` of apps/cluster-agent/uv.lock (hashed). The container's startup
+# script pip-installs exactly this file into /venv and rebuilds /venv when its
+# sha256 changes — see the compose `command:` block.
+CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "requirements.lock.txt"
+# The EXACT `uv export` that produces requirements.lock.txt. uv writes this
+# command into the file's header, and apps/cluster-agent/tests/
+# test_requirements_lock.py (EXPORT_ARGS) regenerates with the same flags;
+# tests/test_apps.py fails if this tuple and the committed header disagree.
+CLUSTER_AGENT_UV_EXPORT_ARGS = (
+    "export", "--frozen", "--no-dev", "--no-emit-project", "--format", "requirements-txt",
+)
 CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
 
 
@@ -849,19 +862,114 @@ def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
 
 
+def _requirement_pins(text: bytes) -> set[str]:
+    """`name==version[ ; marker]` lines of a `uv export` (hash lines dropped)."""
+    return {
+        line.rstrip(" \\")
+        for line in text.decode("utf-8", "replace").splitlines()
+        if line and line[0] not in "# "
+    }
+
+
+def _verify_cluster_agent_requirements_export(log: Any) -> None:
+    """Refuse to deploy a requirements.lock.txt that is not `uv export` of uv.lock.
+
+    The container installs EXACTLY requirements.lock.txt, so the lock only
+    reaches production through a re-export. Renovate lock PRs bump uv.lock but
+    cannot re-export, and this repo has no CI: apps/cluster-agent/tests/
+    test_requirements_lock.py catches a stale export only when someone runs
+    pytest by hand. Merged without the re-export, a lock bump would deploy the
+    OLD hash-pinned versions while uv.lock — and the Dependabot alerts it
+    closes — claim the new ones: the same silent runtime-deps drift the move
+    to the lock was meant to end. Every production change of cluster-agent
+    goes through this deploy step, so the drift fails loudly here instead.
+
+    Runs `uv` with the committed CLUSTER_AGENT_UV_EXPORT_ARGS in
+    apps/cluster-agent/ and compares BYTES with the committed file (the bytes
+    are what gets uploaded). `--frozen` reads uv.lock as-is: no resolution, no
+    network, ~50 ms. uv comes from $UV (set by `uv run`) or PATH; manage.sh
+    adds ~/.local/bin and ~/.cargo/bin to PATH when uv lives there. No uv is
+    an error, never a skip — a skipped drift check reads as a passing one.
+    """
+    req_file = CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
+    regen = (
+        f"from {CLUSTER_AGENT_LOCAL_DIR}/: "
+        f"`uv {' '.join(CLUSTER_AGENT_UV_EXPORT_ARGS)} > {req_file.name}`"
+    )
+    uv = os.environ.get("UV") or shutil.which("uv")
+    if not uv:
+        raise RuntimeError(
+            f"uv not found (checked $UV and PATH). Deploying cluster-agent needs "
+            f"it to prove {req_file} is `uv export` of uv.lock before uploading "
+            f"it. Install uv (https://docs.astral.sh/uv/getting-started/"
+            f"installation/ — it lands in ~/.local/bin, which manage.sh puts on "
+            f"PATH) and re-run."
+        )
+    cmd = [uv, *CLUSTER_AGENT_UV_EXPORT_ARGS]
+    try:
+        out = subprocess.run(
+            cmd, cwd=CLUSTER_AGENT_LOCAL_DIR,
+            capture_output=True, check=False, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` could not run in {CLUSTER_AGENT_LOCAL_DIR}: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` failed in {CLUSTER_AGENT_LOCAL_DIR} "
+            f"(exit {out.returncode}), so {req_file} cannot be checked against "
+            f"uv.lock:\n{out.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    committed = req_file.read_bytes()
+    if out.stdout != committed:
+        have, want = _requirement_pins(committed), _requirement_pins(out.stdout)
+        detail = (
+            f"committed file pins {sorted(have - want)}; the lock exports "
+            f"{sorted(want - have)}"
+            if have != want else
+            "same pins, different hashes or header"
+        )
+        raise RuntimeError(
+            f"{req_file} is STALE — it is not `uv export` of uv.lock ({detail}). "
+            f"Deploying it would keep the NAS on the old versions while uv.lock "
+            f"(and Dependabot) claim the new ones; typically a Renovate lock PR "
+            f"merged without the re-export. Nothing was uploaded. Re-export "
+            f"{regen}, commit it via a PR, merge, and re-run this phase."
+        )
+    log.info("cluster_agent_requirements_export_verified",
+             path=str(req_file), uv=uv, pins=len(_requirement_pins(committed)))
+
+
 def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     """Upload the cluster-agent app source to the pool.
 
     Layout on the pool:
         .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
             ├── main.py                        — FastAPI entrypoint (Task 18)
+            ├── requirements.lock.txt          — hashed `uv export` of uv.lock;
+            │                                    /venv is built from exactly this
             ├── src/                           — Python package (Tasks 9-19)
             └── prompts/                       — Jinja2 prompt templates (Task 14)
 
     Files NOT uploaded:
       - docker-compose.yaml   (owned by ensure_custom_app)
       - data/                 (SQLite state.db — must persist across redeploys)
-      - venv/                 (self-healing; tied to Python minor version)
+      - venv/                 (built on the NAS from requirements.lock.txt;
+                               rebuilt when that file's sha256 or the image's
+                               Python minor changes)
+
+    ⚠ requirements.lock.txt is MANDATORY once any code is present: the compose
+    startup script refuses to start without it. A missing file raises here,
+    BEFORE ensure_custom_app can roll out a compose that depends on it.
+    ⚠ It must also BE `uv export` of uv.lock: a stale export raises here too
+    (see `_verify_cluster_agent_requirements_export`). Both checks run before
+    the first upload, dry-run included, so a failure leaves the NAS untouched.
+    It is also the one file here uploaded with CONTENT verification
+    (`read_fn`): a lock bump is routinely the same byte length (`==1.7.0` ->
+    `==1.8.0`, and sha256 hashes are fixed-width), which size-only idempotency
+    reports as `noop` forever — the NAS would keep building the old versions
+    while the repo claims the new ones (the 2026-09-13 PXE Dockerfile bug).
 
     Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
     This helper runs in the phase-apps pre-upload block so the operator can
@@ -891,6 +999,19 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         )
         return
 
+    # requirements.lock.txt — what /venv is built from. Present AND equal to
+    # `uv export` of uv.lock, checked BEFORE the first upload: a failure must
+    # leave the NAS untouched and stop the phase before ensure_custom_app.
+    req_file = CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
+    if not req_file.is_file():
+        raise RuntimeError(
+            f"{req_file} is missing. The cluster-agent container builds /venv "
+            f"from it and will not start without it. Regenerate it from "
+            f"apps/cluster-agent/: `uv export --frozen --no-dev --no-emit-project "
+            f"--format requirements-txt > requirements.lock.txt`."
+        )
+    _verify_cluster_agent_requirements_export(log)
+
     from truenas_infra.client import upload_file
 
     host = ctx.config.truenas_host
@@ -919,6 +1040,25 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             reason="not_present_yet",
             path=str(main_file),
         )
+
+    # requirements.lock.txt (validated above). Content-verified; see the
+    # docstring for why size-only is not enough for this file.
+    from truenas_infra.client import read_remote_file
+
+    def _read(remote_path: str) -> bytes:
+        return read_remote_file(
+            cli, host=host, remote_path=remote_path, verify_ssl=verify_ssl,
+        )
+
+    remote_req = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{req_file.name}"
+    diff = ensure_file_on_nas(
+        cli, _upload,
+        local_path=req_file, remote_path=remote_req,
+        mode=0o644, apply=ctx.apply, read_fn=_read,
+    )
+    log.info("cluster_agent_file_ensured", path=remote_req,
+             action=diff.action, changed=diff.changed,
+             content_verified=(diff.after or {}).get("content_verified"))
 
     # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
     for subdir in (src_dir, prompts_dir):

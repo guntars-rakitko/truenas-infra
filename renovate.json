@@ -14,6 +14,12 @@
       "matchDatasources": ["docker"],
       "matchPackageNames": ["quay.io/minio/aistor/minio"],
       "versioning": "regex:^RELEASE\\.(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})T(?<build>\\d{2}-\\d{2}-\\d{2})Z$"
+    },
+    {
+      "description": "apps/cluster-agent/requirements.lock.txt is GENERATED (`uv export` of apps/cluster-agent/uv.lock) and is what the container installs. Bump the lock (pep621/uv manager), never this file: a direct bump would diverge from the lock. After a lock PR, re-export it (command in apps/cluster-agent/pyproject.toml); apps/cluster-agent/tests/test_requirements_lock.py fails until you do.",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["apps/cluster-agent/requirements.lock.txt"],
+      "enabled": false
     }
   ]
 }

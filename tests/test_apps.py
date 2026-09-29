@@ -910,3 +910,221 @@ def test_ensure_file_on_nas_skips_content_check_for_large_files(tmp_path: Path) 
     )
     # sizes differ (64 vs cap+1) so it uploads without ever reading
     assert reads == [], "must not pull large files back over HTTP"
+
+
+# ─── cluster-agent: requirements.lock.txt ships with the code ────────────────
+#
+# Since 2026-09-29 the container builds /venv from EXACTLY
+# apps/cluster-agent/requirements.lock.txt (a hashed `uv export` of uv.lock)
+# and rebuilds it when the file's sha256 changes. So the file must reach the
+# pool, and a lock bump must reach it too — which size-only idempotency does
+# not guarantee: `starlette==1.7.0` -> `==1.8.0` with new fixed-width hashes
+# is the same byte length.
+
+
+@pytest.fixture
+def cluster_agent_tree(tmp_path: Path, monkeypatch):
+    """A fake apps/cluster-agent/ with main.py + requirements, the module's
+    paths pointed at it, and upload/read transport recorded instead of sent.
+
+    `uv export` is mocked at subprocess.run: by default it returns the
+    committed file's bytes (export in sync); a test sets t["export"] to
+    simulate a stale file, or t["export_rc"] to simulate uv failing."""
+    import subprocess
+
+    import truenas_infra.client as client
+    import truenas_infra.modules.apps as m
+
+    app = tmp_path / "cluster-agent"
+    app.mkdir()
+    (app / "main.py").write_text("app = None\n")
+    (app / "requirements.lock.txt").write_text("starlette==1.8.0 \\\n    --hash=sha256:bb\n")
+    monkeypatch.setattr(m, "CLUSTER_AGENT_LOCAL_DIR", app)
+    monkeypatch.setattr(m, "CLUSTER_AGENT_SRC_LOCAL_DIR", app / "src")
+    monkeypatch.setattr(m, "CLUSTER_AGENT_PROMPTS_LOCAL_DIR", app / "prompts")
+    monkeypatch.setattr(m, "CLUSTER_AGENT_MAIN_LOCAL_FILE", app / "main.py")
+    monkeypatch.setattr(m, "CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE", app / "requirements.lock.txt")
+
+    # What the NAS holds: same SIZE as local for both files, older requirements.
+    remote = f"{m.CLUSTER_AGENT_CODE_REMOTE_DIR}"
+    nas = {
+        f"{remote}/main.py": (app / "main.py").read_bytes(),
+        f"{remote}/requirements.lock.txt": b"starlette==1.7.0 \\\n    --hash=sha256:aa\n",
+    }
+    assert len(nas[f"{remote}/requirements.lock.txt"]) == \
+        (app / "requirements.lock.txt").stat().st_size, "fixture must be equal-length"
+
+    uploaded: list[str] = []
+    reads: list[str] = []
+    monkeypatch.setattr(client, "upload_file",
+                        lambda cli, **kw: uploaded.append(kw["remote_path"]))
+
+    def _read(cli, *, host, remote_path, verify_ssl=False, timeout=30.0):
+        reads.append(remote_path)
+        return nas[remote_path]
+    monkeypatch.setattr(client, "read_remote_file", _read)
+
+    cli = MagicMock()
+    cli.call.side_effect = lambda method, path, *a: {"size": len(nas[path]), "mode": 0o644}
+
+    t = {"app": app, "cli": cli, "uploaded": uploaded, "reads": reads, "remote": remote,
+         "nas": nas, "uv_calls": [], "export": (app / "requirements.lock.txt").read_bytes(),
+         "export_rc": 0}
+
+    def _run(cmd, **kw):
+        t["uv_calls"].append((list(cmd), kw.get("cwd")))
+        return subprocess.CompletedProcess(cmd, t["export_rc"], stdout=t["export"],
+                                           stderr=b"error: uv.lock is not a valid lockfile")
+    monkeypatch.setenv("UV", "/fake/bin/uv")
+    monkeypatch.setattr(m.subprocess, "run", _run)
+    return t
+
+
+def test_cluster_agent_upload_ships_equal_size_requirements_change(cluster_agent_tree) -> None:
+    """A lock bump of the same byte length MUST re-upload requirements.lock.txt.
+
+    Fails against a size-only upload (no read_fn): it reports `noop`, the NAS
+    keeps the old file, and /venv never rebuilds — the 2026-09-13 PXE
+    Dockerfile false clean, on the file that decides every runtime version."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+
+    assert f"{t['remote']}/requirements.lock.txt" in t["reads"], "requirements must be content-checked"
+    assert t["uploaded"] == [f"{t['remote']}/requirements.lock.txt"], \
+        "equal-size requirements change must upload (and nothing else changed)"
+
+
+def test_cluster_agent_upload_refuses_without_requirements(cluster_agent_tree) -> None:
+    """No requirements.lock.txt ⇒ fail the phase BEFORE ensure_custom_app can
+    roll out a compose whose startup script exits without it."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    (t["app"] / "requirements.lock.txt").unlink()
+    with pytest.raises(RuntimeError, match="requirements.lock.txt is missing"):
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=False), structlog.get_logger("test"))
+    assert t["uploaded"] == []
+
+
+def test_cluster_agent_requirements_file_is_committed(repo_root: Path) -> None:
+    """The real file exists where the upload helper looks for it."""
+    from truenas_infra.modules.apps import CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
+
+    assert (repo_root / CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE).is_file()
+
+
+# ─── cluster-agent: requirements.lock.txt must BE `uv export` of uv.lock ─────
+#
+# Renovate lock PRs bump uv.lock but cannot re-export, and truenas-infra has no
+# CI, so a lock bump merged without the re-export would deploy the OLD pins
+# while uv.lock (and the Dependabot alerts it closes) claim the new ones. The
+# deploy step refuses that — before the first upload, dry-run included.
+
+
+def test_cluster_agent_upload_runs_the_committed_uv_export(cluster_agent_tree) -> None:
+    """The guard runs `uv` with EXACTLY the export flags, in apps/cluster-agent/."""
+    import structlog
+
+    import truenas_infra.modules.apps as m
+
+    t = cluster_agent_tree
+    m._ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=False), structlog.get_logger("test"))
+
+    assert t["uv_calls"] == [
+        (["/fake/bin/uv", "export", "--frozen", "--no-dev", "--no-emit-project",
+          "--format", "requirements-txt"], t["app"]),
+    ]
+
+
+def test_cluster_agent_upload_refuses_stale_export(cluster_agent_tree) -> None:
+    """A committed file that differs from `uv export` fails the phase, names the
+    drifted pins, and uploads NOTHING — not even a main.py that did change."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    t["nas"][f"{t['remote']}/main.py"] = b"old = 1\n"   # different size -> would upload
+    t["export"] = b"starlette==1.9.0 \\\n    --hash=sha256:cc\n"   # what the lock now says
+
+    with pytest.raises(RuntimeError, match="is STALE") as exc:
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+    assert "starlette==1.8.0" in str(exc.value) and "starlette==1.9.0" in str(exc.value)
+    assert "uv export --frozen --no-dev --no-emit-project --format requirements-txt" in str(exc.value)
+    assert t["uploaded"] == [], "a stale export must stop the phase before ANY upload"
+
+
+def test_cluster_agent_upload_refuses_hash_only_drift(cluster_agent_tree) -> None:
+    """Same pins, different hashes (a re-published wheel set) is still stale:
+    `--require-hashes` on the NAS would install against the committed hashes."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    t["export"] = b"starlette==1.8.0 \\\n    --hash=sha256:cc\n"
+
+    with pytest.raises(RuntimeError, match="same pins, different hashes or header"):
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+    assert t["uploaded"] == []
+
+
+def test_cluster_agent_upload_refuses_when_uv_export_fails(cluster_agent_tree) -> None:
+    """uv exiting non-zero is a failure with uv's stderr, never a pass."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    t["export_rc"] = 2
+    with pytest.raises(RuntimeError, match=r"failed in .*exit 2.*\n.*not a valid lockfile"):
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+    assert t["uploaded"] == []
+
+
+def test_cluster_agent_upload_refuses_without_uv(cluster_agent_tree, monkeypatch) -> None:
+    """No uv on the operator's PATH is an error that says how to fix it — a
+    skipped drift check would read as a passing one."""
+    import structlog
+
+    import truenas_infra.modules.apps as m
+
+    t = cluster_agent_tree
+    monkeypatch.delenv("UV", raising=False)
+    monkeypatch.setattr(m.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match=r"uv not found.*~/\.local/bin"):
+        m._ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+    assert t["uv_calls"] == [] and t["uploaded"] == []
+
+
+def test_cluster_agent_export_args_match_the_committed_file(repo_root: Path) -> None:
+    """uv writes its command into the export header, and apps/cluster-agent's
+    test_requirements_lock.py proves the file byte-equals that export — so this
+    ties the deploy guard's flags to the ones that actually produced the file."""
+    from truenas_infra.modules.apps import (
+        CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE,
+        CLUSTER_AGENT_UV_EXPORT_ARGS,
+    )
+
+    header = (repo_root / CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE).read_text().splitlines()[:3]
+    assert f"#    uv {' '.join(CLUSTER_AGENT_UV_EXPORT_ARGS)}" in header, header
+
+
+def test_cluster_agent_export_guard_passes_on_the_real_tree(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unmocked: real uv, real apps/cluster-agent/ — the committed file IS the
+    export, so the guard must pass (catches a wrong cwd or flag in the guard
+    that the mocked tests cannot see). Needs uv: run via `uv run --extra dev pytest`."""
+    import structlog
+
+    from truenas_infra.modules.apps import _verify_cluster_agent_requirements_export
+
+    monkeypatch.chdir(repo_root)   # CLUSTER_AGENT_LOCAL_DIR is repo-relative, as under manage.sh
+    _verify_cluster_agent_requirements_export(structlog.get_logger("test"))
