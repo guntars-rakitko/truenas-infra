@@ -27,9 +27,25 @@
 # cluster's node (clusters.py GRAFANA_URLS) with a Grafana service-account
 # token, GRAFANA_SA_TOKEN_{DEV,PRD} below. See tools/grafana.py.
 #
-# Image strategy: python:3.13-alpine base + persistent /venv. Self-healing
-# venv rebuilds on Python version drift. App code uploaded by
-# _ensure_cluster_agent_config_via_ctx
+# Image strategy: python:3.13-alpine base + persistent /venv built from
+# EXACTLY requirements.lock.txt (a hashed `uv export` of uv.lock, uploaded
+# with the code). The startup script stamps /venv with that file's sha256 +
+# the image's Python minor (e.g. "<sha256> cp313") and rebuilds only when the
+# stamp differs, or when /venv/bin/python no longer runs. Unchanged = one
+# sha256sum + two `python -c` calls, then straight to uvicorn. App code
+# uploaded by _ensure_cluster_agent_config_via_ctx.
+#
+# ⚠ Until 2026-09-29 this script pip-installed its OWN hand-written
+# `==X.Y.*` pins and rebuilt only when `import uvicorn, jinja2, cryptography`
+# failed — so uv.lock (what the tests run) never reached this container, and
+# neither did any Dependabot fix to it. Do not reintroduce inline pins: add
+# the dependency to pyproject.toml, `uv lock`, re-export (pyproject header).
+# tests/test_requirements_lock.py fails on a stale export or on inline pins.
+#
+# ⚠ A lock-only change (requirements.lock.txt edited, compose untouched) does
+# NOT recreate the container: `manage.sh phase apps --apply` uploads the file
+# and reports the app `noop`. Restart the container to rebuild /venv — same
+# as a code-only change (truenas-infra CLAUDE.md § cluster-agent ops).
 #
 # WHY 3.13 (not 3.14): pydantic-core 2.10 doesn't yet publish
 # `cpython-314-musllinux` wheels, so pip falls back to source-build on
@@ -38,6 +54,12 @@
 # container in a crash loop 2026-05-25 until logs revealed the cause.
 # Python 3.13 has pre-built wheels — clean install, no Rust. Revisit when
 # pydantic-core publishes cp314-musllinux (probably ~3-6 months out).
+# Since 2026-09-29 the install runs with --only-binary=:all:, so a missing
+# wheel fails fast with pip's "no matching distribution" instead of a source
+# build, and tests/test_requirements_lock.py checks — against the Python
+# minor in the `image:` tag below — that every locked runtime package has a
+# musllinux x86_64 or pure-Python wheel. A 3.14 bump without the wheels now
+# fails at PR time, not on the NAS.
 #
 # Original comment (kept for context): self-healing venv rebuilds on Python
 # version drift. App code uploaded by _ensure_cluster_agent_config_via_ctx
@@ -219,30 +241,33 @@ services:
       - -c
       - |
         set -e
-        # Rebuild the venv if it's missing OR was built against a
-        # different Python OR is missing any of the dependency markers
-        # we add over time. The /venv bind-mount persists across image
-        # bumps and ADDS-only-via-self-heal — i.e. when we add a new
-        # `pip install` entry below, the check must include that
-        # package's `import` line, else old venvs never pick it up.
-        # Markers checked: uvicorn (P0), jinja2 (P1 prompt loader),
-        # claude_agent_sdk (P1 LLM wrapper).
-        if ! /venv/bin/python -c 'import uvicorn, jinja2, cryptography' 2>/dev/null; then
-          echo "venv missing or stale — rebuilding…"
+        # /venv = EXACTLY /app/requirements.lock.txt (hashed `uv export` of
+        # uv.lock). Rebuild when the stamp (file sha256 + Python minor) differs
+        # or the venv's interpreter no longer runs; otherwise skip — idempotent
+        # and fast. The stamp is written only after pip succeeds, and
+        # `venv --clear` deletes it first, so an interrupted rebuild retries on
+        # the next start. Every shell dollar below is doubled: compose
+        # interpolates this string and unescapes a doubled dollar to one.
+        # Lowercase variable names also stay clear of manage.sh's Doppler
+        # substitution, which only rewrites brace-wrapped UPPER_CASE names.
+        req=/app/requirements.lock.txt
+        stamp=/venv/.requirements.stamp
+        if [ ! -f "$$req" ]; then
+          echo "FATAL: $$req missing — run ./manage.sh phase apps --only cluster-agent --apply" >&2
+          exit 1
+        fi
+        want="$$(sha256sum "$$req" | cut -d' ' -f1) $$(python -c 'import sys; print("cp%d%d" % sys.version_info[:2])')"
+        have="$$(cat "$$stamp" 2>/dev/null || true)"
+        if [ "$$have" != "$$want" ] || ! /venv/bin/python -c '' 2>/dev/null; then
+          echo "venv stale (have: '$$have', want: '$$want') — rebuilding from $$req"
           python -m venv --clear /venv
-          /venv/bin/pip install --no-cache-dir -q \
-            'fastapi==0.118.*' \
-            'uvicorn[standard]==0.35.*' \
-            'apscheduler==3.10.*' \
-            'prometheus_client==0.21.*' \
-            'httpx==0.28.*' \
-            'jinja2==3.1.*' \
-            'pydantic==2.10.*' \
-            'pyjwt[crypto]==2.10.*' \
-            'tenacity==9.0.*' \
-            'structlog==24.4.*' \
-            'pyyaml==6.0.*'
+          /venv/bin/pip install --no-cache-dir -q --disable-pip-version-check \
+            --root-user-action=ignore --require-hashes --only-binary=:all: \
+            -r "$$req"
+          echo "$$want" > "$$stamp"
           echo "venv ready"
+        else
+          echo "venv up to date ($$want)"
         fi
         # Install kubectl + mc + curl + jq + sqlite (idempotent — apk skip
         # if present). Errors are NOT swallowed: `apk add` failing means

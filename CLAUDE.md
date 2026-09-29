@@ -725,7 +725,8 @@ effect until the container restarts. `manage.sh` recreates only when
 the rendered env-var hash changes (e.g. a Doppler key was edited):
 
 ```sh
-# After llm.py / dispatch.py / etc. source-only changes:
+# After llm.py / dispatch.py / etc. source-only changes — AND after a
+# lock-only change (uv.lock + requirements.lock.txt, compose untouched):
 ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
 
 # After Doppler key change:
@@ -733,13 +734,53 @@ cd ~/github/truenas-infra && ./manage.sh phase apps --apply
 # (will report action=update changed=True — env hash differs)
 ```
 
-**Venv self-heal — add markers when you add deps.** The container's
-startup checks `python -c 'import uvicorn, jinja2, cryptography'` and
-ONLY rebuilds the venv if that fails. When you add a new pip-install
-entry, you MUST add the corresponding `import` to the check — else old
-venvs (persisted across container recreates via bind mount) skip the
-rebuild because the original markers still import. We learned this
-twice in P1 (jinja2 + cryptography).
+**Runtime deps come from `uv.lock` (since 2026-09-29).** One chain, no
+second list: `apps/cluster-agent/pyproject.toml` → `uv.lock` →
+`requirements.lock.txt` (a hashed `uv export` of the lock, committed) →
+`/venv` on the NAS. `manage.sh phase apps` uploads `requirements.lock.txt`
+with the code (content-verified, not size-only: a version bump with new
+fixed-width hashes is routinely the same byte length). The compose startup
+script `pip install --require-hashes --only-binary=:all: -r` that file into
+`/venv`, then stamps `/venv/.requirements.stamp` with `<file sha256> cpXY`.
+On every start it recomputes the stamp. It rebuilds `/venv` (`venv --clear`,
+~20-40 s) only when the stamp differs or `/venv/bin/python` no longer runs.
+Otherwise it logs `venv up to date (…)` and goes straight to uvicorn.
+
+- **Adding or bumping a dependency** (including a Renovate lock PR): edit
+  `pyproject.toml` if needed, then in `apps/cluster-agent/`:
+  `uv lock` (or `uv lock --upgrade-package X`), then
+  `uv export --frozen --no-dev --no-emit-project --format requirements-txt > requirements.lock.txt`.
+  `tests/test_requirements_lock.py` fails on a stale export, a lock that
+  does not satisfy pyproject, an unhashed line, inline pins in the compose,
+  or a runtime package with no `cpXY-musllinux x86_64`/pure-Python wheel
+  (XY is read from the compose `image:` tag). Run the suite with
+  `uv run --extra dev pytest`. Plain `uv run` re-locks a stale lock
+  silently, and then the export check is what fails.
+  ⚠ Renovate bumps `uv.lock` but cannot re-export, so its lock PRs fail
+  that test until you re-export on the branch. This repo has no CI, so run
+  the suite before merging any lock PR. `renovate.json` disables
+  Renovate's `pip_requirements` manager for the generated file, so it never
+  gets bumped on its own.
+- **Deploying it:** `./manage.sh phase apps --only cluster-agent --apply`
+  uploads the file, but the app itself reports `noop` (the compose did not
+  change), so nothing restarts. Then run `sudo docker restart cluster-agent`.
+  Verify with the stamp, not `/health`:
+  `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent cat /venv/.requirements.stamp'`
+  must equal `shasum -a 256 apps/cluster-agent/requirements.lock.txt` + ` cp313`.
+- **Forcing a rebuild** (suspected corrupt venv):
+  `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent rm -f /venv/.requirements.stamp'`,
+  then restart.
+- **Why:** until 2026-09-29 the compose pip-installed its OWN hand-written
+  `==X.Y.*` pins (fastapi 0.118, uvicorn 0.35, pydantic 2.10, structlog
+  24.4, …). It rebuilt only when `import uvicorn, jinja2, cryptography`
+  failed. So the lock the tests ran against never reached production, and
+  neither did the Dependabot fixes to it (8 open alerts on 2026-09-29: anyio,
+  cryptography, starlette; kube-infra#1163). Moving to the lock was a
+  one-time jump: fastapi 0.118→0.141.1, starlette 0.4x→1.7.0, uvicorn
+  0.35→0.54.0, apscheduler 3.10→3.11.3, prometheus_client 0.21→0.25.0,
+  pydantic 2.10→2.13.5, pyjwt 2.10→2.13.0, cryptography →50.0.1,
+  anyio →4.14.2, tenacity 9.0→9.1.4, structlog 24.4→26.1.0. httpx, jinja2
+  and pyyaml stayed on the same series.
 
 **LLM auth toggle.** Compose passes BOTH `ANTHROPIC_API_KEY` and
 `CLAUDE_CODE_OAUTH_TOKEN` to the container; the Doppler key

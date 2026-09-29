@@ -685,10 +685,10 @@ TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
 WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
-# cluster-agent — LLM-driven SRE assistant. Stock python:3.14-alpine base
-# image, app code on the pool, bind-mounted into /app. We upload src/ +
-# prompts/ only; data/ (SQLite state) and venv/ (self-healing,
-# Python-version-tied) are excluded deliberately.
+# cluster-agent — LLM-driven SRE assistant. Stock python:3.13-alpine base
+# image, app code on the pool, bind-mounted into /app. We upload main.py,
+# requirements.lock.txt, src/ and prompts/; data/ (SQLite state) and venv/
+# (built on the NAS from requirements.lock.txt) are excluded deliberately.
 # ⚠ This comment used to say "same deploy pattern as amtctl / stress-dashboard".
 # Both were retired 2026-09-23, so cluster-agent is now the ONLY app using the
 # code-on-pool bind-mount pattern — there is no sibling left to copy from.
@@ -696,6 +696,10 @@ CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
 CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
 CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
 CLUSTER_AGENT_MAIN_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "main.py"
+# `uv export` of apps/cluster-agent/uv.lock (hashed). The container's startup
+# script pip-installs exactly this file into /venv and rebuilds /venv when its
+# sha256 changes — see the compose `command:` block.
+CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "requirements.lock.txt"
 CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
 
 
@@ -855,13 +859,26 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     Layout on the pool:
         .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
             ├── main.py                        — FastAPI entrypoint (Task 18)
+            ├── requirements.lock.txt          — hashed `uv export` of uv.lock;
+            │                                    /venv is built from exactly this
             ├── src/                           — Python package (Tasks 9-19)
             └── prompts/                       — Jinja2 prompt templates (Task 14)
 
     Files NOT uploaded:
       - docker-compose.yaml   (owned by ensure_custom_app)
       - data/                 (SQLite state.db — must persist across redeploys)
-      - venv/                 (self-healing; tied to Python minor version)
+      - venv/                 (built on the NAS from requirements.lock.txt;
+                               rebuilt when that file's sha256 or the image's
+                               Python minor changes)
+
+    ⚠ requirements.lock.txt is MANDATORY once any code is present: the compose
+    startup script refuses to start without it. A missing file raises here,
+    BEFORE ensure_custom_app can roll out a compose that depends on it.
+    It is also the one file here uploaded with CONTENT verification
+    (`read_fn`): a lock bump is routinely the same byte length (`==1.7.0` ->
+    `==1.8.0`, and sha256 hashes are fixed-width), which size-only idempotency
+    reports as `noop` forever — the NAS would keep building the old versions
+    while the repo claims the new ones (the 2026-09-13 PXE Dockerfile bug).
 
     Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
     This helper runs in the phase-apps pre-upload block so the operator can
@@ -919,6 +936,33 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             reason="not_present_yet",
             path=str(main_file),
         )
+
+    # requirements.lock.txt — what /venv is built from. Content-verified; see
+    # the docstring for why size-only is not enough for this file.
+    req_file = CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
+    if not req_file.is_file():
+        raise RuntimeError(
+            f"{req_file} is missing. The cluster-agent container builds /venv "
+            f"from it and will not start without it. Regenerate it from "
+            f"apps/cluster-agent/: `uv export --frozen --no-dev --no-emit-project "
+            f"--format requirements-txt > requirements.lock.txt`."
+        )
+    from truenas_infra.client import read_remote_file
+
+    def _read(remote_path: str) -> bytes:
+        return read_remote_file(
+            cli, host=host, remote_path=remote_path, verify_ssl=verify_ssl,
+        )
+
+    remote_req = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{req_file.name}"
+    diff = ensure_file_on_nas(
+        cli, _upload,
+        local_path=req_file, remote_path=remote_req,
+        mode=0o644, apply=ctx.apply, read_fn=_read,
+    )
+    log.info("cluster_agent_file_ensured", path=remote_req,
+             action=diff.action, changed=diff.changed,
+             content_verified=(diff.after or {}).get("content_verified"))
 
     # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
     for subdir in (src_dir, prompts_dir):

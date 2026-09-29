@@ -1,14 +1,22 @@
-# cluster-agent — local dev/test pyproject.
+# cluster-agent — dependency source of truth (runtime AND tests).
 #
-# This is NOT consumed by the container (the container uses an inline
-# self-healing venv bootstrap in docker-compose.yaml — see the `command:`
-# block). pyproject.toml exists purely for laptop-side pytest iteration:
-# the operator builds a .venv with these deps, runs pytest, gets fast
-# feedback before the container deploy in Task 23.
+# `[project].dependencies` below → `uv.lock` → `requirements.lock.txt` (a
+# hashed `uv export` of the lock, committed next to it) → the container's
+# /venv. docker-compose.yaml's startup script pip-installs EXACTLY that file
+# (`--require-hashes --only-binary=:all:`) and rebuilds /venv whenever the
+# file's sha256 changes, so the versions pytest ran against are the versions
+# production runs. tests/test_requirements_lock.py fails if the export drifts
+# from the lock or the lock from this file.
 #
-# Dependency parity is operator's responsibility — when adding a new
-# runtime dep to the container's inline pip install in docker-compose.yaml,
-# add it here too so tests can see it.
+# After ANY change here or to uv.lock (Renovate bump, `uv lock --upgrade…`):
+#
+#   uv lock
+#   uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+#     > requirements.lock.txt
+#
+# ⚠ Until 2026-09-29 the container ignored this file and pip-installed its own
+# hand-written `==X.Y.*` pins, so the lock (and every Dependabot fix to it)
+# never reached production. See truenas-infra CLAUDE.md § cluster-agent ops.
 [project]
 name = "cluster-agent"
 version = "0.1.0"
@@ -25,6 +33,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",  # [crypto] extra pulls in cryptography for RS256 (GitHub App JWT signing)
     "tenacity>=9.1.4",
     "structlog>=26.1.0",
+    "pyyaml>=6.0.3",  # imported directly by tools/k8s_proxy.py (kubeconfig parsing)
 ]
 
 [project.optional-dependencies]
