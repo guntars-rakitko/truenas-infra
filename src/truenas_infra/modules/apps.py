@@ -625,6 +625,7 @@ def ensure_tls_rotate(
     rotate_path: Path,
     remote_dir: str,
     apply: bool,
+    read_fn: Any = None,
 ) -> tuple[Diff, ...]:
     """Deploy the cert export + rotation scripts and register the hourly
     cronjob that drives them.
@@ -635,8 +636,9 @@ def ensure_tls_rotate(
     - `tls-rotate.sh`: wraps export, app.redeploy on change.
     - Cronjob: `0 * * * *` runs tls-rotate.sh.
 
-    Reuses `ensure_file_on_nas` (size-based idempotency) and
-    `ensure_cronjob` (update-when-differs).
+    Reuses `ensure_file_on_nas` (content-verified when `read_fn` is given,
+    which `_ensure_tls_rotate_via_ctx` always does) and `ensure_cronjob`
+    (update-when-differs).
     """
     remote_export = f"{remote_dir.rstrip('/')}/{export_path.name}"
     remote_rotate = f"{remote_dir.rstrip('/')}/{rotate_path.name}"
@@ -644,12 +646,12 @@ def ensure_tls_rotate(
     export_diff = ensure_file_on_nas(
         cli, upload_fn,
         local_path=export_path, remote_path=remote_export,
-        mode=0o755, apply=apply,
+        mode=0o755, apply=apply, read_fn=read_fn,
     )
     rotate_diff = ensure_file_on_nas(
         cli, upload_fn,
         local_path=rotate_path, remote_path=remote_rotate,
-        mode=0o755, apply=apply,
+        mode=0o755, apply=apply, read_fn=read_fn,
     )
     cron_diff = ensure_cronjob(
         cli,
@@ -689,8 +691,10 @@ WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
 # cluster-agent — LLM-driven SRE assistant. Stock python:3.13-alpine base
 # image, app code on the pool, bind-mounted into /app. We upload main.py,
-# requirements.lock.txt, src/ and prompts/; data/ (SQLite state) and venv/
-# (built on the NAS from requirements.lock.txt) are excluded deliberately.
+# requirements.lock.txt and the GIT-TRACKED files of src/ and prompts/ (never
+# the laptop's __pycache__/ or other ignored/untracked files); data/ (SQLite
+# state) and venv/ (built on the NAS from requirements.lock.txt) are excluded
+# deliberately. Every file is content-verified, not just size-checked.
 # ⚠ This comment used to say "same deploy pattern as amtctl / stress-dashboard".
 # Both were retired 2026-09-23, so cluster-agent is now the ONLY app using the
 # code-on-pool bind-mount pattern — there is no sibling left to copy from.
@@ -800,13 +804,17 @@ def run(
     return 0
 
 
-def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
-    if not TRAEFIK_ROUTES_PATH.exists():
-        log.warning("traefik_routes_skipped",
-                    reason="source_missing", path=str(TRAEFIK_ROUTES_PATH))
-        return
+def _nas_transport(cli: Any, ctx: Any) -> tuple[Any, Any]:
+    """(upload_fn, read_fn) for `ensure_file_on_nas`, bound to this run's NAS.
 
-    from truenas_infra.client import upload_file
+    Every `_ensure_*_via_ctx` helper passes BOTH. `read_fn` is what turns a
+    size match into a content match: without it an equal-length edit (a port,
+    an IP octet, `3.20`->`3.23`) reports `noop` forever — the 2026-09-13 PXE
+    Dockerfile false clean (see `ensure_file_on_nas`). Until 2026-09-29 only
+    cluster-agent's requirements.lock.txt got one; routes.yaml, nginx.conf,
+    the tls scripts and every cluster-agent source file were size-only.
+    """
+    from truenas_infra.client import read_remote_file, upload_file
 
     host = ctx.config.truenas_host
     api_key = ctx.config.truenas_api_key
@@ -818,14 +826,30 @@ def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
             local_path=local_path, remote_path=remote_path, mode=mode,
         )
 
+    def _read(remote_path: str) -> bytes:
+        return read_remote_file(
+            cli, host=host, remote_path=remote_path, verify_ssl=verify_ssl,
+        )
+
+    return _upload, _read
+
+
+def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
+    if not TRAEFIK_ROUTES_PATH.exists():
+        log.warning("traefik_routes_skipped",
+                    reason="source_missing", path=str(TRAEFIK_ROUTES_PATH))
+        return
+
+    upload, read = _nas_transport(cli, ctx)
     remote = f"{TRAEFIK_CONFIG_REMOTE_DIR}/routes.yaml"
     diff = ensure_file_on_nas(
-        cli, _upload,
+        cli, upload,
         local_path=TRAEFIK_ROUTES_PATH, remote_path=remote,
-        mode=0o644, apply=ctx.apply,
+        mode=0o644, apply=ctx.apply, read_fn=read,
     )
     log.info("traefik_routes_ensured", path=remote,
-             action=diff.action, changed=diff.changed)
+             action=diff.action, changed=diff.changed,
+             content_verified=(diff.after or {}).get("content_verified"))
 
 
 def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
@@ -837,26 +861,16 @@ def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                     reason="source_missing", path=str(WIKI_NGINX_CONF_PATH))
         return
 
-    from truenas_infra.client import upload_file
-
-    host = ctx.config.truenas_host
-    api_key = ctx.config.truenas_api_key
-    verify_ssl = ctx.config.truenas_verify_ssl
-
-    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
-        upload_file(
-            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
-            local_path=local_path, remote_path=remote_path, mode=mode,
-        )
-
+    upload, read = _nas_transport(cli, ctx)
     remote = f"{WIKI_CONFIG_REMOTE_DIR}/nginx.conf"
     diff = ensure_file_on_nas(
-        cli, _upload,
+        cli, upload,
         local_path=WIKI_NGINX_CONF_PATH, remote_path=remote,
-        mode=0o644, apply=ctx.apply,
+        mode=0o644, apply=ctx.apply, read_fn=read,
     )
     log.info("wiki_config_ensured", path=remote,
-             action=diff.action, changed=diff.changed)
+             action=diff.action, changed=diff.changed,
+             content_verified=(diff.after or {}).get("content_verified"))
 
 
 
@@ -965,11 +979,30 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     ⚠ It must also BE `uv export` of uv.lock: a stale export raises here too
     (see `_verify_cluster_agent_requirements_export`). Both checks run before
     the first upload, dry-run included, so a failure leaves the NAS untouched.
-    It is also the one file here uploaded with CONTENT verification
-    (`read_fn`): a lock bump is routinely the same byte length (`==1.7.0` ->
-    `==1.8.0`, and sha256 hashes are fixed-width), which size-only idempotency
-    reports as `noop` forever — the NAS would keep building the old versions
-    while the repo claims the new ones (the 2026-09-13 PXE Dockerfile bug).
+
+    ⚠ EVERY file is uploaded with CONTENT verification (`read_fn`: sha256 of
+    the NAS copy when the sizes match; a size mismatch still short-circuits
+    to "changed" with no download). Until 2026-09-29 only
+    requirements.lock.txt was, and every source file was SIZE-ONLY: an
+    equal-length edit to llm.py, a prompt or main.py (`<`->`>`, a threshold
+    `0.50`->`0.75`, a model id `-4-5`->`-4-6`) reported `noop` and never
+    reached the NAS — the 2026-09-13 PXE Dockerfile false clean. A lock bump
+    is the routine case (`==1.7.0` -> `==1.8.0`, and sha256 hashes are
+    fixed-width). ~37 small downloads per run, dry-run included — the price
+    of a `noop` that means something.
+
+    ⚠ src/ and prompts/ upload their GIT-TRACKED files only (`git ls-files`),
+    not whatever the checkout holds. The old `rglob("*")` shipped the laptop's
+    `__pycache__/*.cpython-3XX.pyc` (pytest writes them) — 37 of them sit on
+    the NAS today, including bytecode for modes/alert_triage and tools/mc,
+    deleted from git in May 2026; a 3.13 laptop venv writes the container's
+    own cache tag. The repo's .gitignore files already define "not source";
+    a second deny-list here would drift from them (.DS_Store, editor swap
+    files, `*.orig`, a scratch module). Untracked-but-not-ignored files are
+    NOT uploaded and are logged as `cluster_agent_untracked_not_uploaded`, so
+    a forgotten `git add` is visible, not silent. No git (or not a work tree)
+    is an error raised before the first upload, never a fallback to the old
+    walk. Remote leftovers stay: TrueNAS 25.10 has no file-delete API.
 
     Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
     This helper runs in the phase-apps pre-upload block so the operator can
@@ -1012,55 +1045,22 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
         )
     _verify_cluster_agent_requirements_export(log)
 
-    from truenas_infra.client import upload_file
-
-    host = ctx.config.truenas_host
-    api_key = ctx.config.truenas_api_key
-    verify_ssl = ctx.config.truenas_verify_ssl
-
-    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
-        upload_file(
-            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
-            local_path=local_path, remote_path=remote_path, mode=mode,
-        )
-
-    # Upload main.py at the top level of code/ (uvicorn `main:app` entrypoint).
+    # The full file list is built BEFORE the first upload, like the checks
+    # above: a git failure must not leave main.py + requirements uploaded and
+    # src/ half-done.
+    # main.py sits at the top level of code/ (uvicorn `main:app` entrypoint).
+    files: list[Path] = []
     if main_file.is_file():
-        remote_main = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/main.py"
-        diff = ensure_file_on_nas(
-            cli, _upload,
-            local_path=main_file, remote_path=remote_main,
-            mode=0o644, apply=ctx.apply,
-        )
-        log.info("cluster_agent_file_ensured", path=remote_main,
-                 action=diff.action, changed=diff.changed)
+        files.append(main_file)
     else:
         log.info(
             "cluster_agent_main_skipped",
             reason="not_present_yet",
             path=str(main_file),
         )
+    files.append(req_file)   # validated above
 
-    # requirements.lock.txt (validated above). Content-verified; see the
-    # docstring for why size-only is not enough for this file.
-    from truenas_infra.client import read_remote_file
-
-    def _read(remote_path: str) -> bytes:
-        return read_remote_file(
-            cli, host=host, remote_path=remote_path, verify_ssl=verify_ssl,
-        )
-
-    remote_req = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{req_file.name}"
-    diff = ensure_file_on_nas(
-        cli, _upload,
-        local_path=req_file, remote_path=remote_req,
-        mode=0o644, apply=ctx.apply, read_fn=_read,
-    )
-    log.info("cluster_agent_file_ensured", path=remote_req,
-             action=diff.action, changed=diff.changed,
-             content_verified=(diff.after or {}).get("content_verified"))
-
-    # Upload src/ and prompts/ subtrees, preserving relative paths under code/.
+    # src/ and prompts/: git-tracked files only (see the docstring).
     for subdir in (src_dir, prompts_dir):
         if not subdir.is_dir():
             log.info(
@@ -1069,19 +1069,57 @@ def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                 path=str(subdir),
             )
             continue
-        for local in sorted(subdir.rglob("*")):
-            if not local.is_file():
-                continue
-            # Preserve the subdir name (src/ or prompts/) in the remote path.
-            rel = local.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix()
-            remote = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{rel}"
-            diff = ensure_file_on_nas(
-                cli, _upload,
-                local_path=local, remote_path=remote,
-                mode=0o644, apply=ctx.apply,
+        untracked = _git_ls_files(subdir, "--others", "--exclude-standard")
+        if untracked:
+            log.warning(
+                "cluster_agent_untracked_not_uploaded",
+                paths=[p.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix() for p in untracked],
+                hint="git add + commit via a PR to deploy them",
             )
-            log.info("cluster_agent_file_ensured", path=remote,
-                     action=diff.action, changed=diff.changed)
+        for local in _git_ls_files(subdir):
+            if local.is_file():
+                files.append(local)
+            else:   # tracked but deleted in this checkout: the NAS copy stays
+                log.warning("cluster_agent_tracked_file_missing", path=str(local))
+
+    upload, read = _nas_transport(cli, ctx)
+    for local in files:
+        # Preserve the path under apps/cluster-agent/ (main.py, src/…, prompts/…).
+        rel = local.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix()
+        remote = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{rel}"
+        diff = ensure_file_on_nas(
+            cli, upload,
+            local_path=local, remote_path=remote,
+            mode=0o644, apply=ctx.apply, read_fn=read,
+        )
+        log.info("cluster_agent_file_ensured", path=remote,
+                 action=diff.action, changed=diff.changed,
+                 content_verified=(diff.after or {}).get("content_verified"))
+
+
+def _git_ls_files(directory: Path, *flags: str) -> list[Path]:
+    """`git ls-files <flags> -- .` run in `directory`, as sorted paths in it.
+
+    No flags = the tracked files. A failure RAISES — never an empty list,
+    which would upload nothing and read as a clean `noop`.
+    """
+    cmd = ["git", "ls-files", "-z", *flags, "--", "."]
+    try:
+        out = subprocess.run(
+            cmd, cwd=directory, capture_output=True, check=False, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` could not run in {directory}: {exc}. Deploying "
+            f"cluster-agent needs git to upload only tracked files; run "
+            f"manage.sh from a truenas-infra clone. Nothing was uploaded."
+        ) from exc
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` failed in {directory} (exit {out.returncode}): "
+            f"{out.stderr.decode('utf-8', 'replace').strip()}. Nothing was uploaded."
+        )
+    return sorted(directory / name for name in out.stdout.decode("utf-8").split("\0") if name)
 
 
 
@@ -1092,31 +1130,23 @@ def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
                     rotate_exists=TLS_ROTATE_SCRIPT_PATH.exists())
         return
 
-    from truenas_infra.client import upload_file
-
-    host = ctx.config.truenas_host
-    api_key = ctx.config.truenas_api_key
-    verify_ssl = ctx.config.truenas_verify_ssl
-
-    def _upload(*, local_path: Path, remote_path: str, mode: int) -> None:
-        upload_file(
-            cli, host=host, api_key=api_key, verify_ssl=verify_ssl,
-            local_path=local_path, remote_path=remote_path, mode=mode,
-        )
-
+    upload, read = _nas_transport(cli, ctx)
     export_diff, rotate_diff, cron_diff = ensure_tls_rotate(
-        cli, _upload,
+        cli, upload,
         export_path=TLS_EXPORT_SCRIPT_PATH,
         rotate_path=TLS_ROTATE_SCRIPT_PATH,
         remote_dir=TLS_REMOTE_DIR,
         apply=ctx.apply,
+        read_fn=read,
     )
     log.info("tls_export_script_ensured",
              path=f"{TLS_REMOTE_DIR}/tls-export.sh",
-             action=export_diff.action, changed=export_diff.changed)
+             action=export_diff.action, changed=export_diff.changed,
+             content_verified=(export_diff.after or {}).get("content_verified"))
     log.info("tls_rotate_script_ensured",
              path=f"{TLS_REMOTE_DIR}/tls-rotate.sh",
-             action=rotate_diff.action, changed=rotate_diff.changed)
+             action=rotate_diff.action, changed=rotate_diff.changed,
+             content_verified=(rotate_diff.after or {}).get("content_verified"))
     log.info("tls_rotate_cronjob_ensured",
              action=cron_diff.action, changed=cron_diff.changed)
 
