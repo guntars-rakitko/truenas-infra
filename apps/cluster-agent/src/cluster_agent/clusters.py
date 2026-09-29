@@ -17,6 +17,15 @@ msa2 while the other is still a Q170S1 cluster. A rollback reverts both.
 When a key's name changes, keep its old name in PREVIOUS_NAMES: the first run
 under the new name then closes the last digest-summary issue filed under the old
 one (`_close_previous_summaries`), instead of leaving it open for good.
+
+GRAFANA_URLS is the same kind of fact: where the key's cluster serves Grafana to
+this agent (kube-infra#1366). It is kube-infra's `grafana-nas` Service
+(flux-cd/infrastructure/configs/base/grafana-nas-nodeport.yaml): NodePort 30030
+on the node's MGMT address, admitted from the NAS's 10.10.5.10 only. The NAS
+reaches a node address on its own /24 directly; it cannot reach a BGP LB IP
+there (tools/grafana.py). It moves with the kubeconfig, in the same cycle as
+CLUSTER_NAMES, and so does the key's Grafana token (Doppler
+GRAFANA_SA_TOKEN_<KEY>): a service account in THAT cluster's Grafana.
 """
 from __future__ import annotations
 
@@ -30,6 +39,16 @@ CLUSTER_NAMES: dict[str, str] = {
 PREVIOUS_NAMES: dict[str, tuple[str, ...]] = {
     "dev": ("kub-dev",),
     "prd": ("kub-prd",),
+}
+
+# key -> base URL of that cluster's Grafana for this agent: the node's mgmt
+# address (kube-infra talos-os/estates.yaml) and the `grafana-nas` NodePort.
+# Plain HTTP: Grafana itself, no TLS in front (kube-infra accepts it for the
+# one mgmt-VLAN hop; the Service's header says why). A key absent here has no
+# Grafana, and post_annotation refuses it.
+GRAFANA_URLS: dict[str, str] = {
+    "dev": "http://10.10.5.12:30030",  # msa2-dev-01
+    "prd": "http://10.10.5.11:30030",  # msa2-prd-01
 }
 
 

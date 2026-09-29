@@ -97,6 +97,24 @@ DISPATCH_ERRORS = Counter(
     ["surface"],  # grafana_annotation / gh_issue_create / gh_issue_comment / gh_issue_reopen_comment
 )
 
+# Every surface `dispatch.py` counts, pre-initialised at 0 so its series
+# exists from the container's start. kube-infra's ClusterAgentDispatchErrors
+# is `increase(...[6h]) > 0`, and a labelled counter has no series until its
+# first `.inc()`: a series born at 1 has no earlier sample, `increase()` sees
+# no rise, and the FIRST failure of a surface after each container restart
+# never fired the alert (a restart comes with every deploy). With the 0 in
+# place, that first failure is the rise. A surface added to `dispatch.py`
+# goes here too (tests/test_metrics.py checks the two agree).
+DISPATCH_SURFACES = (
+    "grafana_annotation",
+    "gh_issue_create",
+    "gh_issue_comment",
+    "gh_issue_reopen_comment",
+)
+for _surface in DISPATCH_SURFACES:
+    DISPATCH_ERRORS.labels(surface=_surface)
+del _surface
+
 # Mode A LLM accounting (P1+)
 LLM_TOKENS_INPUT = Counter(
     "cluster_agent_llm_input_tokens_total",

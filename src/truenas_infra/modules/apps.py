@@ -80,11 +80,18 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
         "GH_APP_INSTALLATION_ID":        "GH_APP_INSTALLATION_ID",
         "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
         "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
-        # Loki/Prom/AM/Grafana all use apiserver proxy via kubeconfig SA
-        # token — no separate annotation-auth keys needed. Grafana itself
-        # is in auth.proxy mode + auto-creates the cluster-agent user
-        # from X-WEBAUTH-USER. (Old GRAFANA_API_TOKEN_{DEV,PRD} entries
+        # Loki/Prom/AM use the apiserver proxy via the kubeconfig SA token.
+        # Grafana annotations use a Grafana service-account token per key,
+        # posted to the key's `grafana-nas` NodePort (kube-infra#1366,
+        # 2026-09-28; clusters.py GRAFANA_URLS). They replaced the
+        # X-WEBAUTH-USER header through the apiserver proxy, which let the
+        # read-only SA act as any Grafana user. Minted by hand per cluster
+        # (kube-infra CLAUDE.md § Post-bootstrap operator tasks), and
+        # re-minted after every from-zero rebuild (Grafana's DB is not
+        # backed up). (The older GRAFANA_API_TOKEN_{DEV,PRD} entries were
         # removed 2026-05-26 with cluster-agent PR #42.)
+        "GRAFANA_SA_TOKEN_DEV":          "GRAFANA_SA_TOKEN_DEV",
+        "GRAFANA_SA_TOKEN_PRD":          "GRAFANA_SA_TOKEN_PRD",
         "ENABLED":                       "ENABLED",
         "DISABLED_MODES":                "DISABLED_MODES",
         # Removed 2026-05-27 (post-P3 wrap):

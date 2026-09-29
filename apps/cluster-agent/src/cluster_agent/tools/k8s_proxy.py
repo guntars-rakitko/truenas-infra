@@ -10,10 +10,12 @@ URL shape for a proxied service:
   {apiserver}/api/v1/namespaces/{ns}/services/{name}:{port}/proxy/{path}
 
 Auth: the kubeconfig from Doppler (`KUBECONFIG_DEV` / `KUBECONFIG_PRD`)
-contains the SA token. The cluster-agent-readonly ClusterRole (kube-infra
-Task 1) must be extended with `services/proxy` GET on the monitoring
-namespace before these tools work live — tracked as a follow-up (not
-done in this task). See spec § 6.2 and the kube-infra runbook.
+contains the SA token. kube-infra's `cluster-agent-services-proxy` Role
+(flux-cd/infrastructure/configs/base/cluster-agent-rbac.yaml) grants it
+`services/proxy` on exactly Loki, Prometheus and Alertmanager, and `get` ONLY
+(kube-infra#1366, 2026-09-28): the apiserver maps a POST to `create`, which
+the Role no longer grants, so this module is GET-only by design. Grafana is
+not reachable here at all; its annotations go through tools/grafana.py.
 """
 from __future__ import annotations
 import base64
@@ -92,43 +94,3 @@ def proxy_get(
     r.raise_for_status()
     return r.json()
 
-
-def proxy_post(
-    cluster: str,
-    namespace: str,
-    service: str,
-    port: int,
-    path: str,
-    *,
-    json_body: dict[str, Any] | None = None,
-    extra_headers: dict[str, str] | None = None,
-    timeout: float = 15.0,
-) -> Any:
-    """POST via K8s apiserver services/proxy.
-
-    Used by Mode A's Grafana annotation dispatch where the LB-IP path
-    (https://grafana-{env}.w1.lv) fails because the NAS is on the same
-    VLAN as the LB IP and ARPs locally instead of routing via MikroTik.
-    The apiserver-proxy bypass routes through the apiserver VIP (which
-    answers ARP directly from a cluster node), then forwards internally.
-
-    `json_body` is serialised with the default JSON encoder and POSTed
-    with content-type application/json.
-
-    `extra_headers` is merged into the request (after the apiserver
-    Authorization header) — used to pass the Grafana SA token through
-    to the proxied destination, which authenticates separately at the
-    application layer.
-
-    Returns the proxied response's parsed JSON. Raises
-    httpx.HTTPStatusError on non-2xx.
-    """
-    kc = _kubeconfig_for(cluster)
-    url = _build_proxy_url(kc, namespace, service, port, path)
-    verify = _ca_bundle(kc)
-    headers = {"Authorization": f"Bearer {_bearer_token(kc)}"}
-    if extra_headers:
-        headers.update(extra_headers)
-    r = httpx.post(url, json=json_body, headers=headers, timeout=timeout, verify=verify)
-    r.raise_for_status()
-    return r.json()

@@ -21,6 +21,18 @@ def test_the_map_names_the_clusters_the_kubeconfigs_point_at():
     assert clusters.PREVIOUS_NAMES == {"dev": ("kub-dev",), "prd": ("kub-prd",)}
 
 
+def test_the_grafana_map_names_each_keys_node_and_the_nodeport():
+    # A tripwire too, moved with the kubeconfig: each key's node mgmt address
+    # (kube-infra talos-os/estates.yaml) and kube-infra's `grafana-nas` NodePort
+    # (flux-cd/infrastructure/configs/base/grafana-nas-nodeport.yaml).
+    assert clusters.GRAFANA_URLS == {
+        "dev": "http://10.10.5.12:30030",
+        "prd": "http://10.10.5.11:30030",
+    }
+    # Every key with a kubeconfig has a Grafana, and nothing else does.
+    assert set(clusters.GRAFANA_URLS) == set(clusters.CLUSTER_NAMES)
+
+
 def test_a_key_without_a_cluster_is_its_own_name():
     # `nas` / `global` are Finding.cluster values with no kubeconfig behind
     # them. They used to become `kub-nas` / `kub-global`, which name nothing.

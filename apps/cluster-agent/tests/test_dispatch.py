@@ -117,6 +117,38 @@ def test_dispatch_grafana_failure_increments_metric_but_does_not_break_pipeline(
     assert after - before == 1
 
 
+
+def test_dispatch_is_fail_soft_without_a_grafana_token(tmp_path, monkeypatch):
+    """The REAL post_annotation, not a stub, with no GRAFANA_SA_TOKEN_DEV (the
+    state between a from-zero rebuild and the token's re-mint, kube-infra#1366):
+    nothing is sent, the finding still reaches GH, and the error is counted."""
+    import httpx
+    import respx
+
+    from cluster_agent import dispatch as d
+    from cluster_agent.emit.metrics import DISPATCH_ERRORS
+    from cluster_agent.state import db as db_mod
+
+    monkeypatch.delenv("GRAFANA_SA_TOKEN_DEV", raising=False)
+    gh = MagicMock(return_value={"number": 12, "html_url": "https://example/issues/12"})
+    monkeypatch.setattr(d, "gh_issue_create", gh)
+    monkeypatch.setenv("SANDBOX_REPO", "guntars-rakitko/cluster-agent-sandbox")
+    monkeypatch.delenv("FINDINGS_MIN_SEVERITY", raising=False)
+
+    before = DISPATCH_ERRORS.labels(surface="grafana_annotation")._value.get()
+    with respx.mock(assert_all_called=False) as mock:
+        grafana = mock.post(url__regex=r".*/api/annotations").mock(
+            return_value=httpx.Response(200, json={"id": 1})
+        )
+        result = dispatch(_make_finding(), DedupAction(kind=_DedupActionKind.CREATE),
+                          db=db_mod.StateDB(tmp_path / "state.db"))
+    after = DISPATCH_ERRORS.labels(surface="grafana_annotation")._value.get()
+
+    assert grafana.call_count == 0
+    assert result.grafana_annotation_id is None
+    assert result.gh_issue_ref is not None
+    assert after - before == 1
+
 # ── 2026-07-06 graduation: findings → kube-infra, routing + labels ────────
 
 def test_dispatch_create_routes_to_findings_repo_with_review_labels(tmp_path, monkeypatch):
