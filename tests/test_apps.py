@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -922,14 +923,38 @@ def test_ensure_file_on_nas_skips_content_check_for_large_files(tmp_path: Path) 
 # is the same byte length.
 
 
+# Isolated from the operator's git config (hooks, signing) — same idiom as
+# tests/test_verify.py. Only the fixture's own `git init`/`git add` use it; the
+# code under test runs plain `git ls-files`, which reads no user config it needs.
+_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+# Tracked source files of the fake tree (path under cluster-agent/ -> bytes).
+_CA_TRACKED_CODE = {
+    "src/cluster_agent/__init__.py": b"",
+    "src/cluster_agent/llm.py": b"MODEL = 'sonnet-4-5'\n",
+    "prompts/digest.md": b"Summarise the last 24h.\n",
+    "prompts/_shared/house_style.md": b"Be terse.\n",
+}
+
+
 @pytest.fixture
 def cluster_agent_tree(tmp_path: Path, monkeypatch):
-    """A fake apps/cluster-agent/ with main.py + requirements, the module's
-    paths pointed at it, and upload/read transport recorded instead of sent.
+    """A fake apps/cluster-agent/ in a real git work tree — main.py,
+    requirements, tracked src/ + prompts/ files, and an IGNORED
+    `__pycache__/*.pyc` as pytest leaves on the laptop — with the module's
+    paths pointed at it and upload/read transport recorded instead of sent.
+
+    The NAS starts holding every file byte-for-byte except requirements, which
+    is an older lock of the SAME size.
 
     `uv export` is mocked at subprocess.run: by default it returns the
     committed file's bytes (export in sync); a test sets t["export"] to
-    simulate a stale file, or t["export_rc"] to simulate uv failing."""
+    simulate a stale file, or t["export_rc"] to simulate uv failing. Every
+    other command (the `git ls-files` under test) runs for real."""
     import subprocess
 
     import truenas_infra.client as client
@@ -939,23 +964,40 @@ def cluster_agent_tree(tmp_path: Path, monkeypatch):
     app.mkdir()
     (app / "main.py").write_text("app = None\n")
     (app / "requirements.lock.txt").write_text("starlette==1.8.0 \\\n    --hash=sha256:bb\n")
+    (app / ".gitignore").write_text("__pycache__/\n*.py[cod]\n")
+    for rel, body in _CA_TRACKED_CODE.items():
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        (app / rel).write_bytes(body)
+    pycache = app / "src" / "cluster_agent" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "llm.cpython-313.pyc").write_bytes(b"\xf3\r\r\n laptop bytecode")
+    for args in (("init", "-q"), ("add", "-A")):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, env=_GIT_ENV)
+    # Git refuses to see a repo above GIT_CEILING_DIRECTORIES; keeps a test
+    # that deletes .git from finding some unrelated repo further up.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+
     monkeypatch.setattr(m, "CLUSTER_AGENT_LOCAL_DIR", app)
     monkeypatch.setattr(m, "CLUSTER_AGENT_SRC_LOCAL_DIR", app / "src")
     monkeypatch.setattr(m, "CLUSTER_AGENT_PROMPTS_LOCAL_DIR", app / "prompts")
     monkeypatch.setattr(m, "CLUSTER_AGENT_MAIN_LOCAL_FILE", app / "main.py")
     monkeypatch.setattr(m, "CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE", app / "requirements.lock.txt")
 
-    # What the NAS holds: same SIZE as local for both files, older requirements.
+    # What the NAS holds: every file identical, except an older requirements
+    # of the same SIZE.
     remote = f"{m.CLUSTER_AGENT_CODE_REMOTE_DIR}"
     nas = {
         f"{remote}/main.py": (app / "main.py").read_bytes(),
         f"{remote}/requirements.lock.txt": b"starlette==1.7.0 \\\n    --hash=sha256:aa\n",
+        **{f"{remote}/{rel}": body for rel, body in _CA_TRACKED_CODE.items()},
     }
     assert len(nas[f"{remote}/requirements.lock.txt"]) == \
         (app / "requirements.lock.txt").stat().st_size, "fixture must be equal-length"
 
     uploaded: list[str] = []
     reads: list[str] = []
+    stats: list[str] = []
     monkeypatch.setattr(client, "upload_file",
                         lambda cli, **kw: uploaded.append(kw["remote_path"]))
 
@@ -964,14 +1006,21 @@ def cluster_agent_tree(tmp_path: Path, monkeypatch):
         return nas[remote_path]
     monkeypatch.setattr(client, "read_remote_file", _read)
 
+    def _stat(method, path, *a):
+        stats.append(path)
+        return {"size": len(nas[path]), "mode": 0o644}   # KeyError = missing
     cli = MagicMock()
-    cli.call.side_effect = lambda method, path, *a: {"size": len(nas[path]), "mode": 0o644}
+    cli.call.side_effect = _stat
 
-    t = {"app": app, "cli": cli, "uploaded": uploaded, "reads": reads, "remote": remote,
-         "nas": nas, "uv_calls": [], "export": (app / "requirements.lock.txt").read_bytes(),
-         "export_rc": 0}
+    t = {"app": app, "cli": cli, "uploaded": uploaded, "reads": reads, "stats": stats,
+         "remote": remote, "nas": nas, "uv_calls": [],
+         "export": (app / "requirements.lock.txt").read_bytes(), "export_rc": 0}
+
+    real_run = subprocess.run
 
     def _run(cmd, **kw):
+        if cmd[0] != "/fake/bin/uv":
+            return real_run(cmd, **kw)
         t["uv_calls"].append((list(cmd), kw.get("cwd")))
         return subprocess.CompletedProcess(cmd, t["export_rc"], stdout=t["export"],
                                            stderr=b"error: uv.lock is not a valid lockfile")
@@ -996,6 +1045,154 @@ def test_cluster_agent_upload_ships_equal_size_requirements_change(cluster_agent
     assert f"{t['remote']}/requirements.lock.txt" in t["reads"], "requirements must be content-checked"
     assert t["uploaded"] == [f"{t['remote']}/requirements.lock.txt"], \
         "equal-size requirements change must upload (and nothing else changed)"
+
+
+# ─── cluster-agent: EVERY code file content-verified; git-tracked files only ──
+#
+# Until 2026-09-29 only requirements.lock.txt got `read_fn`. main.py, src/**
+# and prompts/** were SIZE-ONLY — an equal-length edit reported `noop` and never
+# reached the NAS — and src/ was walked with rglob("*"), so the laptop's pytest
+# `__pycache__/*.pyc` shipped on every deploy (37 of them sit on the NAS).
+
+
+@pytest.mark.parametrize("rel", ["main.py", "src/cluster_agent/llm.py", "prompts/digest.md"])
+def test_cluster_agent_upload_ships_equal_size_code_change(cluster_agent_tree, rel) -> None:
+    """An equal-length edit to ANY code file must upload, not just to the lock.
+
+    Fails against the size-only upload: the NAS copy below is the same length
+    (`sonnet-4-5` -> `sonnet-4-6` is the real-world shape), so it reported
+    `noop` and the container kept running the old code."""
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    req = f"{t['remote']}/requirements.lock.txt"
+    t["nas"][req] = (t["app"] / "requirements.lock.txt").read_bytes()   # isolate `rel`
+    path = f"{t['remote']}/{rel}"
+    t["nas"][path] = (t["app"] / rel).read_bytes().swapcase()   # older, same length
+    assert t["nas"][path] != (t["app"] / rel).read_bytes()
+
+    _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+
+    assert path in t["reads"], f"{rel} must be content-checked"
+    assert t["uploaded"] == [path]
+
+
+def test_cluster_agent_upload_content_verifies_every_file(cluster_agent_tree) -> None:
+    """A clean run is a CONTENT-verified noop for every file, and each log line
+    says so (`content_verified=True`) rather than implying it via changed=False."""
+    import structlog
+    import structlog.testing
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    t["nas"][f"{t['remote']}/requirements.lock.txt"] = \
+        (t["app"] / "requirements.lock.txt").read_bytes()
+
+    with structlog.testing.capture_logs() as logs:
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=False), structlog.get_logger("test"))
+
+    expected = {f"{t['remote']}/{rel}"
+                for rel in ("main.py", "requirements.lock.txt", *_CA_TRACKED_CODE)}
+    ensured = {e["path"]: e for e in logs if e["event"] == "cluster_agent_file_ensured"}
+    assert set(ensured) == expected
+    assert {(e["action"], e["content_verified"]) for e in ensured.values()} == {("noop", True)}
+    assert sorted(t["reads"]) == sorted(expected)
+    assert t["uploaded"] == []
+
+
+def test_cluster_agent_upload_ships_only_git_tracked_files(cluster_agent_tree) -> None:
+    """The laptop's ignored `__pycache__/*.pyc` and an untracked scratch module
+    are never stat'd, read or uploaded; the untracked one is LOGGED, so a
+    forgotten `git add` is visible rather than a silent ImportError later.
+
+    Fails against the old rglob walk: it stat'd the .pyc, found it missing on
+    the NAS, and uploaded it — every deploy, for every cached module."""
+    import structlog
+    import structlog.testing
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    (t["app"] / "src" / "cluster_agent" / "scratch.py").write_text("wip = True\n")
+
+    with structlog.testing.capture_logs() as logs:
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+
+    touched = t["stats"] + t["reads"] + t["uploaded"]
+    assert not [p for p in touched if "__pycache__" in p or p.endswith(".pyc")], touched
+    assert not [p for p in touched if p.endswith("scratch.py")], touched
+    assert t["uploaded"] == [f"{t['remote']}/requirements.lock.txt"]   # the one real change
+    warned = [e for e in logs if e["event"] == "cluster_agent_untracked_not_uploaded"]
+    assert [(e["log_level"], e["paths"]) for e in warned] == \
+        [("warning", ["src/cluster_agent/scratch.py"])]
+
+
+def test_cluster_agent_upload_refuses_outside_a_git_work_tree(cluster_agent_tree) -> None:
+    """No work tree = no way to tell source from junk. Fail BEFORE the first
+    upload (the file list is built up front) — never fall back to the walk."""
+    import shutil
+
+    import structlog
+
+    from truenas_infra.modules.apps import _ensure_cluster_agent_config_via_ctx
+
+    t = cluster_agent_tree
+    shutil.rmtree(t["app"].parent / ".git")
+    t["nas"][f"{t['remote']}/main.py"] = b"old = 1\n"   # different size -> would upload
+
+    with pytest.raises(RuntimeError, match=r"(?s)git ls-files.*failed in.*Nothing was uploaded"):
+        _ensure_cluster_agent_config_via_ctx(t["cli"], _Ctx(apply=True), structlog.get_logger("test"))
+    assert t["uploaded"] == []
+
+
+# The other single-file uploads were size-only too. A route or listen edit is
+# routinely equal-length (`10.10.5.21` -> `10.10.5.22`, `:8080` -> `:8081`).
+_CONFIG_UPLOADS = {
+    "_ensure_wiki_config_via_ctx": {
+        "WIKI_NGINX_CONF_PATH": "/mnt/tank/system/apps-config/wiki/nginx.conf"},
+    "_ensure_traefik_routes_via_ctx": {
+        "TRAEFIK_ROUTES_PATH": "/mnt/tank/system/apps-config/traefik/routes.yaml"},
+    "_ensure_tls_rotate_via_ctx": {
+        "TLS_EXPORT_SCRIPT_PATH": "/mnt/tank/system/tls/tls-export.sh",
+        "TLS_ROTATE_SCRIPT_PATH": "/mnt/tank/system/tls/tls-rotate.sh"},
+}
+
+
+@pytest.mark.parametrize("helper", sorted(_CONFIG_UPLOADS))
+def test_config_upload_ships_equal_size_change(tmp_path: Path, monkeypatch, helper) -> None:
+    """wiki nginx.conf, traefik routes.yaml and the tls scripts: an older NAS
+    copy of the SAME length must re-upload. Fails against size-only (no read_fn)."""
+    import structlog
+
+    import truenas_infra.client as client
+    import truenas_infra.modules.apps as m
+
+    nas: dict[str, bytes] = {}
+    for const, remote in _CONFIG_UPLOADS[helper].items():
+        local = tmp_path / Path(remote).name
+        local.write_bytes(b"server 10.10.5.22:8080;\n")
+        nas[remote] = b"server 10.10.5.21:8080;\n"
+        monkeypatch.setattr(m, const, local)
+
+    uploaded: list[str] = []
+    monkeypatch.setattr(client, "upload_file",
+                        lambda cli, **kw: uploaded.append(kw["remote_path"]))
+    monkeypatch.setattr(client, "read_remote_file",
+                        lambda cli, *, remote_path, **kw: nas[remote_path])
+
+    def _call(method, *args):
+        if method == "filesystem.stat":
+            return {"size": len(nas[args[0]]), "mode": 0o644}
+        return [] if method == "cronjob.query" else {"id": 1}   # tls: cronjob create
+    cli = MagicMock()
+    cli.call.side_effect = _call
+
+    getattr(m, helper)(cli, _Ctx(apply=True), structlog.get_logger("test"))
+
+    assert sorted(uploaded) == sorted(_CONFIG_UPLOADS[helper].values())
 
 
 def test_cluster_agent_upload_refuses_without_requirements(cluster_agent_tree) -> None:

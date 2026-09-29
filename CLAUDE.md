@@ -340,7 +340,11 @@ directly using the same idiom.
 1. `manage.sh` fetches per-key values from Doppler `infrastructure/ops` at startup, exports into process env
 2. Python CLI reads those env vars via `RuntimeConfig.from_env()` (no dotenv)
 3. Each phase targets a specific domain (users, network, tls, pool, datasets, …)
-4. Phases are idempotent — safe to re-run; default is dry-run, `--apply` to write
+4. Phases are idempotent — safe to re-run; default is dry-run, `--apply` to write.
+   File uploads (`ensure_file_on_nas`: cluster-agent code, wiki `nginx.conf`,
+   Traefik `routes.yaml`, the tls scripts) compare **content** (sha256), not
+   size, since 2026-09-29, and each `*_ensured` line logs `content_verified`.
+   Size alone missed equal-length edits (a port, an IP octet, `3.20`→`3.23`).
 
 ### Object store: MinIO AIStor Free
 
@@ -733,6 +737,35 @@ ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
 cd ~/github/truenas-infra && ./manage.sh phase apps --apply
 # (will report action=update changed=True — env hash differs)
 ```
+
+**What `phase apps` uploads, and how it knows (since 2026-09-29).**
+`main.py`, `requirements.lock.txt` and the **git-tracked** files of `src/`
+and `prompts/` (`git ls-files`, not a directory walk) go to
+`/mnt/tank/system/apps-config/cluster-agent/code/`. Every file is
+**content-verified**: when the sizes match, the NAS copy is pulled back and
+compared by sha256 (~37 small downloads per run, dry-run included); a size
+mismatch is "changed" with no download. Each file logs
+`cluster_agent_file_ensured … content_verified=True`, so a dry-run
+(`./manage.sh phase apps --only cluster-agent`) that is all
+`noop … content_verified=True` proves the NAS holds this checkout's tracked
+bytes. Until 2026-09-29 only the lock was content-checked: an equal-length
+edit to any `.py` or prompt reported `noop` and never deployed (the
+2026-09-13 PXE Dockerfile false clean), and the walk shipped the laptop's
+pytest `__pycache__/*.pyc` on every deploy.
+
+- Untracked-but-not-ignored files under `src/` or `prompts/` are **not**
+  uploaded; they log a `cluster_agent_untracked_not_uploaded` warning. Commit
+  them via a PR. Run outside a git work tree, the phase fails before the
+  first upload rather than falling back to the walk.
+- ⚠ **37 stale `.pyc` files remain on the NAS** under
+  `code/src/cluster_agent/**/__pycache__/` (cpython-311 and -314, including
+  `modes/alert_triage` and `tools/mc`, deleted from git in May 2026).
+  TrueNAS 25.10 has no file-delete API, so the phase cannot remove them. They
+  are inert: the image is python 3.13 (other cache tags are ignored), a
+  `__pycache__` file whose source is gone is never imported, and `/app` is
+  read-only. A 3.13 laptop venv writes the image's own `cpython-313` tag,
+  which is why they must not ship. Removing them is a manual operator step:
+  `ssh -t truenas_admin@10.10.5.10 'sudo find /mnt/tank/system/apps-config/cluster-agent/code -type d -name __pycache__ -prune -exec rm -rf {} +'`.
 
 **Runtime deps come from `uv.lock` (since 2026-09-29).** One chain, no
 second list: `apps/cluster-agent/pyproject.toml` → `uv.lock` →
