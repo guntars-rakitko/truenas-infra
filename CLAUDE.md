@@ -189,8 +189,8 @@ not the cert. MinIO prd/dev re-read the cert themselves and are deliberately
 NOT redeployed; a redeploy would be ~30 s of S3 outage for every backup track.
 Both facts were measured at the 2026-09-14 renewal, which the docs had
 **backwards**. Until 2026-09-26 the script also died under `set -e` before any
-redeploy. Together that left wiki.w1.lv on the old cert for nine days (kube-infra
-#1252 / #1253). A failed redeploy is retried hourly from
+redeploy. Together that left wiki.w1.lv on the old cert for nine days
+(kube-infra #1252 / #1253). A failed redeploy is retried hourly from
 `.tls-redeploy-pending`. `tests/test_tls_rotate.py` requires every enabled app
 that mounts the TLS dir to be in `TLS_CONSUMERS` or on its evidence-backed
 exemption list.
@@ -674,8 +674,8 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    `certificate_expired`, `x509_expired`, `connection_refused`,
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
-   **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26, kube-infra
-   #1263/#1268/#1287). These negative filters drop lines that *record* a
+   **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26,
+   kube-infra #1263/#1268/#1287). These negative filters drop lines that *record* a
    keyword instead of reporting an event:
    - apiserver `audit.k8s.io` records;
    - the ARC runner's `INFO Worker]` job-message dump (PR bodies and
@@ -788,8 +788,8 @@ emitted, real LLM call billed at ~$0.20 against the API account).
 Cost on `api_key`: ~$0.25-0.50/day on Sonnet 4.6 = ~$10/month.
 Max subscription does not offset this (it can't — OAuth is blocked).
 
-**Do NOT flip back to oauth** until either (a) Anthropic fixes
-#45326 AND amends the TOS to allow direct API use, or (b) the
+**Do NOT flip back to oauth** until either (a) Anthropic
+fixes #45326 AND amends the TOS to allow direct API use, or (b) the
 agent is refactored to invoke the `claude` CLI as a subprocess
 (claude-agent-sdk pattern) — which IS within the TOS-allowed
 Claude Code usage path. The bare-REST shortcut in `llm.py` is
