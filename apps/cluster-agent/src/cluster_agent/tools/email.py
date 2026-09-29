@@ -7,7 +7,7 @@ agent + Alertmanager + every other system sender share one credential
 pair — see kube-infra/CLAUDE.md "Email (AWS SES)" section.
 
 Transport: stdlib `smtplib` + `email.message.EmailMessage`. No extra
-package dep — keeps the venv self-heal check simple.
+package dep.
 
 Auth: STARTTLS on port 587 (SES SMTP requirement). The SES SMTP
 password is HMAC-SHA256-derived from the IAM access key; operator

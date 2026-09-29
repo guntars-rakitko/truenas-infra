@@ -31,9 +31,12 @@
 # EXACTLY requirements.lock.txt (a hashed `uv export` of uv.lock, uploaded
 # with the code). The startup script stamps /venv with that file's sha256 +
 # the image's Python minor (e.g. "<sha256> cp313") and rebuilds only when the
-# stamp differs, or when /venv/bin/python no longer runs. Unchanged = one
-# sha256sum + two `python -c` calls, then straight to uvicorn. App code
-# uploaded by _ensure_cluster_agent_config_via_ctx.
+# stamp differs, or when /venv can no longer import the core packages
+# (uvicorn, fastapi, jinja2, jwt, yaml — catches site-packages damaged under
+# an intact stamp). Unchanged = one sha256sum + two `python -c` calls (~0.1 s
+# for the import probe), then straight to uvicorn. App code uploaded by
+# _ensure_cluster_agent_config_via_ctx, which also refuses to deploy a
+# requirements.lock.txt that is not `uv export` of uv.lock.
 #
 # ⚠ Until 2026-09-29 this script pip-installed its OWN hand-written
 # `==X.Y.*` pins and rebuilt only when `import uvicorn, jinja2, cryptography`
@@ -243,11 +246,15 @@ services:
         set -e
         # /venv = EXACTLY /app/requirements.lock.txt (hashed `uv export` of
         # uv.lock). Rebuild when the stamp (file sha256 + Python minor) differs
-        # or the venv's interpreter no longer runs; otherwise skip — idempotent
-        # and fast. The stamp is written only after pip succeeds, and
-        # `venv --clear` deletes it first, so an interrupted rebuild retries on
-        # the next start. Every shell dollar below is doubled: compose
-        # interpolates this string and unescapes a doubled dollar to one.
+        # or the venv can no longer import the core packages (site-packages
+        # damaged under an intact stamp would otherwise crash-loop at import);
+        # otherwise skip — idempotent and fast. The stamp is written only
+        # after pip succeeds, and `venv --clear` deletes it first, so an
+        # interrupted rebuild retries on the next start. The probe imports
+        # module names (jwt = pyjwt, yaml = pyyaml), never `pkg==X` pins —
+        # versions come only from the file. Every shell dollar below is
+        # doubled: compose interpolates this string and unescapes a doubled
+        # dollar to one.
         # Lowercase variable names also stay clear of manage.sh's Doppler
         # substitution, which only rewrites brace-wrapped UPPER_CASE names.
         req=/app/requirements.lock.txt
@@ -258,7 +265,7 @@ services:
         fi
         want="$$(sha256sum "$$req" | cut -d' ' -f1) $$(python -c 'import sys; print("cp%d%d" % sys.version_info[:2])')"
         have="$$(cat "$$stamp" 2>/dev/null || true)"
-        if [ "$$have" != "$$want" ] || ! /venv/bin/python -c '' 2>/dev/null; then
+        if [ "$$have" != "$$want" ] || ! /venv/bin/python -c 'import uvicorn, fastapi, jinja2, jwt, yaml' 2>/dev/null; then
           echo "venv stale (have: '$$have', want: '$$want') — rebuilding from $$req"
           python -m venv --clear /venv
           /venv/bin/pip install --no-cache-dir -q --disable-pip-version-check \

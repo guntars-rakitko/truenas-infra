@@ -169,8 +169,9 @@ def test_every_runtime_package_has_a_wheel_for_the_container():
 
 def test_compose_installs_exactly_the_requirements_file():
     """The startup script installs from the file, hash-checked, binaries only,
-    and keys the venv rebuild on the file's sha256 — and has no inline pins
-    left for the lock to drift away from."""
+    and keys the venv rebuild on the file's sha256 (plus an import probe for
+    a damaged venv) — and has no inline pins left for the lock to drift away
+    from."""
     script = _compose_service()["command"][-1]
     lines = script.splitlines()
     starts = [i for i, ln in enumerate(lines) if "pip install" in ln]
@@ -185,3 +186,9 @@ def test_compose_installs_exactly_the_requirements_file():
     assert 'sha256sum "$$req"' in script, "the venv rebuild is not keyed on the file's hash"
     assert not re.search(r"[A-Za-z0-9_.\]-]==[0-9]", script), \
         "inline `pkg==X` pins are back in the compose command — use the lock"
+    probe = re.search(r"/venv/bin/python -c '([^']*)'", script)
+    assert probe and re.match(r"import \w", probe.group(1)), (
+        "the /venv health probe must IMPORT the core packages, not just start "
+        "the interpreter: site-packages damaged under an intact stamp would "
+        f"crash-loop at import instead of rebuilding (got {probe and probe.group(0)!r})"
+    )

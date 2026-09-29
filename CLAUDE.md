@@ -743,8 +743,11 @@ fixed-width hashes is routinely the same byte length). The compose startup
 script `pip install --require-hashes --only-binary=:all: -r` that file into
 `/venv`, then stamps `/venv/.requirements.stamp` with `<file sha256> cpXY`.
 On every start it recomputes the stamp. It rebuilds `/venv` (`venv --clear`,
-~20-40 s) only when the stamp differs or `/venv/bin/python` no longer runs.
-Otherwise it logs `venv up to date (…)` and goes straight to uvicorn.
+~20-40 s) only when the stamp differs or `/venv` can no longer
+`import uvicorn, fastapi, jinja2, jwt, yaml` (site-packages damaged under an
+intact stamp — without the probe that would crash-loop at import instead of
+self-healing). Otherwise it logs `venv up to date (…)` and goes straight to
+uvicorn.
 
 - **Adding or bumping a dependency** (including a Renovate lock PR): edit
   `pyproject.toml` if needed, then in `apps/cluster-agent/`:
