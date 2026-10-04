@@ -146,7 +146,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "prometheus-client", specifier = ">=0.25.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
