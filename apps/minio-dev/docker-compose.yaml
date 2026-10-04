@@ -13,7 +13,7 @@ services:
     # open-source minio/minio (archived 2026-04-25). See
     # minio-prd/docker-compose.yaml for the full rationale. AIStor IS
     # MinIO — naming stays minio-* / MINIO_*.
-    image: quay.io/minio/aistor/minio:RELEASE.2026-06-06T02-44-06Z@sha256:a14849f4e9f540c00254d371ec3503e996cc74c41ac9c6397dc588a9d868f7af
+    image: quay.io/minio/aistor/minio:RELEASE.2026-09-19T17-05-25Z@sha256:107cf2014a9583c74c11e3cdbd6903d89c2244355886b89ce532f4ecae9c23f3
     container_name: minio-dev
     restart: unless-stopped
     network_mode: bridge
