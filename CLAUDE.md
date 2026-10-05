@@ -139,8 +139,8 @@ device-name comparison would have looked like a missing drive when nothing was w
 
 | Interface | VLAN | IP | Purpose |
 |---|---|---|---|
-| NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
-| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (Velero + Longhorn + all backup buckets, :9000) |
+| NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (every backup bucket, :9000) |
+| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (every backup bucket, :9000) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
 | NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088). PXE/TFTP retired 2026-09-23. (cluster-agent's `:9595` metrics bind on the data-VLAN IPs above, not here — `apps/cluster-agent/docker-compose.yaml`) |
 
@@ -159,8 +159,8 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
-| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
-| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn` for the Q170S1 clusters only (until teardown) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn`, which hold the Q170S1 clusters' last backups and have had no writer since the cutover (whether to delete them is an operator decision, kube-infra#1443), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn`, which hold the Q170S1 clusters' last backups and have had no writer since the cutover (whether to delete them is an operator decision, kube-infra#1443) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
 | cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated Findings filed as issues in [`kube-infra`](https://github.com/guntars-rakitko/kube-infra) (labels `cluster-agent` + `needs-review`); the daily digest-summary goes to [`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest) (renamed from `-sandbox`; routing since the 2026-07-06 graduation — § cluster-agent ops). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
@@ -219,7 +219,7 @@ Decision tree — **apply every time you add an HTTPS endpoint on this network**
 
 Hostname convention: `<role>.w1.lv` for singletons, `<role>-<env>.w1.lv`
 for multi-instance (minio-prd, minio-dev), `<role>-<NN>` for per-box
-(kub-prd-01). All lowercase, hyphen-separated.
+(msa2-prd-01). All lowercase, hyphen-separated.
 
 ---
 
@@ -451,19 +451,19 @@ read them via DopplerSecret CRDs (kube-infra
 `flux-cd/infrastructure/configs/per-cluster/<cluster>/secrets/`), rendered as
 `postgres-backups-s3` + `postgres-backups-s3-w1-db` (every cluster),
 `loki-s3` (every cluster; unused since Loki moved to filesystem, slated for
-removal), `pocket-id-secrets` (reads them on dev + msa2-dev only), `velero-minio` +
-`longhorn-s3` on the Q170S1 clusters only (`velero-minio` also feeds their
-etcd-snapshot CronJob), and `etcd-snapshot-minio` on msa2 only
-(`mssql-backup-creds` went with the cluster MSSQL decommission, 2026-06-17).
+removal), `pocket-id-secrets` (reads them on msa2-dev only), and
+`etcd-snapshot-minio` (`velero-minio` and `longhorn-s3` went with the Q170S1
+clusters' Flux side at the teardown, kube-infra#1443; `mssql-backup-creds`
+with the cluster MSSQL decommission, 2026-06-17).
 This script reads the same Doppler keys via `doppler secrets get --plain` to
 provision the MinIO user. Single canonical copy, zero drift,
 no cross-repo coupling.
 
-⚠ **`infrastructure/{dev,prd}` is shared by each Q170S1 cluster and its msa2
-successor** (kube-infra `talos-os/estates.yaml` `doppler_env`; the msa2
-per-cluster DopplerSecrets read the same configs). Once an msa2 cluster is
-up, a `KUBE_MINIO_*` rotation reaches both it and the old cluster at once —
-roll it as one change.
+⚠ **`infrastructure/{dev,prd}` was shared by each Q170S1 cluster and its msa2
+successor** (kube-infra `talos-os/estates.yaml` `doppler_env`), so until the
+cutover a `KUBE_MINIO_*` rotation reached both at once. Since the teardown
+only the msa2 clusters read them. ⚠ The prd user is ALSO copied by hand onto
+the GIKS v1 box (see the ⚠ above): rotate it there in the same window.
 
 To rotate: generate a new key pair, update Doppler
 (`doppler secrets set KUBE_MINIO_ACCESS_KEY_ID=... \
