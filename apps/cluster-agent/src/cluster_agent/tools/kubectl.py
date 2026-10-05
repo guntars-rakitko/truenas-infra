@@ -79,12 +79,15 @@ def _kubeconfig_path(cluster: str) -> str:
 # Read-only resources allowed. Composed from the cluster-agent-readonly
 # ClusterRole's verbs/resources (kube-infra
 # flux-cd/infrastructure/configs/base/cluster-agent-rbac.yaml).
+# `volumes.longhorn.io` and `backups.velero.io` left with the Q170S1 teardown
+# (kube-infra#1443): neither Longhorn nor Velero runs on the MS-A2 clusters,
+# and kube-infra#1503 took both off the ClusterRole.
 ALLOWED_RESOURCES = re.compile(
     r"^(pods|pods/log|nodes|namespaces|events|services|configmaps|"
     r"persistentvolumes|persistentvolumeclaims|deployments|statefulsets|"
     r"daemonsets|replicasets|jobs|cronjobs|helmreleases|kustomizations|"
-    r"gitrepositories|helmrepositories|ocirepositories|volumes\.longhorn\.io|"
-    r"backups\.velero\.io|certificates|ingressroutes|servicemonitors|"
+    r"gitrepositories|helmrepositories|ocirepositories|"
+    r"certificates|ingressroutes|servicemonitors|"
     r"podmonitors|prometheusrules)$"
 )
 

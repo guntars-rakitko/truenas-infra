@@ -2,14 +2,14 @@
 
 WHY THIS EXISTS
 ---------------
-The script mints the cluster-agent's ServiceAccount tokens. At the MS-A2
-cutover each of its two keys (KUBECONFIG_DEV / KUBECONFIG_PRD) moves from a
-Q170S1 cluster to an MS-A2 one, one cluster at a time (kube-infra msa2 plan
-§ Cutover inventory row 16), so the source kubeconfig became selectable per
-key. The dangerous mistake it must refuse is minting against an MS-A2 BUILD
-address: Talos makes the endpoint the token issuer, so the re-address kills
-that token (plan D12) and the agent goes blind again, the 14-day silent
-failure of 2026-08-21.
+The script mints the cluster-agent's ServiceAccount tokens, one per Doppler
+key (KUBECONFIG_DEV / KUBECONFIG_PRD), each from its own admin kubeconfig. The
+defaults are the MS-A2 clusters' since the Q170S1 teardown (kube-infra#1443);
+either key can be pointed elsewhere by flag. It must refuse a run that would
+leave the agent blind — the 14-day silent failure of 2026-08-21 — before any
+token is minted: a missing kubeconfig, an unreachable cluster, both keys on
+one cluster. (Until the teardown it also refused the MS-A2 BUILD addresses,
+which the boxes have left: git history.)
 
 Every external is stubbed: kubectl answers from the synthetic kubeconfigs
 below and fakes the cluster verbs; doppler / curl / ssh fail loudly. NOTHING
@@ -96,14 +96,15 @@ def bash() -> str:
 
 class Rack:
     """The stub environment: a KUBECONFIG_DIR with the two default kubeconfigs
-    (kub-dev on the dev VIP, kub-prd on the prd VIP) and a bin/ of stubs."""
+    (msa2-dev at .12, msa2-prd at .11, each node's own address: no VIP) and a
+    bin/ of stubs."""
 
     def __init__(self, tmp: Path, bash: str) -> None:
         self.bash = bash
         self.dir = tmp / "talos-os"
         self.dir.mkdir()
-        _kubeconfig(self.dir / "kubeconfig-dev", "https://10.10.5.3:6443")
-        _kubeconfig(self.dir / "kubeconfig-prd", "https://10.10.5.2:6443")
+        _kubeconfig(self.dir / "kubeconfig-msa2-dev", "https://10.10.5.12:6443")
+        _kubeconfig(self.dir / "kubeconfig-msa2-prd", "https://10.10.5.11:6443")
         self.bin = tmp / "bin"
         self.bin.mkdir()
         (self.bin / "kubectl").write_text(KUBECTL, encoding="utf-8")
@@ -123,7 +124,7 @@ class Rack:
             PATH=f"{self.bin}:{env['PATH']}",
             STUB_LOG=str(self.log),
             KUBECONFIG_DIR=str(self.dir),
-            STUB_ISS="https://10.10.5.2:6443",
+            STUB_ISS="https://10.10.5.11:6443",
             STUB_STOP_RAW="cluster-agent-prd.kubeconfig",
         )
         env.update(env_extra)
@@ -171,32 +172,42 @@ def _no_publish(calls: list[str]) -> None:
     assert not [c for c in calls if c.startswith("FORBIDDEN")], calls
 
 
-# ── the default path is unchanged ────────────────────────────────────────────
+# ── the default path: the MS-A2 clusters ────────────────────────────────────
 
 
-def test_defaults_mint_from_kubeconfig_dev_and_prd(rack: Rack) -> None:
+def test_defaults_mint_from_the_msa2_kubeconfigs(rack: Rack) -> None:
     rc, out, calls = rack.run()
     assert rc == 97, out  # stopped by the stub at prd's services-proxy read
-    assert _mints(calls) == [str(rack.dir / "kubeconfig-dev"), str(rack.dir / "kubeconfig-prd")]
-    assert _rendered(calls) == ["https://10.10.5.3:6443", "https://10.10.5.2:6443"]
+    assert _mints(calls) == [
+        str(rack.dir / "kubeconfig-msa2-dev"), str(rack.dir / "kubeconfig-msa2-prd"),
+    ]
+    assert _rendered(calls) == ["https://10.10.5.12:6443", "https://10.10.5.11:6443"]
+    assert "nodes   : kubeconfig-msa2-dev-node" in out
     _no_publish(calls)
+
+
+def test_the_q170s1_kubeconfigs_are_not_the_defaults_any_more(rack: Rack) -> None:
+    """The old defaults pointed at kub-dev / kub-prd, dark since the cutover.
+    With only those files present, the run stops before any mint."""
+    for env in ("dev", "prd"):
+        (rack.dir / f"kubeconfig-msa2-{env}").unlink()
+    _kubeconfig(rack.dir / "kubeconfig-dev", "https://10.10.5.3:6443")
+    _kubeconfig(rack.dir / "kubeconfig-prd", "https://10.10.5.2:6443")
+    rc, out, calls = rack.run()
+    assert rc == 1
+    assert f"dev admin kubeconfig not found: {rack.dir / 'kubeconfig-msa2-dev'}" in out
+    assert _mints(calls) == []
 
 
 # ── per-key source selection ─────────────────────────────────────────────────
 
 
-def test_mixed_period_prd_from_msa2_dev_from_kub_dev(rack: Rack) -> None:
-    """Row 16(d): prd = msa2-prd (re-addressed to its final .11), dev = kub-dev."""
-    msa2_prd = rack.kubeconfig("kubeconfig-msa2-prd", "https://10.10.5.11:6443")
-    rc, out, calls = rack.run(
-        "--prd-kubeconfig", str(msa2_prd),
-        STUB_ISS="https://10.10.5.11:6443",
-    )
+def test_one_key_can_be_pointed_elsewhere(rack: Rack) -> None:
+    other = rack.kubeconfig("kubeconfig-other", "https://10.10.5.99:6443")
+    rc, out, calls = rack.run("--prd-kubeconfig", str(other), STUB_ISS="https://10.10.5.99:6443")
     assert rc == 97, out
-    assert _mints(calls) == [str(rack.dir / "kubeconfig-dev"), str(msa2_prd)]
-    assert _rendered(calls) == ["https://10.10.5.3:6443", "https://10.10.5.11:6443"]
-    assert f"prd: {msa2_prd} -> https://10.10.5.11:6443" in out
-    assert "nodes   : kubeconfig-msa2-prd-node" in out
+    assert _mints(calls) == [str(rack.dir / "kubeconfig-msa2-dev"), str(other)]
+    assert f"prd: {other} -> https://10.10.5.99:6443" in out
 
 
 def test_missing_override_is_fatal_before_any_mint(rack: Rack) -> None:
@@ -206,49 +217,20 @@ def test_missing_override_is_fatal_before_any_mint(rack: Rack) -> None:
     assert _mints(calls) == []
 
 
+def test_the_build_address_flag_is_gone(rack: Rack) -> None:
+    rc, out, calls = rack.run("--allow-build-address")
+    assert rc == 2
+    assert "unknown arg: --allow-build-address" in out
+    assert calls == []
+
+
 # ── pre-flight refusals: nothing is minted ───────────────────────────────────
 
 
-@pytest.mark.parametrize("key,server", [
-    ("prd", "https://10.10.5.17:6443"),  # msa2-prd build address
-    ("dev", "https://10.10.5.18:6443"),  # msa2-dev build address
-])
-def test_build_address_is_refused_before_any_mint(rack: Rack, key: str, server: str) -> None:
-    kc = rack.kubeconfig(f"kubeconfig-msa2-{key}", server)
-    rc, out, calls = rack.run(f"--{key}-kubeconfig", str(kc))
-    assert rc == 1
-    assert f"{key} server {server} is an MS-A2 BUILD address" in out
-    assert _mints(calls) == []
-
-
-def test_allow_build_address_overrides_with_a_warning(rack: Rack) -> None:
-    kc = rack.kubeconfig("kubeconfig-msa2-dev", "https://10.10.5.18:6443")
-    rc, out, calls = rack.run(
-        "--dev-kubeconfig", str(kc), "--allow-build-address",
-        STUB_ISS="https://10.10.5.18:6443",
-    )
-    assert rc == 97, out
-    assert "WARNING : MS-A2 BUILD address" in out
-    assert _mints(calls) == [str(kc), str(rack.dir / "kubeconfig-prd")]
-
-
-@pytest.mark.parametrize("server", [
-    "https://10.10.5.1:6443",     # a prefix of both build addresses
-    "https://10.10.5.170:6443",   # has a build address as a prefix
-    "https://10.10.5.11:6443",    # msa2-prd FINAL address
-])
-def test_near_miss_is_not_a_build_address(rack: Rack, server: str) -> None:
-    kc = rack.kubeconfig("kubeconfig-other", server)
-    rc, out, calls = rack.run("--prd-kubeconfig", str(kc))
-    assert rc == 97, out
-    assert "BUILD address" not in out
-    assert len(_mints(calls)) == 2
-
-
 def test_dev_and_prd_on_the_same_server_is_refused(rack: Rack) -> None:
-    rc, out, calls = rack.run("--dev-kubeconfig", str(rack.dir / "kubeconfig-prd"))
+    rc, out, calls = rack.run("--dev-kubeconfig", str(rack.dir / "kubeconfig-msa2-prd"))
     assert rc == 1
-    assert "dev and prd both point at https://10.10.5.2:6443" in out
+    assert "dev and prd both point at https://10.10.5.11:6443" in out
     assert _mints(calls) == []
 
 
@@ -259,19 +241,15 @@ def test_unreachable_cluster_is_refused_before_any_mint(rack: Rack) -> None:
     assert _mints(calls) == []
 
 
-# ── post-mint: the token's own issuer ────────────────────────────────────────
+# ── post-mint ────────────────────────────────────────────────────────────────
 
 
-def test_token_issuer_on_a_build_address_is_refused(rack: Rack) -> None:
-    """A hostname server passes the pre-flight; the issuer is what the
-    re-address invalidates, so it is checked on the minted token itself."""
-    kc = rack.kubeconfig("kubeconfig-by-name", "https://msa2-dev-01.w1.lv:6443")
-    rc, out, calls = rack.run("--dev-kubeconfig", str(kc), STUB_ISS="https://10.10.5.18:6443")
-    assert rc == 1
-    assert "dev token issuer https://10.10.5.18:6443 is an MS-A2 BUILD address" in out
-    assert _mints(calls) == [str(kc)]      # minted, then refused ...
-    assert _rendered(calls) == []          # ... before any render or proof
-    _no_publish(calls)
+def test_each_token_issuer_is_printed(rack: Rack) -> None:
+    """The issuer is what an endpoint change invalidates, so the operator sees
+    it for every key before anything is published."""
+    rc, out, calls = rack.run()
+    assert rc == 97, out
+    assert out.count("issuer  : https://10.10.5.11:6443") == 2, out
 
 
 def test_help_prints_the_whole_header(rack: Rack) -> None:

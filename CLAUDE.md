@@ -586,22 +586,17 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > `services/proxy` path work, and with `--apply` writes Doppler and
 > redeploys. Run it without `--apply` first.
 >
-> **MS-A2 cutover (kube-infra msa2 plan § Cutover inventory row 16).** The two
-> keys are minted from `--dev-kubeconfig` / `--prd-kubeconfig`, defaulting to
-> `kube-infra/talos-os/kubeconfig-{dev,prd}` (the Q170S1 clusters). Move each
-> key to `kubeconfig-msa2-<env>` **only after that box is re-addressed**. The
-> pre-flight lists nodes for BOTH keys and a key without a flag falls back to
-> its kub-* default, so once a kub-* cluster is dark a one-flag run stops with
-> `FATAL: cannot list nodes … nothing minted`. After the same-day cutover
-> (2026-09-28: kub-prd and kub-dev both dark) it is ONE run with both flags;
-> one flag alone only while the other kub-* cluster still answers. Before minting anything the script prints each
-> key's server and nodes, and **refuses** a server on an MS-A2 BUILD address
-> (`10.10.5.17` / `.18`) and dev == prd. Talos makes the endpoint the token
-> issuer, so a token minted at the build address dies at the re-address (plan
-> D12): the 14-day blindness above, again. After minting it also checks the
-> token's own `iss` claim against the same addresses. `--allow-build-address`
-> overrides both for a deliberate short-lived test. Rollback (row 16) is a
-> re-run with the default kubeconfigs.
+> **Which clusters.** The two keys are minted from `--dev-kubeconfig` /
+> `--prd-kubeconfig`, defaulting to `kube-infra/talos-os/kubeconfig-msa2-{dev,prd}`
+> since the Q170S1 teardown (kube-infra#1443). Before minting anything the
+> script prints each key's server and nodes, and **refuses** a missing
+> kubeconfig, a cluster whose nodes it cannot list, and dev == prd. Talos
+> makes the endpoint the token issuer, so a token dies when its cluster's
+> endpoint address changes: the script prints each minted token's issuer, and
+> it must be the box's final address (`.11` prd, `.12` dev). *(Until the
+> teardown the defaults were the Q170S1 clusters' `kubeconfig-{dev,prd}`, and
+> a guard refused the MS-A2 BUILD addresses `.17` / `.18`; the cutover moved
+> both keys with one two-flag run, 2026-09-28. git history has the procedure.)*
 >
 > **The key's issue label moves in the same cycle** (row 16, D1): the
 > key's entry in `apps/cluster-agent/src/cluster_agent/clusters.py`
@@ -614,9 +609,7 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > names the node the key's annotations go to, and `GRAFANA_SA_TOKEN_<KEY>` is
 > a service account in that cluster's Grafana: a key that moves needs both,
 > the token minted in the NEW cluster's Grafana (kube-infra `CLAUDE.md`
-> § Post-bootstrap operator tasks). The Q170S1 clusters keep the old
-> header path (kube-infra's legacy layer), so a rollback to them needs this
-> repository's #1366 change reverted too, or their annotations fail soft.
+> § Post-bootstrap operator tasks).
 >
 > Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
 > / `ClusterAgentRunsFailing` in kube-infra
