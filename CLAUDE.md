@@ -1046,7 +1046,7 @@ machine-readable copy):
   Note: SSH password auth is disabled at the sshd daemon (key-only),
   so this credential is for **Web UI Shell** access — for any
   destructive operation that the API can't do (see
-  `wiki/docs/runbooks/rotate-amt-credentials.md` for an example of
+  `wiki/docs/runbooks/_archive/rotate-amt-credentials.md` for an example of
   using the API+cronjob workaround to call `rm` as root).
 - **SSH service account name** — `svc-automation` (the user the API
   key is bound to; also the SSH username for ad-hoc operator shell
