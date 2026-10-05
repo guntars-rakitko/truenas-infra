@@ -417,14 +417,14 @@ any ILM row targets `longhorn`, `velero` or `pvc-backups`:
 | `cluster-agent` | cluster-agent — `state.db` nightly backups |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 | `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
-| `longhorn` | Longhorn — volume + system backups (S3 BackupTarget; replaced the old NFS export 2026-04-27) |
+| `longhorn` | Longhorn — volume + system backups of the Q170S1 clusters (S3 BackupTarget; replaced the old NFS export 2026-04-27). ⚠ No writer since the cutover (2026-09-28): the msa2 clusters run no Longhorn. It holds the old clusters' last backups; deleting it is an operator decision (kube-infra#1443). |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
 | `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
 | `postgres-backups-w1` | CloudNativePG **w1-db** (web-tracker) — its own bucket, not a prefix. MinIO ILM is bucket-wide, so two retention windows need two buckets; and it makes a `serverName` typo fail into an empty bucket instead of silently landing in the financial chain's prefix. ⚠ An ILM boundary, **not** a credential one — the shared service user has `readwrite` on `s3:*`. |
 | `pocket-id-litestream` | Pocket-ID — SQLite Litestream replicas (DR for the OIDC IdP) |
-| `pvc-backups` | **restic** — PVC-state repositories, one per cluster generation and namespace: `pvc-backups/<cluster>/<namespace>` (e.g. `pvc-backups/msa2-prd/pocket-id`). First and only consumer: kube-infra's `pocket-id/pocket-id-backup` CronJob (Pocket-ID's SQLite DB, approach E of kube-infra `docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md`). Named for what it holds, not its first consumer. ⚠ **No ILM** (§ setup-minio-lifecycle.sh) and **versioning off** (what `mc mb` creates; with it on, prune would hide objects instead of freeing space). SSE-S3 on, though restic already encrypts client-side. Added to `BUCKETS` 2026-09-26, ahead of the CronJob (spec § 7.2 row 2); empty until the CronJob lands. Credentials: the shared per-env `KUBE_MINIO_*` user on kub-dev/kub-prd and on msa2-dev until H0; msa2-scoped users with `pvc-backups/<msa2-X>/*` statements at H0 (§ setup-minio-users.sh, not built yet). |
+| `pvc-backups` | **restic** — PVC-state repositories, one per cluster generation and namespace: `pvc-backups/<cluster>/<namespace>` (e.g. `pvc-backups/msa2-prd/pocket-id`). First and only consumer: kube-infra's `pocket-id/pocket-id-backup` CronJob (Pocket-ID's SQLite DB, approach E of kube-infra `docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md`). Named for what it holds, not its first consumer. ⚠ **No ILM** (§ setup-minio-lifecycle.sh) and **versioning off** (what `mc mb` creates; with it on, prune would hide objects instead of freeing space). SSE-S3 on, though restic already encrypts client-side. Added to `BUCKETS` 2026-09-26, ahead of the CronJob (spec § 7.2 row 2). ⚠ **The CronJob will not land:** the operator declined restic on 2026-09-28 (kube-infra#1342, closed unmerged), so the bucket has no consumer, and deleting it (with the restic Doppler keys) is an operator decision. |
 | `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
-| `velero` | Velero — K8s manifest backups |
+| `velero` | Velero — K8s manifest backups of the Q170S1 clusters. ⚠ No writer since the cutover (2026-09-28): the msa2 clusters run no Velero. Deleting it is an operator decision (kube-infra#1443). |
 
 #### setup-minio-users.sh
 
@@ -602,8 +602,9 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > key's entry in `apps/cluster-agent/src/cluster_agent/clusters.py`
 > (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
 > `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
-> `--apply` runs, so merge it and pull `main` BEFORE that re-mint. A
-> rollback reverts it with the kubeconfig.
+> `--apply` runs, so merge it and pull `main` BEFORE that re-mint.
+> `PREVIOUS_NAMES` is empty since the Q170S1 teardown: the `kub-*` names closed
+> their last digest-summary issues at the first runs after the cutover.
 >
 > **So does its Grafana (kube-infra#1366).** `GRAFANA_URLS` in the same file
 > names the node the key's annotations go to, and `GRAFANA_SA_TOKEN_<KEY>` is
@@ -1557,7 +1558,7 @@ scripts/
                                               # (mint + verify granted expiry
                                               #  + prove services/proxy works;
                                               #  per-key source kubeconfig,
-                                              #  refuses MS-A2 build addresses)
+                                              #  defaults: the msa2 clusters)
 ```
 
 ---

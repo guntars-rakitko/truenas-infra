@@ -95,8 +95,9 @@ unit is the post-RMA "v2" and has **no eMMC**: the `boot-pool` lives on the
      still authenticates, in one ssh: run
      `cd ~/github/truenas-infra && ./scripts/setup-talos-shutdown-orchestrator.sh --print-checks`
      and paste the command it prints (it checks the staged script's sha256 and
-     every config/address pair the orchestrator targets, and says which failures
-     are expected — `CLAUDE.md` § UPS / NUT, *The fan-out*).
+     both config/address pairs the orchestrator targets; each box that is up
+     must show `Server:`, and the check says what any other answer means —
+     `CLAUDE.md` § UPS / NUT, *The fan-out*).
    - Re-validate the chain with **Drill A** (see
      `wiki/docs/runbooks/ups-operations.md`).
 

@@ -322,6 +322,32 @@ def test_inventory_names_no_retired_address() -> None:
     assert 'MSA2_DEV_NODES="10.10.5.12"' in code
 
 
+def test_nas_waits_for_the_slowest_accepted_box(tmp_path: Path, bash: str) -> None:
+    """The NAS halts only once EVERY accepted box is down, not the first. The
+    two boxes stop at different times, so "wait for all" and "wait for any"
+    give different answers."""
+    nodes = {MSA2_PRD_IP: Node(MSA2_PRD, delay=1), MSA2_DEV_IP: Node(MSA2_DEV, delay=4)}
+    run = run_orchestrator(tmp_path, bash, nodes)
+    assert_clean_finish(run)
+    last = max(int((run.state / "down_at" / ip).read_text()) for ip in nodes)
+    assert int(run.halts[0].split()[0]) >= last
+
+
+def test_accepted_box_that_never_stops_answering_hits_the_backstop(
+    tmp_path: Path, bash: str
+) -> None:
+    """A box that accepts its shutdown but keeps answering :50000 must not hold
+    the NAS awake for ever: at the backstop the NAS halts anyway (and arms the
+    UPS kill-power), with the box still counted as up."""
+    nodes = msa2_live()
+    nodes[MSA2_DEV_IP] = Node(MSA2_DEV, delay=3600)  # accepted, answers for ever
+    run = run_orchestrator(tmp_path, bash, nodes, timeout=3)
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert "TIMEOUT 3s reached (1/2 still up) — halting NAS anyway" in run.log, run.log
+    assert len(run.halts) == 1 and run.halts[0].endswith(" -P now"), run.halts
+    assert 2 <= run.elapsed < 15, run.elapsed
+
+
 # ── a box that does not accept is never waited for (rule a) ───────────────────
 @pytest.mark.parametrize(
     ("pki", "why"),
@@ -473,6 +499,21 @@ def test_setup_requires_both_msa2_keys_and_no_q170s1_key(tmp_path: Path) -> None
         assert out.returncode != 0, out.stdout
         assert f"set {missing} (base64)" in out.stderr, out.stderr
         assert "downloading talosctl" not in out.stdout, out.stdout
+
+
+def test_setup_stages_exactly_the_configs_the_orchestrator_reads() -> None:
+    """The setup script names the config files it stages (`CFGS=`) separately
+    from the orchestrator's `*_CFG=` lines. A rename on one side alone would
+    stage a file the orchestrator never reads, and the orchestrator would skip
+    that box. Hold the two lists equal."""
+    orch = re.findall(r"^MSA2_(?:DEV|PRD)_CFG=\$TALOS_DIR/(\S+)$", ORCH.read_text(), re.M)
+    m = re.search(r'^CFGS="([^"]*)"$', SETUP.read_text(), re.M)
+    assert m, "no CFGS= line in the setup script"
+    assert len(orch) == 2, orch
+    assert sorted(m.group(1).split()) == sorted(orch)
+    # and the setup script writes each of them from Doppler
+    for cfg in orch:
+        assert f'> "$WORK/{cfg}"' in SETUP.read_text(), cfg
 
 
 def test_print_checks_covers_every_pair_and_its_quoting_survives_the_nas_shell(

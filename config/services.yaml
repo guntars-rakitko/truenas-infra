@@ -131,9 +131,11 @@ nut:
   #     (they never self-clear), so they accumulate until dismissed by hand.
   #     420 sits below the measured 480 s jitter floor.
   #
-  #     Safety margin retained: the Path-B orchestrator brings all 6 nodes
-  #     down in ~187 s (validated drill 2026-06-02), so 420 s is ~2.2x the
-  #     measured need, and battery.charge.low = 60 remains the primary
+  #     Safety margin retained: the Path-B orchestrator brought the six
+  #     Q170S1 nodes down in ~187 s (validated drill 2026-06-02), so 420 s was
+  #     ~2.2x the measured need. ⚠ That figure is the retired estate's: the two
+  #     MS-A2 boxes have not been timed in a drill yet (CLAUDE.md § UPS / NUT,
+  #     "Still owed"). battery.charge.low = 60 remains the primary
   #     trigger for a genuine outage (charge does NOT jitter — it read a
   #     flat 100.0% throughout). Trade-off: on a real outage, shutdown now
   #     starts with 7 min of estimated reserve instead of 10.
