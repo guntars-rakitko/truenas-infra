@@ -60,6 +60,14 @@ def test_get_secrets_blocked():
         kubectl_get("dev", "secrets", namespace="default")
 
 
+@pytest.mark.parametrize("resource", ["volumes.longhorn.io", "backups.velero.io"])
+def test_retired_q170s1_kinds_are_refused(resource):
+    """Longhorn and Velero ran only on the Q170S1 clusters; the allowlist
+    dropped them with the teardown (kube-infra#1443, #1503 for the RBAC)."""
+    with pytest.raises(ToolError, match="not in agent allowlist"):
+        kubectl_get("dev", resource, namespace="default")
+
+
 def test_exec_blocked():
     """pods/exec is never allowed."""
     with pytest.raises(ToolError, match="exec"):

@@ -5,25 +5,23 @@
 # Places these artifacts under /mnt/tank/system/talos/ via the TrueNAS API
 # (filesystem.put — runs as root; NOT ssh+sudo):
 #   1. talosctl                          (linux-amd64, pinned, mode 0755)
-#   2. dev-shutdown.talosconfig          (kub-dev os:operator, mode 0600)
-#   3. prd-shutdown.talosconfig          (kub-prd os:operator, mode 0600)
-#   4. msa2-dev-shutdown.talosconfig     (msa2-dev os:operator, mode 0600) ┐ ONLY when
-#   5. msa2-prd-shutdown.talosconfig     (msa2-prd os:operator, mode 0600) ┘ its key is set
-#   6. nas-ups-orchestrator.sh           (the SHUTDOWNCMD script, mode 0750)
+#   2. msa2-dev-shutdown.talosconfig     (msa2-dev os:operator, mode 0600)
+#   3. msa2-prd-shutdown.talosconfig     (msa2-prd os:operator, mode 0600)
+#   4. nas-ups-orchestrator.sh           (the SHUTDOWNCMD script, mode 0750)
 #
-# ⚠ Keep 2 and 3 staged until the Q170S1 TEARDOWN, not just until cutover: they
-# are what shuts the old nodes down during each cluster's ~2-week rollback window
-# (kube-infra plan § Cutover inventory row 15).
-#
-# The msa2 configs are OPTIONAL on purpose: a cluster that is not built yet
-# (msa2-prd until kube-infra plan Part H) has no key, and its absence must not
-# block re-staging the live path. The orchestrator skips a cluster whose config
-# is not staged. ⚠ An msa2 config is never DELETED from the NAS by this script,
-# and a STALE one is not harmless: its shutdown is rejected, so that box is not
-# shut down at all (the orchestrator does not wait for it either — its rules
-# (a)/(d) — so the battery is spared, but Postgres is hard-cut). Re-run this
-# script after every `bootstrap.sh <msa2-env>` menu 10 so the staged copy
-# tracks Doppler, and run the printed check.
+# Both configs are REQUIRED since the Q170S1 teardown (kube-infra#1443): both
+# MS-A2 clusters are built and are the only nodes on the UPS, so a missing key
+# would stage an orchestrator that skips that box, and the box would be
+# hard-cut when apc1 cuts power. (While msa2-prd was not built yet they were
+# optional, and the Q170S1 pair `{dev,prd}-shutdown.talosconfig` was required:
+# git history.) This script never DELETES a file on the NAS: after the
+# teardown the old `{dev,prd}-shutdown.talosconfig` stay there unused until
+# someone removes them by hand (truenas-infra CLAUDE.md § UPS / NUT). A STALE
+# config is not harmless: its shutdown is rejected, so that box is not shut
+# down at all (the orchestrator does not wait for it either, its rule (a), so
+# the battery is spared, but Postgres is hard-cut). Re-run this script after
+# every `bootstrap.sh <msa2-env>` menu 10 so the staged copies track Doppler,
+# and run the printed check.
 #
 # `--print-checks` prints the authenticated post-staging check (below) and exits;
 # it needs no credentials and touches nothing.
@@ -34,29 +32,20 @@
 # tools in place + smoke-tests them read-only.
 #
 # Source of truth for the scoped talosconfigs is Doppler infrastructure/ops
-# (base64), so a NAS rebuild can restore them. Generate + push them first:
-#   cd ~/github/kube-infra/talos-os
-#   for cl in dev prd; do
-#     talosctl --talosconfig generated/$cl/talosconfig --nodes <one-node-ip> \
-#       config new --roles os:operator --crt-ttl 87600h generated/$cl/nas-shutdown.talosconfig
-#   done
+# (base64), so a NAS rebuild can restore them. kube-infra `talos-os/bootstrap.sh
+# <cluster>` menu 10 mints them (`TALOS_NAS_SHUTDOWN_CONFIG_$(_doppler_suffix)`:
+# msa2-dev → MSA2_DEV), os:operator, against that cluster's OWN CA, with
+# `--crt-ttl 87600h` (ten years).
 #
-# ⚠ THE TTL ABOVE WAS `720h` (30 DAYS) UNTIL 2026-09-22, AND THAT WAS A LANDMINE.
-# The credentials actually deployed do not match it: read from Doppler on
-# 2026-09-22 they are `notBefore=Jun 1 2026 / notAfter=May 29 2036` — about TEN
-# YEARS. So whoever minted them did not follow this line, and the line sat here
-# waiting for the next person who would.
-#
-# Why that mattered: nothing rotates this credential (no scheduler, no job — unlike
-# `render-cluster-agent-kubeconfigs.sh`, which prints remaining lifetime) and nothing
-# ALERTS on it (verified: no `prometheus-rules-*.yaml` in kube-infra references it).
-# A 30-day credential minted from this comment would therefore have died silently
-# after a month, and the failure surfaces ONLY during a real power cut — the one
-# moment it cannot be discovered safely.
-#
-# ⚠ THE NEXT RE-ISSUE IS ALREADY SCHEDULED: the MS-A2 greenfield rebuild mints a new
-# PKI, which invalidates both of these configs. That is the moment this comment would
-# have been followed. It now says 87600h, matching what is actually deployed.
+# ⚠ A COMMENT HERE ONCE SAID `--crt-ttl 720h` (30 DAYS), AND THAT WAS A LANDMINE.
+# The credentials actually deployed never matched it (read from Doppler on
+# 2026-09-22: valid about ten years), so the line sat here waiting for the next
+# person who would follow it. Why that mattered: nothing rotates this credential
+# (no scheduler, no job — unlike `render-cluster-agent-kubeconfigs.sh`, which
+# prints remaining lifetime) and nothing ALERTS on it (verified: no
+# `prometheus-rules-*.yaml` in kube-infra references it). A 30-day credential
+# would have died silently after a month, and the failure surfaces ONLY during
+# a real power cut — the one moment it cannot be discovered safely.
 #
 # The long TTL is DELIBERATE, and the reasoning is the opposite of the cluster-agent's
 # (which moved to 1 year after 90 days lapsed unnoticed): this is a BREAK-GLASS
@@ -67,21 +56,12 @@
 # secrets/PKI/config, apply config or mint creds. Configs are 0600 root-owned and
 # apid is firewalled to the NAS IP.
 # ⚠ If you ever shorten it, add an expiry alert IN THE SAME CHANGE.
-#   doppler secrets set TALOS_NAS_SHUTDOWN_CONFIG_DEV="$(base64 < generated/dev/nas-shutdown.talosconfig)" \
-#     --project infrastructure --config ops
-#   doppler secrets set TALOS_NAS_SHUTDOWN_CONFIG_PRD="$(base64 < generated/prd/nas-shutdown.talosconfig)" \
-#     --project infrastructure --config ops
 #
 # Prereqs (Doppler infrastructure/ops; manage.sh exports the first two):
-#   TRUENAS_HOST                    e.g. nas.w1.lv (or 10.10.5.10)
-#   TRUENAS_API_KEY                 long-lived key
-#   TALOS_NAS_SHUTDOWN_CONFIG_DEV   base64 of the dev os:operator talosconfig
-#   TALOS_NAS_SHUTDOWN_CONFIG_PRD   base64 of the prd os:operator talosconfig
-#   TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV  (optional) base64, msa2-dev os:operator
-#   TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD  (optional) base64, msa2-prd os:operator
-#     The msa2 keys are minted by kube-infra `talos-os/bootstrap.sh <cluster>`
-#     menu 10 (`TALOS_NAS_SHUTDOWN_CONFIG_$(_doppler_suffix)`: msa2-dev →
-#     MSA2_DEV), 10-year os:operator, against that cluster's OWN CA.
+#   TRUENAS_HOST                        e.g. nas.w1.lv (or 10.10.5.10)
+#   TRUENAS_API_KEY                     long-lived key
+#   TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV  base64 of the msa2-dev os:operator talosconfig
+#   TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD  base64 of the msa2-prd os:operator talosconfig
 #
 # Run it as (the orchestrator it uploads is whatever THIS checkout holds, so
 # bring `main` up to date first — a stale checkout re-stages the old script and
@@ -90,29 +70,17 @@
 #   cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline
 #   doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh
 #
-# Pin TALOSCTL_VERSION to the RUNNING cluster version.
-#
-# ⚠ MIXED ESTATE (2026-09-26): the Q170S1 nodes run v1.14.0 and the MS-A2 boxes
-# v1.14.1. One binary serves both; same MINOR is the compatibility line this file
-# already relies on (a client newer than a server only WARNS — talosctl
-# ClientVersionCheck). The default moved to v1.14.1, the msa2 version, AT THE
-# CUTOVER (kube-infra plan § Cutover inventory row 15; cutover plan 2026-09-28,
-# A5): from then on the msa2 boxes are the live path, and the Q170S1 nodes, on
-# v1.14.0, only the rollback target until the teardown. Re-run the checks from
-# `--print-checks` against every node after each re-stage.
-#
-# ⚠ WAS v1.13.2, PINNED TO A CLUSTER STATE THAT NO LONGER EXISTS. That pin dated
-# from a rollback off v1.13.3; both clusters have since rolled to **v1.14.0**
-# (2026-09-19), leaving the staged binary a FULL MINOR behind. The orchestrator's
-# own header only ever claimed a SAME-MINOR pairing was verified, and it warns that
-# "nothing else would surface a break until a real power outage".
+# Pin TALOSCTL_VERSION to the RUNNING cluster version: v1.14.1, both MS-A2
+# boxes (kube-infra talos-os/patches/node-msa2-*.yaml). Same MINOR is the
+# compatibility line this file relies on (a client newer than a server only
+# WARNS — talosctl ClientVersionCheck); a full-minor gap was never verified
+# here, and "nothing else would surface a break until a real power outage"
+# (the orchestrator's header).
 #
 # ⚠ RE-STAGE THIS BINARY AFTER EVERY CLUSTER UPGRADE. Re-running this script is the
 # mechanism; nothing does it automatically and nothing alerts on the skew. Verify
-# read-only afterwards (needs root on the NAS — the configs are 0600):
-#   sudo /mnt/tank/system/talos/talosctl \
-#     --talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig \
-#     -n <node-ip> version
+# read-only afterwards with the command `--print-checks` prints (needs root on
+# the NAS — the configs are 0600).
 set -euo pipefail
 
 TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.1}"   # ⚠ must match the RUNNING nodes — see note above
@@ -126,7 +94,7 @@ ORCH_LOCAL="$REPO/scripts/nas-ups-orchestrator.sh"
 # to drift. Fails loudly if a list or config line is not where it expects.
 check_pairs() {
   local v nodes cfg ip
-  for v in PRD DEV MSA2_PRD MSA2_DEV; do
+  for v in MSA2_PRD MSA2_DEV; do
     nodes="$(sed -n "s/^${v}_NODES=\"\([0-9. ]*\)\"\$/\1/p" "$ORCH_LOCAL")"
     cfg="$(sed -n "s|^${v}_CFG=\\\$TALOS_DIR/\([a-z0-9-]*\.talosconfig\)\$|\1|p" "$ORCH_LOCAL")"
     if [[ -z "$nodes" || -z "$cfg" ]]; then
@@ -168,20 +136,17 @@ print_checks() {
   echo "  A different hash means the NAS runs another version of the script,"
   echo "  whatever the checks below say."
   echo "  Then Client: ${TALOSCTL_VERSION}, then per pair ONE of:"
-  echo "    - Server: v1.14.x — the address is that cluster's node and the config works"
-  echo "      (this is also the Version pre-check an msa2 shutdown makes first);"
-  echo "    - x509 / unknown authority — the address is ANOTHER cluster's node (before"
-  echo "      the cutovers msa2-*@10.10.5.11 and @.12; after them prd@.11, prd@.12), or"
-  echo "      that cluster's box is in Talos maintenance mode;"
-  echo "    - a dial error / timeout — no box answers (msa2-prd until it is built, an"
-  echo "      old node whose cord is pulled);"
-  echo "    - 'not staged' — that msa2 cluster's Doppler key did not exist at staging."
-  echo "  Read the result per box: every box that is up and installed must show"
-  echo "  Server: for its OWN config at its CURRENT address — anything else there"
-  echo "  means it would NOT be shut down. The orchestrator does not wait for an msa2"
-  echo "  address that fails, BY DESIGN (rules (a)/(d) in its header: while kub-prd"
-  echo "  is live, .11/.12 are still polled the Q170S1 way) — so a failure here costs"
-  echo "  that box a hard power-off, not the NAS its battery."
+  echo "    - Server: v1.14.x — the box answers and its config works (this is also"
+  echo "      the Version pre-check its shutdown makes first);"
+  echo "    - x509 / unknown authority — the box's PKI is not the one the staged config"
+  echo "      was minted against (a rebuild with NEW_PKI=1 and no re-stage since), or"
+  echo "      the box is in Talos maintenance mode;"
+  echo "    - a dial error / timeout — no box answers at that address;"
+  echo "    - 'not staged' — that cluster's config is not on the NAS."
+  echo "  Every box that is up and installed must show Server: — anything else there"
+  echo "  means it would NOT be shut down. The orchestrator does not wait for an"
+  echo "  address that fails, BY DESIGN (rule (a) in its header), so a failure here"
+  echo "  costs that box a hard power-off, not the NAS its battery."
 }
 
 if [[ "${1:-}" == "--print-checks" ]]; then
@@ -191,8 +156,8 @@ fi
 
 : "${TRUENAS_HOST:?set TRUENAS_HOST (e.g. nas.w1.lv)}"
 : "${TRUENAS_API_KEY:?set TRUENAS_API_KEY from Doppler infrastructure/ops}"
-: "${TALOS_NAS_SHUTDOWN_CONFIG_DEV:?set TALOS_NAS_SHUTDOWN_CONFIG_DEV (base64) from Doppler infrastructure/ops}"
-: "${TALOS_NAS_SHUTDOWN_CONFIG_PRD:?set TALOS_NAS_SHUTDOWN_CONFIG_PRD (base64) from Doppler infrastructure/ops}"
+: "${TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV:?set TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV (base64) from Doppler infrastructure/ops — kube-infra bootstrap.sh msa2-dev menu 10 mints it}"
+: "${TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD:?set TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD (base64) from Doppler infrastructure/ops — kube-infra bootstrap.sh msa2-prd menu 10 mints it}"
 
 PY="$REPO/.venv/bin/python"
 [[ -x "$PY" ]] || { echo "ERROR: $PY not found — run ./manage.sh once to build the venv" >&2; exit 1; }
@@ -222,21 +187,11 @@ fi
 chmod 0755 "$WORK/talosctl"
 
 # --- 2. materialize the scoped talosconfigs from Doppler (base64) -----------
-# CFGS = the config files this run stages. Q170S1 always; each msa2 cluster only
-# when its key exists (see the header).
-CFGS="dev-shutdown.talosconfig prd-shutdown.talosconfig"
-printf '%s' "$TALOS_NAS_SHUTDOWN_CONFIG_DEV" | base64 -d > "$WORK/dev-shutdown.talosconfig"
-printf '%s' "$TALOS_NAS_SHUTDOWN_CONFIG_PRD" | base64 -d > "$WORK/prd-shutdown.talosconfig"
-for cl in msa2-dev msa2-prd; do
-  key="TALOS_NAS_SHUTDOWN_CONFIG_$(echo "$cl" | tr '[:lower:]-' '[:upper:]_')"
-  if [[ -n "${!key:-}" ]]; then
-    printf '%s' "${!key}" | base64 -d > "$WORK/$cl-shutdown.talosconfig"
-    CFGS="$CFGS $cl-shutdown.talosconfig"
-    echo "==> $key set — staging $cl-shutdown.talosconfig"
-  else
-    echo "WARN: $key not set — $cl NOT staged; the orchestrator will skip $cl" >&2
-  fi
-done
+# CFGS = the config files this run stages: one per cluster, both required (see
+# the header; the `:?` checks above stop the run before this point).
+CFGS="msa2-dev-shutdown.talosconfig msa2-prd-shutdown.talosconfig"
+printf '%s' "$TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV" | base64 -d > "$WORK/msa2-dev-shutdown.talosconfig"
+printf '%s' "$TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD" | base64 -d > "$WORK/msa2-prd-shutdown.talosconfig"
 for f in $CFGS; do
   grep -q 'context' "$WORK/$f" || { echo "ERROR: $f does not look like a talosconfig" >&2; exit 1; }
   chmod 0600 "$WORK/$f"

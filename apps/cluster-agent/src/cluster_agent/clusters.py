@@ -7,16 +7,17 @@ is named here, as kube-infra names it (cluster-env `CLUSTER_NAME`, which Alloy
 stamps on every Loki stream as `cluster`), and that name is the GitHub label on
 every finding and digest-summary issue the key files.
 
-⚠ A key's cluster changes with its kubeconfig, and only with it. At the MS-A2
-cutover each key moves to its msa2 cluster (kube-infra cutover plan 2026-09-28,
-A5 / B5; Cutover inventory row 16): `scripts/render-cluster-agent-kubeconfigs.sh`
-re-mints that key's kubeconfig against the new cluster, and the key's name here
-changes in the same cycle. One key at a time: in a mixed period one key can be
-msa2 while the other is still a Q170S1 cluster. A rollback reverts both.
+⚠ A key's cluster changes with its kubeconfig, and only with it:
+`scripts/render-cluster-agent-kubeconfigs.sh` re-mints the key's kubeconfig
+against the new cluster, and the key's name here changes in the same cycle. Both
+keys moved to their msa2 clusters at the MS-A2 cutover (kube-infra cutover plan
+2026-09-28, A5 / B5); the Q170S1 clusters they pointed at before are retired
+(kube-infra#1443).
 
 When a key's name changes, keep its old name in PREVIOUS_NAMES: the first run
 under the new name then closes the last digest-summary issue filed under the old
-one (`_close_previous_summaries`), instead of leaving it open for good.
+one (`_close_previous_summaries`), instead of leaving it open for good. Once that
+run has happened the entry has done its job; empty it.
 
 GRAFANA_URLS is the same kind of fact: where the key's cluster serves Grafana to
 this agent (kube-infra#1366). It is kube-infra's `grafana-nas` Service
@@ -35,11 +36,10 @@ CLUSTER_NAMES: dict[str, str] = {
     "prd": "msa2-prd",  # since prd's MS-A2 cutover (kube-infra cutover plan A5)
 }
 
-# key -> names it had before, newest first. Emptied at the Q170S1 teardown.
-PREVIOUS_NAMES: dict[str, tuple[str, ...]] = {
-    "dev": ("kub-dev",),
-    "prd": ("kub-prd",),
-}
+# key -> names it had before, newest first. Empty since the Q170S1 teardown:
+# `kub-dev` / `kub-prd` closed their last digest-summary issues at the first runs
+# after the cutover (2026-09-29), and no open one carries those labels.
+PREVIOUS_NAMES: dict[str, tuple[str, ...]] = {}
 
 # key -> base URL of that cluster's Grafana for this agent: the node's mgmt
 # address (kube-infra talos-os/estates.yaml) and the `grafana-nas` NodePort.

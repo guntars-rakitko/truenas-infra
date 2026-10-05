@@ -18,7 +18,7 @@ def test_the_map_names_the_clusters_the_kubeconfigs_point_at():
     # A tripwire, changed on purpose in the same cycle as a key's kubeconfig
     # (scripts/render-cluster-agent-kubeconfigs.sh). See clusters.py.
     assert clusters.CLUSTER_NAMES == {"dev": "msa2-dev", "prd": "msa2-prd"}
-    assert clusters.PREVIOUS_NAMES == {"dev": ("kub-dev",), "prd": ("kub-prd",)}
+    assert clusters.PREVIOUS_NAMES == {}
 
 
 def test_the_grafana_map_names_each_keys_node_and_the_nodeport():
