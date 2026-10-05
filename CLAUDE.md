@@ -1179,33 +1179,34 @@ Migration tracking: kube-infra #92.
 > ✅ **Path B is LIVE + VALIDATED (kube-infra #611, 2026-06-02).** On a UPS
 > low-battery event the **NAS drives the whole shutdown** via `talosctl`, not
 > the old NUT-secondary FSD path. What's live + codified in `config/services.yaml`:
-> (1) `ups.config.shutdowncmd` = `nas-ups-orchestrator.sh` — fires
-> `talosctl shutdown --force` at all 6 nodes (os:operator cred) — plus the two
-> MS-A2 boxes since 2026-09-26, ⚠ live only once re-staged, which waits for
-> the cutover gate (§ *MS-A2 in the fan-out* below) — polls them down, then
-> halts the NAS **last**; (2) the **nut-client extension is removed from the
-> nodes** (Talos schematic `daef782b`) → they're no longer NUT secondaries;
-> (3) `ups.delay.shutdown` = **90**; (4) **`sdtype = 5`** (apcsmart hard hibernate
-> `@`) so the #57-hook kill-power cuts + power-cycles **even on mains** (the
-> default `S`/`shutdown.return` no-ops on mains). Drill 2026-06-02 (`upsmon -c fsd`):
-> orchestrator instant-fired (0 secondaries, no HOSTSYNC wait), 6 nodes down in
-> 187s, NAS last, UPS cut + 60s power-cycle, both clusters 3/3 + 0 faulted.
+> (1) `ups.config.shutdowncmd` = `nas-ups-orchestrator.sh`, which fires
+> `talosctl shutdown --force --wait=false` at both MS-A2 boxes (msa2-prd
+> `10.10.5.11`, msa2-dev `10.10.5.12`; least-privilege os:operator creds),
+> polls the ones that accepted until they are down, then halts the NAS
+> **last** (§ *The fan-out* below; until the Q170S1 teardown, kube-infra#1443,
+> it also shut down the six Q170S1 nodes); (2) the **nut-client extension is
+> removed from the nodes** (Talos schematic `daef782b`) → they're no longer NUT
+> secondaries; (3) `ups.delay.shutdown` = **90**; (4) **`sdtype = 5`** (apcsmart
+> hard hibernate `@`) so the #57-hook kill-power cuts + power-cycles **even on
+> mains** (the default `S`/`shutdown.return` no-ops on mains). Drill 2026-06-02
+> (`upsmon -c fsd`): orchestrator instant-fired (0 secondaries, no HOSTSYNC
+> wait), the six Q170S1 nodes down in 187s, NAS last, UPS cut + 60s
+> power-cycle, both clusters 3/3 + 0 faulted.
 > Plan/drill-log: `kube-infra/docs/superpowers/plans/2026-06-01-ups-shutdown-orchestrator.md`.
-> **Still owed:** a real on-battery AC-pull drill (battery-margin) before #611 closes.
+> **Still owed:** a drill on the MS-A2 boxes (the 187 s above is the old
+> estate's: re-measure, don't carry it), and a real on-battery AC-pull drill
+> (battery margin) before #611 closes.
 > NOTE: some prose below is retained as HISTORY of how we got here.
 
 **Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
-primary UPS (`apc1`) protects the NAS + all 6 Q170S1 K8s nodes + networking
-gear; the second UPS is reserved as a hot spare. ⚠ The two MS-A2 boxes
-(msa2-dev, msa2-prd) are **NOT on `apc1`: they are on mains** until the
-cutover (operator, 2026-09-26; kube-infra plan § Cutover inventory row 15).
-The design puts them on it: kube-infra `docs/msa2-audit/02-design-decisions.md`
-§ 10 gate 7 plans a real UPS drill to "confirm both new boxes go down" and
-sizes the load as "~2×65–100 W + NAS 25 W + networking 70 W". Moving both PSUs
-onto `apc1`'s battery outlets (the Q170S1 nodes free the outlets and the load)
-is a **cutover gate**, and so is the re-stage that follows it (§ *MS-A2 in the
-fan-out*). Until then a hard power loss on msa2 is an accepted risk (msa2-dev
-holds a restored dev copy, msa2-prd no real data; Postgres replays its WAL).
+primary UPS (`apc1`) protects the NAS, both MS-A2 boxes (msa2-prd, msa2-dev:
+their PSUs moved onto its battery outlets at the cutover, 2026-09-28), the
+networking gear and the SMS gateways; the second UPS is reserved as a hot
+spare. Measured 2026-09-28 19:06Z with both boxes on it: load ~163 W
+(33.95 %), runtime **~26 min** at 100 % (steady range ~150–165 W, 24–27 min).
+Before the move, with the six Q170S1 nodes already unplugged: ~72 W, 1.03 h.
+The Q170S1 nodes left the rack for good at the teardown (no cold spare,
+operator 2026-10-05; kube-infra#1443).
 Battery replaced
 **2026-06-13** (APC RBC7 pair + AP9620 swap, ~3-year expected lifespan;
 next due ~2029).
@@ -1220,10 +1221,9 @@ TrueNAS (this NAS, 10.10.5.10:3493)
   │    min/max, frequency, temperature).
   ├─ upsmon (master mode) — on LB runs SHUTDOWNCMD = the Path-B orchestrator
   │    `/mnt/tank/system/talos/nas-ups-orchestrator.sh`:
-  │      talosctl shutdown --force × every node (one call PER NODE) →
-  │      poll apid until 0/N → halt NAS LAST
-  │      (N = the Q170S1 nodes + each MS-A2 address that ACCEPTED;
-  │       .11/.12 only if accepted once kub-prd is gone — rule (d))
+  │      talosctl shutdown --force --wait=false × every node (one call PER
+  │      NODE, each capped at 60 s) → poll apid until 0/N → halt NAS LAST
+  │      (N = the addresses whose shutdown was ACCEPTED — rule (a))
   │  + #57 Init/Shutdown hook arms UPS kill-power (upsdrvctl shutdown → `@`)
   └─ upsd.users:
       upsadmin (SET + INSTCMD)  → operator scripts via NOPASSWD sudo
@@ -1236,140 +1236,85 @@ TrueNAS (this NAS, 10.10.5.10:3493)
                                    cluster (since 2026-09-28; before that it
                                    logged in as upsmon)
 
-K8s nodes (×6 Q170S1 + the MS-A2 boxes)
+K8s nodes (the two MS-A2 boxes)
   └─ NOT NUT clients. The nut-client extension was stripped from the Talos
      image (schematic daef782b, 2026-06-02). They are shut down out-of-band
      by the NAS orchestrator via `talosctl shutdown --force` (os:operator
-     creds staged at /mnt/tank/system/talos/{dev,prd,msa2-dev,msa2-prd}-
-     shutdown.talosconfig; an msa2 one only once its Doppler key exists).
+     creds staged at /mnt/tank/system/talos/msa2-{dev,prd}-shutdown.talosconfig).
 ```
 
-⚠ **`--force` is load-bearing for TWO reasons, not one (found 2026-07-29).**
-The recorded rationale — "skips the drain that burns a 5-min `DrainTimeout`
-once etcd quorum is lost" — is **incomplete**. That drain uses the Kubernetes
-*eviction* API, and on **both** clusters every node hosts PDBs at
-`ALLOWED DISRUPTIONS = 0` (single-replica Prometheus / Alertmanager / Grafana /
-Loki / Pocket-ID, the CNPG `giks-primary`, and all three Longhorn
-`instance-manager-*`). So the drain hangs to timeout **even on a fully healthy
-cluster with quorum intact** — quorum loss is not required. Removing `--force`
-would add ~5 min per node to a battery-constrained shutdown. Verified on Talos
-v1.13.7: `shutdown --force` still exists, semantics unchanged.
+⚠ **`--force` is load-bearing.** Talos's shutdown drain uses the Kubernetes
+*eviction* API. Each MS-A2 cluster is ONE node, so there is nowhere to evict
+to, and CNPG keeps its own `<cluster>-primary` PDB for `giks` and `w1` at
+`instances: 1` (kube-infra keeps CNPG's PDBs on purpose: D4 fold-in M3,
+`enablePDB: false` NOT adopted). Read 2026-10-06 on both clusters:
+`giks-db/giks-primary` and `w1-db/w1-primary` at `minAvailable: 1`, 0
+disruptions allowed; the only other PDB, `cert-manager/trust-manager`, is
+`minAvailable: 0`. A single-node drain was measured never to finish on
+msa2-dev (2026-09-24, `talosctl upgrade`: left cordoned, no reboot; kube-infra
+plan Task C1 Step 5), so without `--force` each box would burn Talos's
+hardcoded 5-min `DrainTimeout` on battery. *(On the Q170S1 estate the same
+flag also beat etcd-quorum loss and the allowed=0 PDBs of Longhorn,
+Prometheus & co., found 2026-07-29: git history.)* Verified on Talos v1.14:
+`shutdown --force` exists, semantics unchanged. (Separately, and unrelated to
+this path: `talosctl upgrade`'s `--preserve` flag was **deprecated — not
+removed** — in v1.13; it still parses and exits 0 with a warning.)
 
-⚠ **On the MS-A2 single-node clusters KEEP `--force` — but the reasons
-NARROW, so do not re-derive it from the list above and conclude it is
-unnecessary.** Longhorn is dropped, so the three `instance-manager-*` PDBs
-vanish. The repo-owned PDBs (loki, pocket-id, coredns, and the giks/health app
-PDBs) moved into kube-infra `flux-cd/legacy-q170s1/`, which only the Q170S1
-clusters read (kube-infra plan Tasks D1b / D4-move), because `minAvailable: 1`
-on a 1-replica workload blocks **every** eviction at n=1; the cloudflared PDB
-is declared only in the Q170S1 per-cluster overlays. The **chart-level** PDBs
-are gone too: open item 6 in
-`kube-infra/flux-cd/clusters/msa2-{prd,dev}/infrastructure.yaml` is CLOSED by
-kube-infra plan Task D2 (the shared HelmReleases render no PDB at n=1; the
-three-node values moved to `legacy-q170s1/`). What is expected to remain is
-CNPG's own `<cluster>-primary` PDB for `giks` and `w1` at `instances: 1` — the
-plan deliberately keeps CNPG's PDBs (D4 fold-in M3: `enablePDB: false` NOT
-adopted). ⚠ Unverified until `kubectl get pdb -A` on an msa2 cluster at
-bring-up. Either way `--force` stays: at n=1 any blocking PDB makes the drain
-unfinishable (a single-node drain was measured never to finish on msa2-dev
-2026-09-24 — `talosctl upgrade`, left cordoned, no reboot; kube-infra plan Task
-C1 Step 5). (Separately, and unrelated to this path: `talosctl upgrade`'s
-`--preserve` flag was **deprecated — not removed** — in v1.13; it still parses
-and exits 0 with a warning.)
+**The fan-out (since the Q170S1 teardown, kube-infra#1443).** With PLP priced
+out of the MS-A2 build, this is the only thing between a power cut and a hard
+power-off of a single-instance Postgres on a non-PLP drive. The script's header
+is the full reasoning; the rules below. ⚠ **Merged ≠ live:** the NAS runs the
+copy staged under `/mnt/tank/system/talos/`, so a change here does nothing until
+it is re-staged (below).
 
-**MS-A2 in the fan-out (2026-09-26; kube-infra plan § Cutover inventory row 15,
-and the Part G decision "msa2 boxes are in no NAS UPS fan-out").** With PLP
-priced out of the MS-A2 build, this is the only thing between a power cut and a
-hard power-off of a single-instance Postgres on a non-PLP drive. The script's
-header is the full reasoning; the rules below. ⚠ **Merged ≠ live:** the NAS
-runs the copy staged under `/mnt/tank/system/talos/`, so until the re-stage
-below has run it still fans out to the six Q170S1 nodes only.
-
-| | Q170S1 (kub-prd, kub-dev) | MS-A2 (msa2-prd, msa2-dev) |
+| | msa2-prd | msa2-dev |
 |---|---|---|
-| addresses | `.11-.13`, `.14-.16` | **both** of each box's: BUILD then FINAL — prd `10.10.5.17` + `.11`, dev `10.10.5.18` + `.12` (kube-infra `talos-os/estates.yaml`, plan D12) |
-| config | `{prd,dev}-shutdown.talosconfig` | `msa2-{prd,dev}-shutdown.talosconfig`, from `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{PRD,DEV}` (bootstrap.sh menu 10); a cluster with no staged config is **skipped** |
-| call | `shutdown --force` (unchanged, byte for byte) | `shutdown --force --wait=false`, capped at 60 s by coreutils `timeout` |
-| polled? | always, whatever the rc (unchanged) — except `.11`/`.12` once kub-prd is gone (rule d) | **only if the call returned 0** |
+| address | `10.10.5.11` | `10.10.5.12` |
+| config | `msa2-prd-shutdown.talosconfig` | `msa2-dev-shutdown.talosconfig` |
+| call | `shutdown --force --wait=false`, capped at 60 s by coreutils `timeout` | the same |
+| polled? | **only if the call returned 0** | the same |
 
+- **The addresses are each box's FINAL one** (kube-infra `talos-os/estates.yaml`,
+  plan D12). Their BUILD addresses (`.17`/`.18`) left the list at the teardown:
+  an installed box runs its static FINAL address, and a box in maintenance mode
+  (a DHCP lease) accepts no authenticated shutdown anyway.
+- **The configs** come from `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{PRD,DEV}` (kube-infra
+  `bootstrap.sh` menu 10), and the setup script requires both since the
+  teardown. A config that is not staged makes the orchestrator skip that box and
+  log `NOT shut down`.
 - **Why only-if-accepted.** apid's `:50000` probe is unauthenticated: a box in
   Talos maintenance mode, or one whose PKI no longer matches the staged config,
   answers it for ever, and the poll would burn the whole 300 s backstop on
-  battery. A shutdown that returned non-zero was not delivered to a node of
-  that cluster (no route / timeout / capped, rc 124 / x509 / maintenance mode),
-  so nothing the script does would bring it down — waiting for it only drains
-  the battery.
+  battery. A shutdown that returned non-zero was not delivered to that box (no
+  route / timeout / capped, rc 124 / x509 / maintenance mode), so nothing the
+  script does would bring it down; waiting for it only drains the battery. ⚠
+  That box is then **hard-cut** when apc1 cuts power: the log says `⚠ NOT shut
+  down` for it (and `⚠ no node accepted its shutdown` when none did), and the
+  printed check after each re-stage must show `Server:` for both boxes.
   `--wait=false` is what makes rc mean "delivered": rc=0 means talosctl's
   Version pre-check **and** the Shutdown RPC both succeeded, rc≠0 that the
   shutdown was not delivered. (In talosctl v1.14.0/v1.14.1 the `--wait=false`
   branch first runs `helpers.ClientVersionCheck`, a Version RPC, and returns
   before any Shutdown if it fails — so `os:operator` must keep Version access;
-  the `--print-checks` `version` call proves that pre-flight for every pair.)
+  the `--print-checks` `version` call proves that pre-flight for both boxes.)
   With the default `--wait`, a tracker error after a delivered shutdown would
   also be rc≠0.
-- **Why both addresses.** The address that is not the box's today is rejected
-  (another cluster's CA, or no box at all), so it is a no-op — the script needs
-  **no edit at either cutover or at a rollback**. Before prd's cutover
-  `.11`/`.12` are kub-prd-01/-02 (polled via the Q170S1 list); after it, `.11`
-  is msa2-prd, the old prd config is rejected there, msa2-prd's is accepted,
-  and `.11` is polled once (the poll set is de-duplicated). Tests pin all of
-  these: `tests/test_ups_orchestrator.py`.
-- **Rule (d): a FINAL address follows kub-prd while it is live, and
-  only-if-accepted once it is gone.** `.11` and `.12` are in `PRD_NODES` as
-  well as in an MS-A2 list. While at least one kub-prd call returned 0 (before
-  prd's cutover, and after a rollback) they are polled whatever their rc — the
-  Q170S1 rule, unchanged. Once **no** kub-prd call returned 0 (after the
-  cutover the old nodes' power cords are out, kube-infra plan D12) each is
-  polled only if some call to it returned 0. Without it, from prd's cutover
-  until its teardown an msa2 box at `.11`/`.12` that does not accept —
-  maintenance mode, config not staged, a stale PKI — was polled to the 300 s
-  backstop (LB fires at `battery.runtime.low` 420 s, so that is most of the
-  reserve). That box is still not shut down, so re-stage after every menu 10
-  and run the printed check all the same.
-  ⚠ **Its one change to the live Q170S1 path** — an operator decision, and the
-  last commit on its own so it can be dropped: if **every** kub-prd call fails
-  while the old nodes are up, `.11`/`.12` are no longer waited for. For a
-  broken prd config that changes nothing in practice (`.13` still runs to the
-  backstop); for a `--wait` tracker error on all three after the shutdown was
-  delivered, the NAS can halt while `.11`/`.12` are still going down — gated
-  by `.13` and kub-dev, which shut down in parallel, and followed by `apc1`'s
-  90 s `ups.delay.shutdown`. A single failing kub-prd call changes nothing.
-  Tests pin both sides (`test_final_address_*`, `test_every_kub_prd_call_*`,
-  `test_tracker_error_on_every_kub_prd_call_*`).
-- **The cap bounds a hung msa2 call; it does not hide it.** The poll, and so
-  the NAS halt, starts only after every shutdown call has returned, so an msa2
-  address that connects and then hangs delays it by up to 65 s (60 s + the 5 s
-  `--kill-after`). The ~187 s Q170S1 calls hide that today; after the cutovers
-  they fail fast and the cap is the delay. 60 s is deliberate: a cap that fires
-  on a slow but delivered shutdown reads as rc 124, keeps that box out of the
-  poll, and lets the NAS halt (and `apc1` cut power 90 s later) while it is
-  still stopping Postgres. An absent box fails in ~3 s and a silently-dropping
-  one in ~20 s on their own. A test pins the production default.
-- **The Q170S1 path is deliberately unchanged**, including its known weakness
-  (a Q170S1 node that rejects its shutdown is still polled to the backstop) —
-  it is live until each cutover and the rollback target after it.
-- **Is msa2 on `apc1`? No — on mains until the cutover gate** (operator,
-  2026-09-26; *Hardware* above). The script is safe either way: on `apc1`,
-  shut down cleanly, and `apc1`'s kill-power cycle plus BIOS *AC power loss:
-  Always On* boots it again. Off `apc1` in a real outage: already dark, its
-  call fails fast and a dark box reads as down. Off `apc1` but still powered
-  (a drill on mains, or a second UPS): shut down cleanly and **stays off**
-  until powered on by hand, because its AC never drops — an availability
-  cost, never a data one. On mains, staging this script therefore buys no
-  protection and makes every Drill A (`upsmon -c fsd`) leave both msa2 boxes
-  off — which is why the re-stage below is **held** until the PSUs are on
-  `apc1`.
+- **The cap bounds a hung call; it does not hide it.** The poll, and so the NAS
+  halt, starts only after every shutdown call has returned, so an address that
+  connects and then hangs delays it by up to 65 s (60 s + the 5 s
+  `--kill-after`). 60 s is deliberate: a cap that fires on a slow but delivered
+  shutdown reads as rc 124, keeps that box out of the poll, and lets the NAS
+  halt (and `apc1` cut power 90 s later) while it is still stopping Postgres.
+  An absent box fails in ~3 s and a silently-dropping one in ~20 s on their own.
+  A test pins the production default.
+- **Both boxes are on `apc1`** since 2026-09-28 (*Hardware* above). On an outage
+  they are shut down cleanly, and `apc1`'s kill-power cycle plus BIOS *AC power
+  loss: Always On* boots them again. A box NOT on `apc1` but still powered (a
+  drill on mains, a box moved to another supply) is shut down cleanly and
+  **stays off** until powered on by hand, because its AC never drops: an
+  availability cost, never a data one.
 - **Re-stage** (main session; staging is non-disruptive — `shutdowncmd` is not
-  touched). ⚠ **HELD until the cutover gate** (kube-infra plan § Cutover
-  inventory row 15): first move both MS-A2 PSUs onto `apc1`'s battery outlets
-  and re-measure the runtime at the new load, THEN re-stage, then re-measure
-  the shutdown time in a drill (don't carry 187 s). If the Q170S1 path has to
-  be re-staged before then (a talosctl bump after an upgrade), keep msa2 out
-  of it: `doppler run` injects `TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV` (menu 10
-  minted it), and a set key is staged. Run it with that key unset —
-  `doppler run -p infrastructure -c ops -- env -u TALOS_NAS_SHUTDOWN_CONFIG_MSA2_DEV -u TALOS_NAS_SHUTDOWN_CONFIG_MSA2_PRD ./scripts/setup-talos-shutdown-orchestrator.sh`
-  — and the orchestrator skips both msa2 clusters (no staged config). The
-  script uploads whatever **this checkout** holds, so bring
+  touched). The script uploads whatever **this checkout** holds, so bring
   `main` up to date first — a stale checkout re-stages the old orchestrator
   and every credential check still passes:
   ```sh
@@ -1380,90 +1325,59 @@ below has run it still fans out to the six Q170S1 nodes only.
   Then paste the one `ssh -t …` command it prints. Its first line is the
   sha256 of the **staged** orchestrator, which must equal the value printed
   with it (this checkout's): that, not the credential checks, proves the NAS
-  runs the merged script. From the cutover gate on, re-stage after every
-  `bootstrap.sh msa2-<env>` menu 10 (it re-mints the msa2 config), and after
-  msa2-prd is built (Task H) so its config is staged. An msa2 key missing from Doppler is a WARN, not an
-  error: that cluster is skipped until the next re-stage.
-- **At cutover** (kube-infra cutover plan 2026-09-28, A5 / B5; row 15), in this
-  order: move the box's PSU onto `apc1` (one box at a time, prd first), wait
-  for the node, its Clusters and menu 33; re-measure the runtime at the new
-  load; merge rule (d) and the `talosctl` default bump (`TALOSCTL_VERSION`
-  v1.14.1, msa2's version; same minor as the Q170S1 rollback targets' v1.14.0)
-  — the one cutover PR here; then **Re-stage** above from an up-to-date
-  `main`, and run the printed check: every box that is up must show `Server:`
-  for its own config at its current address. Then **re-measure the shutdown
-  time** in a drill rather than carrying 187 s. The orchestrator's node lists
-  need no edit: both of each box's addresses are already in them.
-- **At teardown — a code change with its own PR and tests, not a two-line
-  deletion.** Under `set -u` a leftover reference to a deleted list aborts the
-  orchestrator **before** it fires the msa2 shutdowns or halts the NAS, and the
-  setup script's `check_pairs` fails on a list it cannot read. The teardown
-  comes 7 days after dev's cutover (kube-infra cutover plan 2026-09-28, O4:
-  both clusters cut over the same day); per torn-down cluster `<X>` (`PRD`,
-  then `DEV`) remove:
-  - `nas-ups-orchestrator.sh`: `<X>_NODES`, `<X>_CFG`, its fire loop, its
-    `poll_q170s1 <x>` line, its part of `Q170S1_NODES`, and that msa2
-    cluster's BUILD address (`MSA2_<X>_NODES` keeps only the FINAL one). Once
-    `PRD_NODES` is gone, `.11`/`.12` are MS-A2-only and rule (a) covers them
-    directly;
-  - `setup-talos-shutdown-orchestrator.sh`: `<X>` in `check_pairs`'s loop, its
-    required-key line (`TALOS_NAS_SHUTDOWN_CONFIG_<X>`), its `base64 -d` line,
-    its entry in the initial `CFGS`, and the header lines naming it;
-  - `tests/test_ups_orchestrator.py`: that cluster's Q170S1 expectations.
-  After the second teardown delete what is left of the Q170S1 block —
-  `Q170S1_NODES`, the FINAL-address branch of the rejection log, `live`,
-  `poll_q170s1`, the Q170S1 and rule-(d) tests. Run the suite,
-  re-stage, run the printed check. The staged `{dev,prd}-shutdown.talosconfig`
-  are then unused; the setup script never deletes a file, so remove them from
-  the NAS by hand.
+  runs the merged script. Re-stage after every merge to the orchestrator, after
+  every `bootstrap.sh msa2-<env>` menu 10 (it re-mints that box's config), and
+  after every Talos upgrade (the staged `talosctl`, below).
+- **History: the cutover and the teardown.** From 2026-09-26 to the teardown
+  the orchestrator shut down both estates: the six Q170S1 nodes (`.11-.16`,
+  `{dev,prd}-shutdown.talosconfig`, polled whatever their rc) and both MS-A2
+  boxes at BOTH of their addresses (BUILD and FINAL, so no edit was due at
+  either cutover or a rollback), with a rule (d) for `.11`/`.12`, which were in
+  both lists. Both boxes moved onto `apc1` and it was re-staged at the cutover
+  (2026-09-28). The teardown (kube-infra#1443) deleted the Q170S1 lists,
+  configs, fire loops and rule (d), the BUILD addresses and the setup script's
+  Q170S1 keys, as this section had listed. git history has the old rules and
+  their tests.
+  ⚠ **Left on the NAS by hand**: the setup script never deletes a file, so the
+  unused `{dev,prd}-shutdown.talosconfig` stay under `/mnt/tank/system/talos/`
+  until removed (the operator, with sudo:
+  `ssh -t truenas_admin@nas.w1.lv 'sudo rm /mnt/tank/system/talos/dev-shutdown.talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig'`).
+  They are os:operator configs against the old clusters' CAs; with those
+  clusters gone they can shut nothing down.
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
-every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary.
-Same-minor compatibility was **empirically confirmed** on 2026-07-29 (a v1.13.2
-client plus the real `os:operator` credential authenticating to a v1.13.7 node),
-but a major/minor gap would break the UPS shutdown path **silently**, surfacing
-only during a real outage.
+every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary
+(the setup script's `TALOSCTL_VERSION`, default **v1.14.1**, both MS-A2 boxes'
+version). Same-minor compatibility was **empirically confirmed** on 2026-07-29
+(a v1.13.2 client plus the real `os:operator` credential authenticating to a
+v1.13.7 node), but a major/minor gap would break the UPS shutdown path
+**silently**, surfacing only during a real outage. The printed check's second
+line is the staged binary's `version --client`.
 
-> ⚠ **Re-staged 2026-09-23, version not re-measured since.** On 2026-09-22 the
-> staged binary was **v1.13.2** against nodes on **v1.14.0** — a full-minor gap.
-> The 2026-09-23 pool rebuild destroyed `/mnt/tank/system/talos/` and the whole
-> path was re-staged with `setup-talos-shutdown-orchestrator.sh` (pool-rebuild
-> plan Task 7), whose `TALOSCTL_VERSION` default was then **v1.14.0** — same minor
-> as the old estate (v1.14.0) and msa2 (v1.14.1); it is **v1.14.1** from the cutover
-> PR on (§ *MS-A2 in the fan-out*, *At cutover*). ⚠ Confirm with the check below
-> (and `talosctl version --client` on the NAS) before relying on it; if it still
-> reports v1.13.2, the gap is real — re-stage (until the MS-A2 cutover gate,
-> with the msa2 keys unset: § *MS-A2 in the fan-out*, *Re-stage*).
-> ⚠ msa2 has its own PKI, so it has its own `os:operator` configs
-> (`TALOS_NAS_SHUTDOWN_CONFIG_MSA2_{DEV,PRD}`). Since the 2026-09-26 change
-> they are staged alongside the Q170S1 pair (once re-staged) and the
-> orchestrator targets both of each box's addresses, so **no node-list edit is
-> due at cutover** — only rule (d) and the talosctl bump, both in the cutover PR
-> (kube-infra cutover row 15; § *MS-A2 in the fan-out*, *At cutover*).
->
-> ✅ **The CREDENTIALS are fine** — read from Doppler 2026-09-22 they are valid
-> `Jun 1 2026 → May 29 2036`. A suspicion that they had expired came from
-> `setup-talos-shutdown-orchestrator.sh` documenting `--crt-ttl 720h` (30 days),
-> which is NOT what was actually minted. ⚠ That comment was a landmine — the
-> MS-A2 rebuild mints a new PKI and forces a re-issue, and anyone following it
-> would have created a 30-day credential with **no rotation and no alert**
-> (verified: nothing in this repo rotates it, no kube-infra `prometheus-rules-*`
-> watches it). Corrected 2026-09-22 to 87600h, with the reasoning written down.
+> ✅ **The CREDENTIALS are long-lived on purpose** — the Q170S1 ones read from
+> Doppler 2026-09-22 were valid `Jun 1 2026 → May 29 2036`, and menu 10 mints
+> the msa2 ones with `--crt-ttl 87600h`. A suspicion that they had expired came
+> from `setup-talos-shutdown-orchestrator.sh` documenting `--crt-ttl 720h`
+> (30 days), which is NOT what was actually minted. ⚠ That comment was a
+> landmine: anyone following it would have created a 30-day credential with
+> **no rotation and no alert** (verified: nothing in this repo rotates it, no
+> kube-infra `prometheus-rules-*` watches it). Corrected 2026-09-22 to 87600h,
+> with the reasoning written down (the setup script's header).
 
 One-line check after any node upgrade (the configs are 0600 root, so it needs
 `sudo` — and a TTY, because `talosctl` is not on the NOPASSWD allowlist):
 
 ```sh
 ssh -t truenas_admin@nas.w1.lv 'sudo /mnt/tank/system/talos/talosctl \
-  --talosconfig /mnt/tank/system/talos/dev-shutdown.talosconfig \
-  -n 10.10.5.14 --endpoints 10.10.5.14 version --short'   # expect Server: v1.14.x
+  --talosconfig /mnt/tank/system/talos/msa2-dev-shutdown.talosconfig \
+  -n 10.10.5.12 --endpoints 10.10.5.12 version --short'   # expect Server: v1.14.x
 ```
 
-To check **every** (config, address) pair the orchestrator targets in one ssh
+To check **both** (config, address) pairs the orchestrator targets in one ssh
 and one sudo prompt, run `./scripts/setup-talos-shutdown-orchestrator.sh
 --print-checks` on the laptop (no credentials needed) and paste the command it
-prints; it reads the pairs from the orchestrator's own inventory and explains
-which failures are the designed exclusions.
+prints; it reads the pairs from the orchestrator's own inventory and says what
+each failure means.
 
 **Two NUT users — role separation:**
 
