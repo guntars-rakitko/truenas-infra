@@ -8,13 +8,13 @@ the lists' mistakes are silent on a live run:
 - A bucket missing from setup-minio-buckets.sh is never created, and its
   consumer fails with "bucket missing" on the first backup.
 - A name in setup-minio-encryption.sh that setup-minio-buckets.sh never
-  creates (a typo, `pvc-backup` for `pvc-backups`) is a "SKIP ... bucket
+  creates (a typo, `postgres-backup` for `postgres-backups`) is a "SKIP ... bucket
   missing" line and exit 0: default encryption is never set anywhere.
 - An ILM row in setup-minio-lifecycle.sh on a bucket whose client owns
-  deletion destroys that client's data by age. For `pvc-backups` (restic)
-  the first objects to expire are each repository's `config` and `keys/*`,
-  written once at `restic init`, so no password opens it afterwards. The
-  script's header says so; this makes it a failing test instead of a comment.
+  deletion destroys that client's data by age (for a restic repository the
+  first objects to expire are its `config` and `keys/*`, so no password opens
+  it afterwards). The script's header says so; this makes it a failing test
+  instead of a comment.
 
 Every external is stubbed: `mc` answers from environment switches and logs its
 arguments. PATH holds only the stub directory and /usr/bin:/bin, so the
@@ -38,10 +38,14 @@ LIFECYCLE_SH = SCRIPTS / "setup-minio-lifecycle.sh"
 
 ALIASES = ("nas-dev", "nas-prd")
 
-# Buckets whose own client owns deletion, where an age-based ILM rule corrupts
-# the data (setup-minio-lifecycle.sh header): Longhorn's incremental block
-# chains, Velero's TTL controller, restic's repositories.
-NO_ILM_BUCKETS = frozenset({"longhorn", "velero", "pvc-backups"})
+# Buckets whose own client prunes them, so an age-based ILM rule would fight it
+# (setup-minio-lifecycle.sh header): Loki's compactor, Litestream. Until the
+# 2026-10-06 teardown this also held longhorn, velero and pvc-backups.
+NO_ILM_BUCKETS = frozenset({"loki-chunks", "pocket-id-litestream"})
+
+# Deleted at the Q170S1 teardown (2026-10-06, kube-infra#1443). A bootstrap that
+# recreated them would bring back empty buckets that nothing writes.
+RETIRED_BUCKETS = frozenset({"longhorn", "velero", "pvc-backups"})
 
 # mc stub. Every call is logged as "mc <args>".
 #   STUB_UNREACHABLE    space-separated aliases whose `mc ls <alias>` fails
@@ -118,8 +122,9 @@ def created(tmp_path: Path) -> set[str]:
     return _targets(calls, "mc mb ")
 
 
-def test_buckets_script_creates_pvc_backups_on_both_instances(created: set[str]) -> None:
-    assert {f"{a}/pvc-backups" for a in ALIASES} <= created
+def test_buckets_script_does_not_recreate_the_retired_buckets(created: set[str]) -> None:
+    assert created, "no bucket created at all: the stub or the parse is broken"
+    assert {t for t in created if t.split("/", 1)[1] in RETIRED_BUCKETS} == set()
 
 
 def test_buckets_script_creates_the_same_buckets_on_both_instances(created: set[str]) -> None:
@@ -128,12 +133,12 @@ def test_buckets_script_creates_the_same_buckets_on_both_instances(created: set[
     assert per_alias["nas-dev"] == per_alias["nas-prd"]
 
 
-def test_encryption_script_sets_sse_s3_on_pvc_backups_on_both_instances(tmp_path: Path) -> None:
+def test_encryption_script_sets_sse_s3_on_postgres_backups_on_both_instances(tmp_path: Path) -> None:
     proc, calls = _run(ENCRYPTION_SH, tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert _unexpected(calls) == []
     encrypted = _targets(calls, "mc encrypt set sse-s3 ")
-    assert {f"{a}/pvc-backups" for a in ALIASES} <= encrypted
+    assert {f"{a}/postgres-backups" for a in ALIASES} <= encrypted
 
 
 def test_every_encrypted_bucket_is_one_the_buckets_script_creates(

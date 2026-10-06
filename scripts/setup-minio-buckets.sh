@@ -26,11 +26,14 @@ set -euo pipefail
 # One bucket per backup track per cluster. Same names on both clusters
 # (separation is at the alias level, not the bucket name).
 ALIASES=(nas-dev nas-prd)
+# longhorn, velero and pvc-backups were DELETED at the Q170S1 teardown (2026-10-06,
+# kube-infra#1443): their only writers were the retired kub-* clusters, and pvc-backups'
+# restic design was declined. Don't re-add them; tests/test_minio_setup_scripts.py fails
+# if this list creates one.
 BUCKETS=(
     cluster-agent        # cluster-agent — state.db nightly backups
     etcd-snapshots       # CronJob — talosctl etcd snapshot
     loki-chunks          # Loki — log chunks (compressed log streams + index)
-    longhorn             # Longhorn — volume + system backups
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets
     postgres-backups     # CloudNativePG — Barman Cloud Plugin WAL + base backups
     postgres-backups-w1  # CloudNativePG w1-db (web-tracker) — its OWN bucket, NOT a prefix
@@ -42,18 +45,7 @@ BUCKETS=(
                          # silently prunes it. ⚠ This is an ILM boundary, NOT a credential
                          # one — the shared service user below has readwrite on s3:*.
     pocket-id-litestream # Pocket-ID — SQLite Litestream replicas (DR for OIDC IdP)
-    pvc-backups          # restic — PVC-state repositories, one per cluster generation and
-                         # namespace: pvc-backups/<cluster>/<namespace>, e.g.
-                         # pvc-backups/msa2-prd/pocket-id (kube-infra
-                         # docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md
-                         # § 6.1 / § 6.13). ⚠ NO ILM rule and versioning OFF, both on
-                         # purpose: restic's own `forget --prune` owns deletion (the
-                         # why is in setup-minio-lifecycle.sh). Off is what `mc mb`
-                         # creates and nothing here enables it; with versioning on,
-                         # prune would hide objects instead of freeing space. SSE-S3
-                         # default encryption: setup-minio-encryption.sh.
     sms-gateway-backups  # SMS-gateway appliance — nightly pg_dump of the box's smsgw+gammu DBs (box-<env>/ prefix)
-    velero               # Velero — K8s manifest backups
 )
 
 # ─── Apply ───────────────────────────────────────────────────────────────────

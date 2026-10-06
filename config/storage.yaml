@@ -93,8 +93,9 @@ datasets:
   - name: tank/kube/prd
     kind: parent
   # ⚠ MISNAMED — this is MinIO's WHOLE /data for prd (apps/minio-prd), holding EVERY bucket:
-  # longhorn, postgres-backups, etcd-snapshots, loki-chunks, pocket-id-litestream, mssql-backups
-  # (incl. the GIKS v1 box) … and `velero`, the smallest of them. Never read "the velero dataset"
+  # postgres-backups, etcd-snapshots, loki-chunks, pocket-id-litestream, mssql-backups (incl. the
+  # GIKS v1 box) … (`velero`, the bucket it is misnamed after, and `longhorn` were deleted at the
+  # 2026-10-06 teardown, kube-infra#1443). Never read "the velero dataset"
   # as "Velero's backups" in a destructive command. Rename → tank/kube/prd/minio: #152 (after
   # the MS-A2 cutover).
   - name: tank/kube/prd/velero

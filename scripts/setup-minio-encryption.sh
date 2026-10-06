@@ -46,14 +46,9 @@ BUCKETS=(
     cluster-agent
     etcd-snapshots
     loki-chunks
-    longhorn
     mssql-backups
     postgres-backups
     pocket-id-litestream
-    pvc-backups          # restic already encrypts client-side; SSE-S3 here keeps the
-                         # at-rest convention and the inventory whole, it closes no
-                         # exposure (kube-infra msa2-pvc-backup spec § 6.13)
-    velero
 )
 
 for alias in "${ALIASES[@]}"; do

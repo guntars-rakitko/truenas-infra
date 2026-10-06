@@ -23,22 +23,15 @@ set -euo pipefail
 # ─── Desired state ───────────────────────────────────────────────────────────
 # Each row: <alias>/<bucket> <expire-days>
 #
-# ⚠ velero / longhorn / pvc-backups are DELIBERATELY absent — do not "add a
-# backstop". Longhorn backups are incremental block chains whose later backups
-# reference blocks written by earlier ones; expiring a base by age corrupts every
-# surviving backup that depended on it. Velero's own TTL controller expects to
-# own deletion. pvc-backups holds restic repositories, which are worse still:
-# a pack file is shared by every snapshot that references one of its blobs, so
-# the newest snapshot routinely depends on the oldest packs; and each
-# repository's `config` and `keys/*` objects are written once at `restic init`
-# (the recovery key: right after it) and never rewritten by backup or prune, so
-# they are among the OLDEST objects there and an age rule deletes them first,
-# leaving a repository that no password opens. restic's own `forget --prune`
-# (run by the backup CronJob) owns deletion. Age-based ILM is the wrong tool
-# for all three.
-# tests/test_minio_setup_scripts.py fails if any RULES row targets one of them.
+# ⚠ Never give a bucket whose CLIENT owns deletion an age-based rule. The Q170S1
+# era's three such buckets were the cautionary cases: longhorn (incremental block
+# chains, so expiring a base corrupts every later backup), velero (its TTL
+# controller owns deletion) and pvc-backups (restic repositories, whose `config`
+# and `keys/*` are the oldest objects, so an age rule deletes them first). All
+# three were deleted at the teardown (2026-10-06, kube-infra#1443).
 # loki-chunks and pocket-id-litestream are absent because Loki's compactor and
 # Litestream prune their own object stores.
+# tests/test_minio_setup_scripts.py fails if any RULES row targets one of them.
 #
 # etcd-snapshots IS here as of 2026-08-07. It previously was not, and both this
 # file and kube-infra's etcd-snapshot-cronjob.yaml carried a comment claiming
@@ -61,7 +54,9 @@ set -euo pipefail
 #   prd 14d = 336 hourly snapshots — production gets the longer window, so a
 #             problem noticed a week late still has pre-incident snapshots.
 # etcd snapshots are DR artifacts where recent granularity is what matters;
-# Velero's daily cluster-state backup covers the longer tail on both clusters.
+# (Velero's daily cluster-state backup covered the longer tail; it went with the
+# Q170S1 clusters at the 2026-10-06 teardown. On MS-A2 nothing older than the
+# window holds cluster state: only git and the database backups.)
 # The trade is explicit: a corruption first noticed after the window has no
 # pre-incident etcd snapshot left.
 #
