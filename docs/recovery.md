@@ -85,7 +85,8 @@ unit is the post-RMA "v2" and has **no eMMC**: the `boot-pool` lives on the
    - Confirm `/mnt/tank/system/talos/{talosctl,msa2-dev-shutdown.talosconfig,msa2-prd-shutdown.talosconfig,nas-ups-orchestrator.sh}`
      survived the pool import (list names only — never read the configs; the
      Q170S1 pair `{dev,prd}-shutdown.talosconfig` is unused since the
-     teardown, kube-infra#1443); if not, re-stage from an up-to-date `main`
+     teardown and was removed from the NAS on 2026-10-06, kube-infra#1443, so
+     a copy that comes back with an older pool is not needed); if not, re-stage from an up-to-date `main`
      (the script uploads whatever the checkout holds):
      ```bash
      cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline

@@ -28,7 +28,7 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
 - **NUT / MinIO services** — live here on the NAS; referenced by `kube-infra`. (The PXE server that `bios-config` also used was retired 2026-09-23 — see § Planned Services.)
-- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `AMT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*` is no longer read by this repo — amtctl is retired; bios-config's AMT tools still read it, and it goes at the Q170S1 teardown, kube-infra plan § Cutover inventory row 19.)
+- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*`, unread here since amtctl's retirement and read only by bios-config's AMT tools, was deleted 2026-10-06 (kube-infra#1443 § 3) with the rest of the Q170S1 estate's keys.)
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
 Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
@@ -159,8 +159,8 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
-| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn`, which hold the Q170S1 clusters' last backups and have had no writer since the cutover (whether to delete them is an operator decision, kube-infra#1443), **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)** | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
-| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, restic PVC backups (`pvc-backups`: Pocket-ID's DB, from kube-infra's PVC-backup CronJob; bucket ahead of its consumer), cluster-agent state, SMS-gateway dumps, plus `velero`/`longhorn`, which hold the Q170S1 clusters' last backups and have had no writer since the cutover (whether to delete them is an operator decision, kube-infra#1443) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)**. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443: § setup-minio-buckets.sh) | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443: § setup-minio-buckets.sh) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
 | cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated Findings filed as issues in [`kube-infra`](https://github.com/guntars-rakitko/kube-infra) (labels `cluster-agent` + `needs-review`); the daily digest-summary goes to [`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest) (renamed from `-sandbox`; routing since the 2026-07-06 graduation — § cluster-agent ops). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
@@ -599,7 +599,8 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
 > `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
 > `--apply` runs, so merge it and pull `main` BEFORE that re-mint.
-> `PREVIOUS_NAMES` is empty since the Q170S1 teardown: the `kub-*` names closed
+> `PREVIOUS_NAMES` is empty since the Q170S1 teardown (#185; the agent runs that
+> code since 2026-10-06, container restarted 04:43:28Z): the `kub-*` names closed
 > their last digest-summary issues at the first runs after the cutover.
 >
 > **So does its Grafana (kube-infra#1366).** `GRAFANA_URLS` in the same file
@@ -1032,7 +1033,8 @@ machine-readable copy):
   password rotated 2026-05-12 (closes
   [kube-infra#94](https://github.com/guntars-rakitko/kube-infra/issues/94)).
   No longer shares value with `AMT_PASSWORD` (the anti-pattern that
-  motivated the rotation). Lives in:
+  motivated the rotation; `AMT_PASSWORD` itself was deleted 2026-10-06,
+  kube-infra#1443 § 3). Lives in:
     * Doppler `infrastructure/ops` → `TRUENAS_ADMIN_USER` +
       `TRUENAS_ADMIN_PASSWORD` (machine-readable copy for future DR
       scripts + as the canonical source the operator pulls from)
@@ -1148,7 +1150,7 @@ wildcards.
 
 ```sh
 # Show all NAS-related keys
-doppler secrets --project infrastructure --config ops --only-names | grep -E "TRUENAS_|MINIO_|AMT_|SHARED_CLOUDFLARE"
+doppler secrets --project infrastructure --config ops --only-names | grep -E "TRUENAS_|MINIO_|SHARED_CLOUDFLARE"
 
 # Get one value (revealed)
 doppler secrets get TRUENAS_API_KEY --project infrastructure --config ops --plain
@@ -1173,8 +1175,8 @@ Migration tracking: kube-infra #92.
 > `talosctl shutdown --force --wait=false` at both MS-A2 boxes (msa2-prd
 > `10.10.5.11`, msa2-dev `10.10.5.12`; least-privilege os:operator creds),
 > polls the ones that accepted until they are down, then halts the NAS
-> **last** (§ *The fan-out* below; until the Q170S1 teardown, kube-infra#1443,
-> it also shut down the six Q170S1 nodes); (2) the **nut-client extension is
+> **last** (§ *The fan-out* below; until the Q170S1 teardown re-staged it on
+> 2026-10-06, kube-infra#1443, it also shut down the six Q170S1 nodes); (2) the **nut-client extension is
 > removed from the nodes** (Talos schematic `daef782b`) → they're no longer NUT
 > secondaries; (3) `ups.delay.shutdown` = **90**; (4) **`sdtype = 5`** (apcsmart
 > hard hibernate `@`) so the #57-hook kill-power cuts + power-cycles **even on
@@ -1255,7 +1257,9 @@ out of the MS-A2 build, this is the only thing between a power cut and a hard
 power-off of a single-instance Postgres on a non-PLP drive. The script's header
 is the full reasoning; the rules below. ⚠ **Merged ≠ live:** the NAS runs the
 copy staged under `/mnt/tank/system/talos/`, so a change here does nothing until
-it is re-staged (below).
+it is re-staged (below). This fan-out (#185) is **live since its re-stage on
+2026-10-06**: in the operator's sudo check the staged orchestrator's sha256
+matched the checkout's, and both boxes answered `Server: v1.14.1`.
 
 | | msa2-prd | msa2-dev |
 |---|---|---|
@@ -1326,14 +1330,16 @@ it is re-staged (below).
   both lists. Both boxes moved onto `apc1` and it was re-staged at the cutover
   (2026-09-28). The teardown (kube-infra#1443) deleted the Q170S1 lists,
   configs, fire loops and rule (d), the BUILD addresses and the setup script's
-  Q170S1 keys, as this section had listed. git history has the old rules and
+  Q170S1 keys, as this section had listed (#185, merged and re-staged
+  2026-10-06; the sudo check above passed). git history has the old rules and
   their tests.
-  ⚠ **Left on the NAS by hand**: the setup script never deletes a file, so the
-  unused `{dev,prd}-shutdown.talosconfig` stay under `/mnt/tank/system/talos/`
-  until removed (the operator, with sudo:
-  `ssh -t truenas_admin@nas.w1.lv 'sudo rm /mnt/tank/system/talos/dev-shutdown.talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig'`).
-  They are os:operator configs against the old clusters' CAs; with those
-  clusters gone they can shut nothing down.
+  **Removed from the NAS by hand, 2026-10-06**: the setup script never deletes a
+  file, so the operator removed the unused `{dev,prd}-shutdown.talosconfig` from
+  `/mnt/tank/system/talos/` with sudo
+  (`ssh -t truenas_admin@nas.w1.lv 'sudo rm /mnt/tank/system/talos/dev-shutdown.talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig'`).
+  They were os:operator configs against the old clusters' CAs, which could shut
+  nothing down. Their Doppler copies, `TALOS_NAS_SHUTDOWN_CONFIG_{DEV,PRD}`,
+  unused since the re-stage, were deleted 2026-10-06 (kube-infra#1443 § 3).
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary
