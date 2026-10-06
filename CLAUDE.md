@@ -599,7 +599,8 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
 > (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
 > `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
 > `--apply` runs, so merge it and pull `main` BEFORE that re-mint.
-> `PREVIOUS_NAMES` is empty since the Q170S1 teardown: the `kub-*` names closed
+> `PREVIOUS_NAMES` is empty since the Q170S1 teardown (#185; the agent runs that
+> code since 2026-10-06, container restarted 04:43:28Z): the `kub-*` names closed
 > their last digest-summary issues at the first runs after the cutover.
 >
 > **So does its Grafana (kube-infra#1366).** `GRAFANA_URLS` in the same file
@@ -1173,8 +1174,8 @@ Migration tracking: kube-infra #92.
 > `talosctl shutdown --force --wait=false` at both MS-A2 boxes (msa2-prd
 > `10.10.5.11`, msa2-dev `10.10.5.12`; least-privilege os:operator creds),
 > polls the ones that accepted until they are down, then halts the NAS
-> **last** (§ *The fan-out* below; until the Q170S1 teardown, kube-infra#1443,
-> it also shut down the six Q170S1 nodes); (2) the **nut-client extension is
+> **last** (§ *The fan-out* below; until the Q170S1 teardown re-staged it on
+> 2026-10-06, kube-infra#1443, it also shut down the six Q170S1 nodes); (2) the **nut-client extension is
 > removed from the nodes** (Talos schematic `daef782b`) → they're no longer NUT
 > secondaries; (3) `ups.delay.shutdown` = **90**; (4) **`sdtype = 5`** (apcsmart
 > hard hibernate `@`) so the #57-hook kill-power cuts + power-cycles **even on
@@ -1255,7 +1256,9 @@ out of the MS-A2 build, this is the only thing between a power cut and a hard
 power-off of a single-instance Postgres on a non-PLP drive. The script's header
 is the full reasoning; the rules below. ⚠ **Merged ≠ live:** the NAS runs the
 copy staged under `/mnt/tank/system/talos/`, so a change here does nothing until
-it is re-staged (below).
+it is re-staged (below). This fan-out (#185) is **live since its re-stage on
+2026-10-06**: in the operator's sudo check the staged orchestrator's sha256
+matched the checkout's, and both boxes answered `Server: v1.14.1`.
 
 | | msa2-prd | msa2-dev |
 |---|---|---|
@@ -1326,14 +1329,17 @@ it is re-staged (below).
   both lists. Both boxes moved onto `apc1` and it was re-staged at the cutover
   (2026-09-28). The teardown (kube-infra#1443) deleted the Q170S1 lists,
   configs, fire loops and rule (d), the BUILD addresses and the setup script's
-  Q170S1 keys, as this section had listed. git history has the old rules and
+  Q170S1 keys, as this section had listed (#185, merged and re-staged
+  2026-10-06; the sudo check above passed). git history has the old rules and
   their tests.
-  ⚠ **Left on the NAS by hand**: the setup script never deletes a file, so the
-  unused `{dev,prd}-shutdown.talosconfig` stay under `/mnt/tank/system/talos/`
-  until removed (the operator, with sudo:
-  `ssh -t truenas_admin@nas.w1.lv 'sudo rm /mnt/tank/system/talos/dev-shutdown.talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig'`).
-  They are os:operator configs against the old clusters' CAs; with those
-  clusters gone they can shut nothing down.
+  **Removed from the NAS by hand, 2026-10-06**: the setup script never deletes a
+  file, so the operator removed the unused `{dev,prd}-shutdown.talosconfig` from
+  `/mnt/tank/system/talos/` with sudo
+  (`ssh -t truenas_admin@nas.w1.lv 'sudo rm /mnt/tank/system/talos/dev-shutdown.talosconfig /mnt/tank/system/talos/prd-shutdown.talosconfig'`).
+  They were os:operator configs against the old clusters' CAs, which could shut
+  nothing down. Their Doppler copies, `TALOS_NAS_SHUTDOWN_CONFIG_{DEV,PRD}`, are
+  unused since the re-stage and go with the old clusters' keys at
+  kube-infra#1443 § 3.
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary
