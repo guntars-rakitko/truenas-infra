@@ -1188,9 +1188,13 @@ Migration tracking: kube-infra #92.
 > wait), the six Q170S1 nodes down in 187s, NAS last, UPS cut + 60s
 > power-cycle, both clusters 3/3 + 0 faulted.
 > Plan/drill-log: `kube-infra/docs/superpowers/plans/2026-06-01-ups-shutdown-orchestrator.md`.
+> The real on-battery AC-pull drill passed the same day ("Drill 2" in the wiki's
+> `ups-operations` § Drill log: mains pulled, `charge.low: 60`, FSD, the
+> orchestrated shutdown, cut at ~44 % battery, clean recovery); until 2026-10-06
+> this note called it still owed.
 > **Still owed:** a drill on the MS-A2 boxes (the 187 s above is the old
-> estate's: re-measure, don't carry it), and a real on-battery AC-pull drill
-> (battery margin) before #611 closes.
+> estate's: re-measure, don't carry it), and with it the battery margin at their
+> ~163 W load.
 > NOTE: some prose below is retained as HISTORY of how we got here.
 
 **Hardware:** 2× APC Smart-UPS SMT750I/SMT750IC on the rack. The
