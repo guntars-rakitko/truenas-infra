@@ -393,7 +393,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 11 buckets per instance (incl. the orphan loki-chunks)
+./scripts/setup-minio-buckets.sh      # 8 buckets per instance (incl. the orphan loki-chunks)
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -403,34 +403,34 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the backup buckets on each MinIO instance — **eleven** today, one of
+Creates the backup buckets on each MinIO instance — **eight** today, one of
 them (`loki-chunks`) an orphan with no consumer (authoritative list = the
 `BUCKETS` array in the script; its header deliberately states no count: it said
 "nine" for two buckets after that stopped being true). `tests/test_minio_setup_scripts.py`
-runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if `pvc-backups` is
-not created and encrypted on both instances, if the encryption or lifecycle
-script names a bucket this one never creates (a live `SKIP` with exit 0), or if
-any ILM row targets `longhorn`, `velero` or `pvc-backups`:
+runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if it creates one of
+the buckets deleted at the teardown (`longhorn`, `velero`, `pvc-backups`), if `postgres-backups`
+is not encrypted on both instances, if the encryption or lifecycle script names a bucket this
+one never creates (a live `SKIP` with exit 0), or if any ILM row targets a bucket whose client
+prunes it (`loki-chunks`, `pocket-id-litestream`):
 
 | Bucket | Consumer |
 |---|---|
 | `cluster-agent` | cluster-agent — `state.db` nightly backups |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 | `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
-| `longhorn` | Longhorn — volume + system backups of the Q170S1 clusters (S3 BackupTarget; replaced the old NFS export 2026-04-27). ⚠ No writer since the cutover (2026-09-28): the msa2 clusters run no Longhorn. It holds the old clusters' last backups; deleting it is an operator decision (kube-infra#1443). |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
 | `postgres-backups` | CloudNativePG — Barman Cloud Plugin WAL + base backups |
 | `postgres-backups-w1` | CloudNativePG **w1-db** (web-tracker) — its own bucket, not a prefix. MinIO ILM is bucket-wide, so two retention windows need two buckets; and it makes a `serverName` typo fail into an empty bucket instead of silently landing in the financial chain's prefix. ⚠ An ILM boundary, **not** a credential one — the shared service user has `readwrite` on `s3:*`. |
 | `pocket-id-litestream` | Pocket-ID — SQLite Litestream replicas (DR for the OIDC IdP) |
-| `pvc-backups` | **restic** — PVC-state repositories, one per cluster generation and namespace: `pvc-backups/<cluster>/<namespace>` (e.g. `pvc-backups/msa2-prd/pocket-id`). First and only consumer: kube-infra's `pocket-id/pocket-id-backup` CronJob (Pocket-ID's SQLite DB, approach E of kube-infra `docs/superpowers/specs/2026-09-25-msa2-pvc-backup-design.md`). Named for what it holds, not its first consumer. ⚠ **No ILM** (§ setup-minio-lifecycle.sh) and **versioning off** (what `mc mb` creates; with it on, prune would hide objects instead of freeing space). SSE-S3 on, though restic already encrypts client-side. Added to `BUCKETS` 2026-09-26, ahead of the CronJob (spec § 7.2 row 2). ⚠ **The CronJob will not land:** the operator declined restic on 2026-09-28 (kube-infra#1342, closed unmerged), so the bucket has no consumer, and deleting it (with the restic Doppler keys) is an operator decision. |
 | `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
-| `velero` | Velero — K8s manifest backups of the Q170S1 clusters. ⚠ No writer since the cutover (2026-09-28): the msa2 clusters run no Velero. Deleting it is an operator decision (kube-infra#1443). |
+
+*Deleted at the Q170S1 teardown (2026-10-06, kube-infra#1443), on the operator's decision: `longhorn` (the old clusters' volume and system backups: 72.6 GB prd / 133.8 GB dev), `velero` (their manifest backups) and `pvc-backups` (restic repositories of the declined PVC-backup design; empty on prd, 4 objects on dev). None had object lock, and nothing on the MS-A2 clusters wrote to them. Their restic keys left Doppler the same day.*
 
 #### setup-minio-users.sh
 
 Provisions the cluster's service user. **One user per cluster**,
-shared across all cluster backup tracks (Velero / Longhorn / Postgres /
-etcd-snapshots / …), `readwrite` policy.
+shared across all cluster backup tracks (Postgres / etcd-snapshots /
+Pocket-ID / …), `readwrite` policy.
 Per-track IAM scoping isn't worth the operational overhead for this
 scale. (`mssql-backups` is **not** a cluster track — only the legacy
 GIKS-v1 box, docker-prd-01, writes there.)
@@ -509,18 +509,14 @@ irreversible: both buckets are un-versioned with no object-lock.
 `etcd-<stamp>.db` namespace with no date prefixes, so `--expire-days` applies
 uniformly. Hourly-then-daily tiering would need a prune step in the CronJob.
 
-Velero / Longhorn / pvc-backups / pocket-id-litestream remain intentionally absent (and so
-does the orphan `loki-chunks`, which nothing writes) — Litestream prunes its
-own replicas, and **Velero, Longhorn and pvc-backups must NOT be given an age-based backstop**: Longhorn
-backups are incremental block chains where later backups reference blocks
-written by earlier ones, so expiring a base by age corrupts every surviving
-backup that depended on it, and Velero's TTL controller expects to own
-deletion. `pvc-backups` holds restic repositories: a pack is shared by every
-snapshot that references one of its blobs, and each repository's `config` and
-`keys/*` are written once at `restic init` and never rewritten, so an age rule
-deletes exactly the objects that make the repository openable, first. restic's
-`forget --prune` in the backup CronJob owns deletion there.
-`tests/test_minio_setup_scripts.py` fails if a `RULES` row targets any of the three.
+pocket-id-litestream remains intentionally absent (and so does the orphan `loki-chunks`, which
+nothing writes): Litestream prunes its own replicas. ⚠ **Never give a bucket whose client owns
+deletion an age-based backstop.** The Q170S1 era's three cases were Longhorn (incremental block
+chains, so expiring a base corrupts every later backup), Velero (its TTL controller) and
+`pvc-backups` (restic repositories, whose `config` and `keys/*` are the oldest objects, so an age
+rule deletes them first). All three buckets were deleted at the 2026-10-06 teardown.
+`tests/test_minio_setup_scripts.py` fails if a `RULES` row targets `loki-chunks` or
+`pocket-id-litestream`.
 
 #### setup-minio-encryption.sh
 
