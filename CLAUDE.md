@@ -21,17 +21,17 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 | [`guntars-rakitko/kube-infra`](https://github.com/guntars-rakitko/kube-infra) | Talos + Kubernetes clusters (prd/dev), Flux CD, workloads |
 | [`guntars-rakitko/mikrotik-infra`](https://github.com/guntars-rakitko/mikrotik-infra) | Router, switches, WiFi, LTE, VLANs, firewall, DHCP/DNS |
 | [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, SMB), MinIO, NUT server + UPS shutdown orchestrator, cluster-agent, wiki host (this repo). PXE retired 2026-09-23 |
-| [`guntars-rakitko/bios-config`](https://github.com/guntars-rakitko/bios-config) | ASUS Q170S1 BIOS settings (AMT, PXE, power, security) |
+| [`guntars-rakitko/bios-config`](https://github.com/guntars-rakitko/bios-config) | **Archived 2026-10-06** (read-only): ASUS Q170S1 BIOS settings (AMT, PXE, power, security). The Q170S1 nodes were retired and wiped at the MS-A2 teardown (kube-infra#1443) |
 | [`guntars-rakitko/wiki`](https://github.com/guntars-rakitko/wiki) | Internal MkDocs wiki at [wiki.w1.lv](https://wiki.w1.lv/) — mirrors docs from all above |
 
 **Always read the CLAUDE.md of every related repo before making cross-cutting changes.** Common shared concerns:
 - **IP plan / VLAN design** — canonical in `mikrotik-infra` (router is source of truth); referenced here
 - **Hardware inventory** — each repo describes its own devices; update all when adding/removing
-- **NUT / MinIO services** — live here on the NAS; referenced by `kube-infra`. (The PXE server that `bios-config` also used was retired 2026-09-23 — see § Planned Services.)
-- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*`, unread here since amtctl's retirement and read only by bios-config's AMT tools, was deleted 2026-10-06 (kube-infra#1443 § 3) with the rest of the Q170S1 estate's keys.)
+- **NUT / MinIO services** — live here on the NAS; referenced by `kube-infra`. (The PXE server that `bios-config`, archived 2026-10-06, also used was retired 2026-09-23 — see § Planned Services.)
+- **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*` was deleted 2026-10-06 (kube-infra#1443 § 3) with the rest of the Q170S1 estate's keys. It was unread here since amtctl's retirement, and read only by bios-config's AMT tools; bios-config was archived the same day.)
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
-Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,bios-config,wiki}`.
+Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,wiki}`.
 
 ---
 
@@ -50,7 +50,7 @@ edit the matching wiki page in the same commit set.
 | `apps/traefik/routes.yaml` (new admin UI route) | `docs/architecture/hostnames.md` (admin-plane table), `docs/architecture/tls-split-horizon.md` |
 | `config/tls.yaml` (cert config change) | `docs/architecture/tls-split-horizon.md` |
 | `docs/*.md` (any runbook) | _Auto-synced_ — see `wiki/sync-map.yaml` |
-| `docs/{pxe-operator,talos-updater-setup,bios-apply-pxe-setup}.md` | _Auto-synced_ — ⚠ **retirement tombstones since PXE was retired 2026-09-23.** Delete them only together with their `wiki/sync-map.yaml` mappings, `.gitignore` lines and `.pages` entries in one coordinated wiki change: a deleted source with a live mapping makes `sync_repos.py` fail hard. `apps/pxe/` and `config/talos.yaml` were deleted 2026-09-26 (pool-rebuild plan Task 9a); only these three tombstones remain. |
+| `docs/{pxe-operator,talos-updater-setup}.md` | _Auto-synced_ — ⚠ **retirement tombstones since PXE was retired 2026-09-23.** Delete them only together with their `wiki/sync-map.yaml` mappings, `.gitignore` lines and `.pages` entries in one coordinated wiki change: a deleted source with a live mapping makes `sync_repos.py` fail hard. `apps/pxe/` and `config/talos.yaml` were deleted 2026-09-26 (pool-rebuild plan Task 9a); only these two tombstones remain. The third, `docs/bios-apply-pxe-setup.md`, was deleted 2026-10-06 with its wiki mapping when bios-config was archived; the wiki keeps its last text at `docs/runbooks/_archive/bios-apply-pxe-setup.md`. |
 | `docs/verification.md` | _Auto-synced_ → `docs/reference/verification-matrix.md` |
 | Doppler `infrastructure/ops` (add/remove key) | `docs/reference/env-vars.md`, possibly `docs/architecture/secrets-flow.md` |
 | "Policy for adding new services" section (above) | `docs/architecture/tls-split-horizon.md` decision tree |
@@ -172,6 +172,9 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 > ⚠ MeshCentral and amtctl existed ONLY to KVM into the Q170S1 nodes over Intel
 > AMT, and the MS-A2 has **no IPMI / BMC / vPro / AMT** — they are unusable on
 > the new estate, not merely unused.
+> amtctl's last leftover, `apps/amtctl/` (`nodes.yaml`, kept only for
+> bios-config's AMT tools), was deleted 2026-10-06 when bios-config was archived:
+> `git show 2f0f76b:apps/amtctl/README.md`.
 > ⚠ The Traefik dashboard row was ALREADY stale: every Traefik dashboard in the
 > homelab was removed **2026-09-13**, so `traefik-nas.w1.lv` has not existed
 > since then. It sat here for ten days and caused a permanent false failure in

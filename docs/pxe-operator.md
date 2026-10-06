@@ -35,8 +35,9 @@ kube-infra `CLAUDE.md` § Install media describes this (rewritten 2026-09-25;
 until then its § PXE Boot still presented PXE as the install path).
 
 The other PXE menus (BIOS apply, utilities, live CDs, netboot) have no NAS
-replacement. The Q170S1 BIOS is applied from a USB stick built by
-`bios-config/usb/prepare-usb.sh` (see bios-config).
+replacement. The Q170S1 BIOS was applied from a USB stick built by
+`bios-config/usb/prepare-usb.sh` until the MS-A2 teardown retired and wiped
+the Q170S1 nodes (kube-infra#1443); bios-config was archived on 2026-10-06.
 
 ## Cleanup
 
