@@ -61,4 +61,4 @@ doppler setup --project infrastructure --config ops
 |---|---|
 | [kube-infra](https://github.com/guntars-rakitko/kube-infra) | Talos + Kube clusters, Flux, workloads |
 | [mikrotik-infra](https://github.com/guntars-rakitko/mikrotik-infra) | Router/switch/VLAN/firewall config |
-| [bios-config](https://github.com/guntars-rakitko/bios-config) | ASUS Q170S1 BIOS for Kube nodes |
+| [bios-config](https://github.com/guntars-rakitko/bios-config) | **Archived 2026-10-06**: ASUS Q170S1 BIOS for the retired Kube nodes |
