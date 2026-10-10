@@ -19,10 +19,11 @@ Grafana's database is not backed up, so a from-zero rebuild of a cluster loses
 the account: every post then gets 401 until it is re-minted (kube-infra
 CLAUDE.md § Post-bootstrap operator tasks).
 
-⚠ Never send `X-WEBAUTH-*` headers here. From 10.10.5.10, outside Grafana's
-`[auth.proxy]` whitelist (the pod CIDR), Grafana refuses them, and the agent's
-header path through the apiserver was the route #1366 closed (three other header
-routes stay open: kube-infra CLAUDE.md § SSO architecture).
+⚠ Never send `X-WEBAUTH-*` headers here. Grafana trusts no header since
+kube-infra#1399 step 2: `[auth.proxy]` is off on both clusters, and Grafana logs
+in through its own Pocket-ID client (kube-infra CLAUDE.md § SSO architecture).
+Before that, 10.10.5.10 was outside its whitelist (the pod CIDR), and the
+agent's header path through the apiserver was the route #1366 closed.
 
 A failure raises; `dispatch.dispatch` catches it, logs it and counts it
 (`cluster_agent_dispatch_errors_total{surface="grafana_annotation"}`, alert
@@ -41,8 +42,8 @@ A failure raises; `dispatch.dispatch` catches it, logs it and counts it
     apiserver drops `Authorization` after authenticating the caller.
   - The apiserver's services/proxy with `X-WEBAUTH-USER: cluster-agent`
     (2026-05-26, PR #42, until kube-infra#1366): it worked, and it was a
-    hole. Grafana's auth.proxy trusts that header from any pod-CIDR address,
-    the apiserver proxy arrives from one, and the header can name any user,
+    hole. Grafana's auth.proxy trusted that header from any pod-CIDR address,
+    the apiserver proxy arrives from one, and the header could name any user,
     `admin` included. So the "read-only" SA could act as Grafana Admin, and
     the header-created `cluster-agent` user itself was an Admin.
 """
