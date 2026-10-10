@@ -149,13 +149,15 @@ class Report(BaseModel):
 
 # ── P3: Log-pattern mining (2026-05-26) ────────────────────────────
 #
-# Extends Mode A's digest to surface logs containing errors/warnings
-# that didn't trigger an Alertmanager alert. Two flavors of signal:
+# Extends Mode A's digest to surface logs containing errors that
+# didn't trigger an Alertmanager alert. Two flavors of signal:
 #
-#   - ratio_outlier: namespace's 24h error/warn line count is ≥3× its
-#                    7d rolling baseline AND ≥50 lines absolute (so
-#                    a busy namespace getting busier shows up, but
-#                    "5 → 15 errors" doesn't).
+#   - ratio_outlier: namespace's 24h ERROR-LEVEL line count is ≥3× its
+#                    daily mean over the 6 days before AND ≥50 lines
+#                    absolute (so a busy namespace getting busier shows
+#                    up, but "5 → 15 errors" doesn't). Info/warn/debug
+#                    lines don't count (2026-10-10: digest_aggregator
+#                    _ERROR_LINE_FILTER).
 #
 #   - tripwire:      one of ~10 hard-coded regexes matched (panic,
 #                    OOMKilled, CrashLoopBackOff, certificate expired,

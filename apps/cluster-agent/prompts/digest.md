@@ -189,12 +189,16 @@ if you only watched Alertmanager. Two flavors:
 - **`tripwire`** patterns matched one of a small hard-coded list
   (panic / fatal / OOMKilled / CrashLoopBackOff / certificate
   expired / etc.). One occurrence is enough to surface. The
-  `matched_tripwire` field says which tripwire fired, and
-  `sample_lines` carries up to 3 redacted log lines.
-- **`ratio_outlier`** patterns are namespaces whose 24h error/warn
-  log volume is ≥ 3× their 7-day baseline AND ≥ 50 lines absolute.
-  No sample lines (just statistical signal); the LLM can elevate
-  to a Finding if the ratio is striking.
+  `matched_tripwire` field says which tripwire fired, `count_24h`
+  is the namespace's true count in the window, and `sample_lines`
+  carries up to 3 redacted log lines, the newest.
+- **`ratio_outlier`** patterns are namespaces whose 24h count of
+  ERROR-LEVEL log lines is ≥ 3× their daily mean over the 6 days
+  before AND ≥ 50 lines absolute. Info, warn and debug lines are not
+  counted, and Postgres records count by their own severity. A
+  namespace younger than 3 days is never one. No sample lines (just
+  statistical signal); the LLM can elevate to a Finding if the
+  ratio is striking.
 
 Selection guidance:
 - A tripwire match is almost always worth at least a Finding with

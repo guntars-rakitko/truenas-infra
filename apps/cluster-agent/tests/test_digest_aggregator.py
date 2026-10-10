@@ -159,284 +159,247 @@ def test_enrich_with_annotations_populates_summary():
 # ── P3: Log-pattern aggregator tests ──────────────────────────────
 
 
-def _loki_metric_response(*pairs) -> dict:
-    """Build a Loki metric-form (`matrix`-shaped) response from
-    (namespace, total_count) pairs. The aggregator only cares about
-    the sum, not bucket distribution, so we put it all in one [ts, v]."""
-    now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
-    return {
-        "data": {
-            "resultType": "matrix",
-            "result": [
-                {"metric": {"namespace": ns}, "values": [[now_ts, str(count)]]}
-                for ns, count in pairs
-            ],
-        },
-    }
+# ── P3 log-pattern mining ────────────────────────────────────────────
+#
+# The aggregator's Loki calls are answered by _SimLoki, which evaluates
+# `count_over_time(…[Nh])` over hourly data the way Loki does, INCLUDING
+# `align_queries_with_step: true` (kube-infra loki.yaml): start and end are
+# rounded down to a multiple of the step before the points are laid out.
+# That rounding is what made the old 24h-step query count two days, so a
+# regression to it fails here, not only in production.
+
+_NOW = dt.datetime(2026, 10, 11, 3, 1, 30, tzinfo=dt.timezone.utc)
 
 
-def _loki_streams_response(*streams) -> dict:
-    """Build a Loki streams-shaped response from (namespace, [lines]) tuples."""
-    ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
-    return {
-        "data": {
-            "resultType": "streams",
-            "result": [
-                {
-                    "stream": {"namespace": ns},
-                    "values": [[ts, line] for line in lines],
-                }
-                for ns, lines in streams
-            ],
-        },
-    }
+def _hours_back(n: int) -> dt.datetime:
+    """The hour that ends n hours before the window's end (0 = the last full
+    hour before _NOW: the window is 0..23, its baseline 24..167)."""
+    return _NOW.replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=n)
 
 
-def test_aggregate_log_patterns_ratio_outlier_surfaces():
-    """A namespace with 24h count ≥ 3× baseline AND ≥ 50 lines is surfaced
-    as a ratio_outlier LogPattern."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+class _SimLoki:
+    """Hourly data per (query kind, namespace): {kind: {ns: {hour_end: count}}}.
 
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        # Heuristic: shorter window = "recent" response; longer = baseline
-        window_seconds = (end - start).total_seconds()
-        if window_seconds <= 24 * 3600 + 60:
-            # Recent 24h: pocket-id has a big spike, velero is normal
-            return _loki_metric_response(
-                ("pocket-id", 500),    # 500 errors in last 24h
-                ("velero", 30),        # below floor, ignored
-                ("flux-system", 60),   # at floor; ratio depends on baseline
-            )
-        else:
-            # Baseline 6 days at 1 bucket per day → 6 datapoints per ns
-            now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
-            return {
-                "data": {
-                    "result": [
-                        {"metric": {"namespace": "pocket-id"},
-                         "values": [[now_ts, "50"]] * 6},   # avg 50/day
-                        {"metric": {"namespace": "velero"},
-                         "values": [[now_ts, "20"]] * 6},
-                        {"metric": {"namespace": "flux-system"},
-                         "values": [[now_ts, "55"]] * 6},   # avg 55/day; ratio 60/55 ≈ 1.09
-                    ],
-                },
-            }
+    A query's kind is "errors" (_ERROR_LINE_FILTER), "postgres"
+    (_POSTGRES_ERROR_FILTER) or a tripwire label, found from its filter.
+    `samples[(label, ns)]` answers the per-namespace sample queries.
+    `raise_on` holds kinds (or "samples") whose queries raise."""
 
-    def streams_query(cluster, query, *, start, end, limit):
-        return _loki_streams_response()   # no tripwires fire in this test
+    def __init__(self, hourly=None, samples=None, raise_on=()):
+        self.hourly = hourly or {}
+        self.samples = samples or {}
+        self.raise_on = set(raise_on)
+        self.metric_calls: list[tuple[str, dt.datetime, dt.datetime, int]] = []
+        self.stream_calls: list[tuple[str, dt.datetime, dt.datetime, int]] = []
 
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-    )
-    # pocket-id: 500 / 50 = 10× → ratio_outlier
-    # velero: count below 50 floor → skipped
-    # flux-system: ratio 1.09 (below 3.0) → skipped
-    assert len(patterns) == 1
-    assert patterns[0].namespace == "pocket-id"
-    assert patterns[0].chronicity == "ratio_outlier"
-    assert patterns[0].count_24h == 500
-    assert patterns[0].ratio_vs_baseline == 10.0
+    @staticmethod
+    def kind_of(query: str) -> str:
+        from cluster_agent.modes import digest_aggregator as da
+        if da._POSTGRES_ERROR_FILTER in query:
+            return "postgres"
+        if da._ERROR_LINE_FILTER in query:
+            return "errors"
+        for label, line_filter in da._TRIPWIRE_PATTERNS:
+            if line_filter in query:
+                return label
+        raise AssertionError(f"unknown query: {query[:120]}")
 
-
-def test_aggregate_log_patterns_tripwire_surfaces_one_occurrence():
-    """A tripwire pattern (e.g. panic) is surfaced even on a single
-    occurrence — no ratio/floor gating for tripwires."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        # No statistical outliers
-        return _loki_metric_response()
-
-    panic_count = {"count": 0}
-
-    def streams_query(cluster, query, *, start, end, limit):
-        # Match only when LogQL includes "panic"
-        if "panic" in query.lower():
-            panic_count["count"] += 1
-            ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
-            return {
-                "data": {
-                    "result": [{
-                        "stream": {"namespace": "flux-system"},
-                        "values": [[ts, "runtime error: invalid memory address — panic"]],
-                    }],
-                },
-            }
-        return _loki_streams_response()
-
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-    )
-    tripwires = [p for p in patterns if p.chronicity == "tripwire"]
-    assert any(p.matched_tripwire == "panic" for p in tripwires)
-    assert any(p.namespace == "flux-system" for p in tripwires)
-    panic_pattern = next(p for p in tripwires if p.matched_tripwire == "panic")
-    assert panic_pattern.count_24h == 1
-    assert len(panic_pattern.sample_lines) == 1
-
-
-def test_aggregate_log_patterns_redacts_secrets_in_sample_lines():
-    """Sample lines containing API keys / passwords / bearer tokens are
-    redacted before being included in a LogPattern."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        return _loki_metric_response()
-
-    def streams_query(cluster, query, *, start, end, limit):
-        if "panic" in query.lower():
-            ts = str(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1e9))
-            return {
-                "data": {
-                    "result": [{
-                        "stream": {"namespace": "secret-leaker"},
-                        "values": [
-                            [ts, 'panic: AUTH_TOKEN=sk-ant-api03-supersecretvalue123 failed'],
-                            [ts, 'panic: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig'],
-                            [ts, 'panic: password=hunter2 rejected'],
-                        ],
-                    }],
-                },
-            }
-        return _loki_streams_response()
-
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-    )
-    panic = next(p for p in patterns if p.matched_tripwire == "panic")
-    joined = " ".join(panic.sample_lines)
-    # Original secret values must NOT appear; [REDACTED] should be present
-    assert "sk-ant-api03-supersecretvalue123" not in joined
-    assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig" not in joined
-    assert "hunter2" not in joined
-    assert "[REDACTED]" in joined
-
-
-def test_aggregate_log_patterns_quiet_cluster_returns_empty():
-    """When no outliers exceed thresholds and no tripwires match,
-    the aggregator returns an empty list (no false positives)."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        return _loki_metric_response(("flux-system", 10))   # below floor
-
-    def streams_query(cluster, query, *, start, end, limit):
-        return _loki_streams_response()
-
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-    )
-    assert patterns == []
-
-
-def test_aggregate_log_patterns_tool_failure_does_not_abort():
-    """If the Loki metric query raises, the aggregator returns an empty
-    list (or just tripwires) rather than blowing up the whole digest."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        raise RuntimeError("loki backend not reachable")
-
-    def streams_query(cluster, query, *, start, end, limit):
-        return _loki_streams_response()
-
-    # Should not raise
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-    )
-    assert patterns == []
-
-
-def test_aggregate_log_patterns_records_every_failed_query():
-    """A failed Loki query is NOT a clean result. Each failure must be
-    named in the caller's `failures` list so the summary can say which
-    signals went unchecked (2026-09-26: 8 of dev's 10 tripwires timed
-    out and nothing outside the container log said so)."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        raise RuntimeError("loki backend not reachable")
-
-    def streams_query(cluster, query, *, start, end, limit):
-        if '"OOMKilled"' in query or '"x509"' in query:
+    def metric(self, cluster, query, *, start, end, step_seconds):
+        self.metric_calls.append((query, start, end, step_seconds))
+        kind = self.kind_of(query)
+        if kind in self.raise_on:
             raise TimeoutError("read timed out")
-        return _loki_streams_response()
+        rng = int(re.search(r"\[(\d+)h\]\)\)$", query).group(1)) * 3600
+        step = dt.timedelta(seconds=step_seconds)
+        epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+        t = start - (start - epoch) % step          # align_queries_with_step
+        last = end - (end - epoch) % step
+        result = []
+        for ns, hours in self.hourly.get(kind, {}).items():
+            values = []
+            while t <= last:
+                n = sum(c for h, c in hours.items() if t - dt.timedelta(seconds=rng) < h <= t)
+                if n:
+                    values.append([t.timestamp(), str(n)])
+                t += step
+            t = start - (start - epoch) % step
+            if values:
+                result.append({"metric": {"namespace": ns}, "values": values})
+        return {"data": {"resultType": "matrix", "result": result}}
 
-    failures: list[str] = []
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-        failures=failures,
+    def streams(self, cluster, query, *, start, end, limit):
+        self.stream_calls.append((query, start, end, limit))
+        if "samples" in self.raise_on:
+            raise TimeoutError("read timed out")
+        ns = re.match(r'\{namespace="([^"]+)"\}', query).group(1)
+        lines = self.samples.get((self.kind_of(query), ns), [])[:limit]
+        ts = str(int(_NOW.timestamp() * 1e9))
+        result = [{"stream": {"namespace": ns}, "values": [[ts, l] for l in lines]}] if lines else []
+        return {"data": {"resultType": "streams", "result": result}}
+
+
+def _run(sim, **kw):
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+    return aggregate_log_patterns(
+        "dev", loki_query_fn=sim.streams, loki_metric_query_fn=sim.metric, now=_NOW, **kw,
     )
-    assert patterns == []
-    assert failures == [
-        "ratio_outlier: RuntimeError",
-        "tripwire OOMKilled: TimeoutError",
-        "tripwire x509_expired: TimeoutError",
+
+
+def _spread(total: int, first: int, last: int) -> dict[dt.datetime, int]:
+    """`total` lines evenly over the hours ending `first`..`last` hours back."""
+    hours = list(range(first, last + 1))
+    out = {_hours_back(h): total // len(hours) for h in hours}
+    out[_hours_back(first)] += total - sum(out.values())
+    return out
+
+
+def test_hour_windows_are_aligned_and_exact():
+    from cluster_agent.modes.digest_aggregator import _hour_windows
+    recent_start, end, baseline_start, baseline_end = _hour_windows(_NOW, window_hours=24, baseline_days=7)
+    utc = dt.timezone.utc
+    assert end == dt.datetime(2026, 10, 11, 3, 0, tzinfo=utc)
+    assert recent_start == dt.datetime(2026, 10, 10, 4, 0, tzinfo=utc)     # 24 points
+    assert baseline_end == dt.datetime(2026, 10, 10, 3, 0, tzinfo=utc)
+    assert baseline_start == dt.datetime(2026, 10, 4, 4, 0, tzinfo=utc)    # 144 points
+
+
+def test_ratio_counts_each_window_once():
+    """The window is the 24 full hours before the run, counted once: until
+    2026-10-10 a 24h-step query, rounded to two UTC midnights by Loki, added
+    two days (#1534/#1537: 43,307 for 21,742)."""
+    sim = _SimLoki({"errors": {
+        "kyverno": {**_spread(2400, 0, 23),      # the window: 100/h
+                    **_spread(14400, 24, 167)},  # the six days before: 100/h
+    }})
+    failures: list[str] = []
+    patterns = _run(sim, failures=failures, min_count_floor=1, ratio_threshold=0.5)
+    assert failures == []
+    (p,) = patterns
+    assert p.count_24h == 2400
+    assert p.baseline_mean_24h == 2400.0
+    assert p.ratio_vs_baseline == 1.0
+    assert {(c[3], c[1].minute, c[2].minute) for c in sim.metric_calls} == {(3600, 0, 0)}
+
+
+def test_ratio_outlier_surfaces_against_a_daily_baseline():
+    """A namespace at ≥ 3× its daily baseline and ≥ 50 lines surfaces;
+    below the floor or the ratio, it does not."""
+    sim = _SimLoki({
+        "errors": {
+            "pocket-id": {**_spread(500, 0, 23), **_spread(300, 24, 167)},    # 500 vs 50/day
+            "flux-system": {**_spread(60, 0, 23), **_spread(330, 24, 167)},   # 60 vs 55/day
+            "quiet": _spread(30, 0, 23),                                      # under the floor
+        },
+        "postgres": {"pocket-id": _spread(100, 0, 23)},                       # summed in
+    })
+    patterns = _run(sim)
+    assert [(p.namespace, p.chronicity, p.count_24h, p.ratio_vs_baseline) for p in patterns] == [
+        ("pocket-id", "ratio_outlier", 600, 12.0),
     ]
 
 
-def test_aggregate_log_patterns_records_nothing_on_success():
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+def test_a_new_namespace_is_no_ratio_outlier_until_it_has_a_baseline():
+    """#1486: on the SMS gateway's first day, 459 lines against a baseline
+    of 0 read as 459×. A namespace needs `min_history_days` of baseline."""
+    sim = _SimLoki({"errors": {
+        "sms-gateway": _spread(459, 0, 23),
+        "five-days-old": {**_spread(500, 0, 23), **_spread(400, 24, 119)},
+        "old-and-quiet": _spread(459, 0, 23),
+    }})
+    window_start = _hours_back(24)
+    patterns = _run(sim, namespace_created={
+        "sms-gateway": window_start - dt.timedelta(days=1),
+        "five-days-old": window_start - dt.timedelta(days=4),
+        "old-and-quiet": window_start - dt.timedelta(days=30),
+    })
+    got = {p.namespace: (p.baseline_mean_24h, p.ratio_vs_baseline) for p in patterns}
+    assert "sms-gateway" not in got
+    # Judged on the 4 baseline days it existed (400/4 = 100/day), not 6.
+    assert got["five-days-old"] == (100.0, 5.0)
+    # An old namespace that never logged errors still surfaces when it does.
+    assert got["old-and-quiet"] == (0.0, 459.0)
 
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        return _loki_metric_response(("flux-system", 10))
 
-    def streams_query(cluster, query, *, start, end, limit):
-        return _loki_streams_response()
+def test_unknown_namespace_age_uses_the_full_window():
+    sim = _SimLoki({"errors": {"x": _spread(459, 0, 23)}})
+    assert [p.namespace for p in _run(sim, namespace_created={})] == ["x"]
+    assert [p.namespace for p in _run(sim, namespace_created=None)] == ["x"]
 
-    failures: list[str] = []
-    aggregate_log_patterns(
-        "dev", loki_query_fn=streams_query, loki_metric_query_fn=metric_query,
-        failures=failures,
+
+def test_tripwire_counts_are_true_counts_with_samples():
+    """The count is the namespace's real count (a metric query), not the
+    number of lines a 15-line streams query returned (#1311/#1312/#1370's
+    "15 fatal"; "evicted" was really 216)."""
+    sim = _SimLoki(
+        {"evicted": {"giks": _spread(216, 1, 20)}, "panic": {"flux-system": {_hours_back(3): 1}}},
+        samples={("evicted", "giks"): ["Evicted pod a", "Evicted pod b", "Evicted pod c", "Evicted pod d"],
+                 ("panic", "flux-system"): ["panic: runtime error: invalid memory address"]},
     )
+    patterns = _run(sim)
+    got = {(p.matched_tripwire, p.namespace): p for p in patterns}
+    assert got[("evicted", "giks")].count_24h == 216
+    assert got[("evicted", "giks")].sample_lines == ["Evicted pod a", "Evicted pod b", "Evicted pod c"]
+    panic = got[("panic", "flux-system")]
+    assert (panic.count_24h, panic.level, panic.sample_lines) == (1, "panic", ["panic: runtime error: invalid memory address"])
+    assert (panic.first_seen_at, panic.last_seen_at) == (_hours_back(4), _hours_back(3))
+    # One narrow query per kept pattern: its namespace, `limit` lines.
+    assert sorted((q.split("}")[0], limit) for q, _s, _e, limit in sim.stream_calls) == [
+        ('{namespace="flux-system"', 3), ('{namespace="giks"', 3)]
+
+
+def test_samples_are_fetched_only_for_kept_patterns_and_redacted():
+    sim = _SimLoki(
+        {"connection_refused": {f"ns-{i:02d}": {_hours_back(2): 20 - i} for i in range(15)}},
+        samples={("connection_refused", "ns-00"): ["connection refused, password=hunter2"]},
+    )
+    patterns = _run(sim, max_patterns=10)
+    assert len(patterns) == 10 and len(sim.stream_calls) == 10
+    assert patterns[0].namespace == "ns-00"                        # highest count first
+    assert "hunter2" not in patterns[0].sample_lines[0]
+
+
+def test_ratio_outliers_keep_their_slots_on_a_noisy_tripwire_day():
+    """On a restart day the probe-failure tripwires alone filled all ten
+    places (msa2-dev, 2026-10-10), so no ratio outlier reached the LLM."""
+    sim = _SimLoki({
+        "connection_refused": {f"ns-{i:02d}": {_hours_back(2): 5} for i in range(12)},
+        "errors": {"cnpg-system": _spread(900, 0, 23), "monitoring": _spread(600, 0, 23)},
+    })
+    patterns = _run(sim, max_patterns=10, ratio_slots=3)
+    assert [p.chronicity for p in patterns].count("tripwire") == 8
+    assert [p.namespace for p in patterns if p.chronicity == "ratio_outlier"] == ["cnpg-system", "monitoring"]
+
+
+def test_a_quiet_cluster_returns_nothing_and_records_nothing():
+    sim = _SimLoki({"errors": {"flux-system": _spread(10, 0, 23)}})
+    failures: list[str] = []
+    assert _run(sim, failures=failures) == []
     assert failures == []
 
 
-def test_aggregate_log_patterns_caps_at_max_patterns():
-    """When more outliers + tripwires would exist than max_patterns,
-    the list is truncated. Tripwires take priority (sorted first)."""
-    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
-
-    def metric_query(cluster, query, *, start, end, step_seconds):
-        if (end - start).total_seconds() <= 24 * 3600 + 60:
-            return _loki_metric_response(
-                *[(f"ns-{i}", 1000) for i in range(20)],   # 20 ratio outliers
-            )
-        else:
-            now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
-            return {
-                "data": {
-                    "result": [
-                        {"metric": {"namespace": f"ns-{i}"},
-                         "values": [[now_ts, "10"]] * 6}    # baseline 10/day → ratio 100x
-                        for i in range(20)
-                    ],
-                },
-            }
-
-    def streams_query(cluster, query, *, start, end, limit):
-        return _loki_streams_response()
-
-    patterns = aggregate_log_patterns(
-        "dev",
-        loki_query_fn=streams_query,
-        loki_metric_query_fn=metric_query,
-        max_patterns=5,
+def test_every_failed_query_is_recorded_and_the_rest_still_run():
+    """A failed query is NOT a clean result (2026-09-26: 8 of dev's 10
+    tripwires timed out and nothing outside the container log said so)."""
+    sim = _SimLoki(
+        {"panic": {"giks": {_hours_back(1): 2}}},
+        raise_on={"errors", "OOMKilled", "x509_expired", "samples"},
     )
-    assert len(patterns) == 5
+    failures: list[str] = []
+    patterns = _run(sim, failures=failures)
+    assert [(p.matched_tripwire, p.namespace, p.count_24h, p.sample_lines) for p in patterns] == [
+        ("panic", "giks", 2, [])]
+    assert failures == [
+        "ratio_outlier: TimeoutError",
+        "tripwire OOMKilled: TimeoutError",
+        "tripwire x509_expired: TimeoutError",
+        "tripwire panic samples giks: TimeoutError",
+    ]
+
+
+def test_a_namespace_that_is_not_a_dns_label_never_reaches_a_selector():
+    sim = _SimLoki({"fatal": {'x"} or {namespace=~".+': {_hours_back(1): 1}}})
+    (p,) = _run(sim)
+    assert p.sample_lines == [] and sim.stream_calls == []
 
 
 def test_tripwire_logql_excludes_audit_k8s_io_events():
@@ -559,6 +522,140 @@ def test_every_tripwire_carries_every_record_exclusion():
             assert part in logql, f"tripwire {label!r} is missing {part!r}"
 
 
+
+# ── The ratio outlier's filters, on real lines (2026-10-10) ────────────
+# Each line was read from msa2-dev / msa2-prd Loki on 2026-10-10. Where a
+# format had no below-error line naming an error in 72h, the line is that
+# component's real line with only its level token swapped (marked "swap").
+
+_KYVERNO_ERR = (
+    '\x1b[90m2026-10-10T15:45:06Z\x1b[0m \x1b[31mERR\x1b[0m \x1b[1mgithub.com/kyverno/kyverno/pkg/'
+    'controllers/report/aggregate/controller.go:844\x1b[0m\x1b[36m >\x1b[0m \x1b[1mfailed to delete '
+    'ephemeral report\x1b[0m \x1b[36merror=\x1b[0m\x1b[31m\x1b[1m"ephemeralreports.reports.kyverno.io '
+    '\\"f4ff3119\\" not found"\x1b[0m\x1b[0m'
+)
+_DOPPLER_ERROR = (
+    '2026-10-10T10:39:27Z\tERROR\tcontrollers.DopplerSecret\tUnable to set reconcile deployments '
+    'condition\t{"dopplersecret": "doppler-operator-system/healthchecks-watchdog", "error": '
+    '"client rate limiter Wait returned an error: context canceled"}'
+)
+_PG_LOG_RECORD = (
+    '{"level":"info","ts":"2026-10-10T18:35:39.768483209Z","logger":"postgres","msg":"record",'
+    '"logging_pod":"giks-1","record":{"log_time":"2026-10-10 18:35:39.768 UTC","process_id":"38",'
+    '"error_severity":"LOG","sql_state_code":"00000","message":"checkpoint complete: wrote 529 '
+    'buffers (0.1%)"}}'
+)
+_CNPG_EXPORTER_DURING_SHUTDOWN = (
+    '{"level":"error","ts":"2026-10-10T14:46:12Z","msg":"Error collecting user query","query":'
+    '"pg_settings","logging_pod":"w1-1","targetDatabase":"webtracker","error":"failed to connect to '
+    '`user=cnpg_metrics_exporter database=webtracker`: /controller/run/.s.PGSQL.5432 (/controller/run): '
+    'server error: FATAL: the database system is shutting down (SQLSTATE 57P03)"}'
+)
+
+
+def _pg_record(severity: str, code: str, message: str) -> str:
+    return (_PG_LOG_RECORD
+            .replace('"error_severity":"LOG","sql_state_code":"00000"',
+                     f'"error_severity":"{severity}","sql_state_code":"{code}"')
+            .replace("checkpoint complete: wrote 529 buffers (0.1%)", message))
+
+
+_BELOW_ERROR_LINES = [
+    pytest.param(
+        '\x1b[90m2026-10-09T12:04:58Z\x1b[0m \x1b[32mINF\x1b[0m \x1b[1mk8s.io/client-go@v0.36.3/rest/'
+        'warnings.go:107\x1b[0m\x1b[36m >\x1b[0m \x1b[1mWarning: kyverno.io/v1 ClusterPolicy is '
+        'deprecated and will be removed in a future release\x1b[0m',
+        id="kyverno-deprecation-warning-1534"),
+    pytest.param(_KYVERNO_ERR.replace("\x1b[31mERR", "\x1b[32mINF"), id="kyverno-INF-swap"),
+    pytest.param(
+        'W1010 18:46:44.683250       1 logging.go:55] [core] [Channel #5263 SubChannel #5264] grpc: '
+        'addrConn.createTransport failed to connect to {Addr: "127.0.0.1:2379", }. Err: connection '
+        'error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:2379: operation was canceled"',
+        id="klog-W-apiserver"),
+    pytest.param(
+        'I1010 18:46:44.683250       1 logging.go:55] [core] grpc: addrConn.createTransport failed to '
+        'connect. Err: connection error: desc = "transport: Error while dialing"',
+        id="klog-I-swap"),
+    pytest.param(
+        'level=info ts=2026-10-10T14:49:41.863869326Z caller=ingester.go:603 component=ingester '
+        'msg="WAL segment recovery finished" elapsed=61.934734ms errors=true',
+        id="logfmt-info-loki"),
+    pytest.param(
+        '{"level":"info","ts":"2026-10-10T14:49:45.966251313Z","msg":"DB not available, will retry",'
+        '"logger":"instance-manager","logging_pod":"w1-1","err":"failed to connect to `user=postgres '
+        'database=postgres`: dial error: dial unix /controller/run/.s.PGSQL.5432: connect: no such file"}',
+        id="json-info-cnpg-instance-manager"),
+    pytest.param(_DOPPLER_ERROR.replace("\tERROR\t", "\tINFO\t"), id="zap-console-INFO-swap"),
+    pytest.param('[WORKER 2026-10-10 12:00:00Z INFO ExecutionContext]   "errorMessages": [],',
+                 id="runner-INFO-diagnostics"),
+    pytest.param("[18:00:01 INF] Executed DbCommand (3ms) [Parameters=[@errorCutoff='?' (DbType = "
+                 "DateTime)], CommandType='Text', CommandTimeout='30']", id="serilog-INF-giks"),
+    pytest.param('{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Request","verb":"update",'
+                 '"responseStatus":{"code":409,"message":"error"}}', id="apiserver-audit-record"),
+    pytest.param(_pg_record("ERROR", "42P01", 'relation "x" does not exist'),
+                 id="postgres-record-is-counted-by-its-own-query"),
+    pytest.param(_CNPG_EXPORTER_DURING_SHUTDOWN, id="cnpg-exporter-during-a-planned-shutdown"),
+]
+
+_ERROR_LINES = [
+    pytest.param(_KYVERNO_ERR, id="kyverno-ERR"),
+    pytest.param('E1010 14:23:24.069551       1 dispatcher.go:214] "Unhandled Error" err="failed calling '
+                 'webhook \\"prometheusrulevalidate.monitoring.coreos.com\\": failed to call webhook"',
+                 id="klog-E-apiserver"),
+    pytest.param('level=error ts=2026-09-26T03:00:00Z caller=flush.go:143 org_id=fake msg="failed to '
+                 'flush" err="dial tcp 10.10.10.10:9000: connect: connection refused"', id="logfmt-error"),
+    pytest.param(_DOPPLER_ERROR, id="zap-console-ERROR-doppler"),
+    pytest.param('{"level":"error","ts":"2026-09-26T08:50:29Z","logger":"reconciler.scan job","msg":'
+                 '"Scan job container","status.message":"FATAL\\tFatal error\\trun error"}', id="json-error"),
+    pytest.param('[RUNNER 2026-10-10 14:21:03Z ERR  BrokerServer]    at System.Net.Sockets.Socket.'
+                 'AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken token)',
+                 id="runner-ERR"),
+    pytest.param('{"action":"Resource Passed","eventRV":"8424708","kind":"ImageValidatingPolicy","msg":'
+                 '"Deployment sms-gateway/app: [evaluation] error; failed to evaluate policy: Get '
+                 '\\"https://ghcr.io/v2/\\": context canceled","reason":"PolicyViolation","type":"Warning"}',
+                 id="kubernetes-warning-event"),
+    pytest.param("panic: runtime error: invalid memory address or nil pointer dereference", id="go-panic"),
+    pytest.param("fatal error: concurrent map writes", id="go-fatal-error"),
+]
+
+
+@pytest.mark.parametrize("line", _BELOW_ERROR_LINES)
+def test_error_line_filter_drops_lines_below_error(line):
+    from cluster_agent.modes.digest_aggregator import _ERROR_LINE_FILTER
+    assert not _logql_line_filter_matches(_ERROR_LINE_FILTER, line), line[:90]
+
+
+_OLD_RATIO_KEYWORDS = (
+    '|= "error" or "Error" or "ERROR" or "warn" or "Warn" or "WARN" or "panic" or "Panic" '
+    'or "PANIC" or "fatal" or "Fatal" or "FATAL"'
+)
+
+
+@pytest.mark.parametrize("line", _BELOW_ERROR_LINES)
+def test_the_old_ratio_filter_counted_each_below_error_line(line):
+    """Positive control for the drop test: until 2026-10-10 every one of these
+    counted as an error, so a pass above means the new filter dropped it."""
+    assert _logql_line_filter_matches(_OLD_RATIO_KEYWORDS, line), line[:90]
+
+
+@pytest.mark.parametrize("line", _ERROR_LINES)
+def test_error_line_filter_keeps_error_lines(line):
+    from cluster_agent.modes.digest_aggregator import _ERROR_LINE_FILTER
+    assert _logql_line_filter_matches(_ERROR_LINE_FILTER, line), line[:90]
+
+
+def test_postgres_filter_judges_a_record_by_its_own_severity():
+    """Every Postgres record's wrapper says `"level":"info"` and carries the key
+    "error_severity" (#1487: every checkpoint counted as an error)."""
+    from cluster_agent.modes.digest_aggregator import _POSTGRES_ERROR_FILTER as f
+    assert _logql_line_filter_matches(f, _pg_record("FATAL", "28P01", 'password authentication failed for user "giks"'))
+    assert _logql_line_filter_matches(f, _pg_record("ERROR", "42P01", 'relation "x" does not exist'))
+    assert not _logql_line_filter_matches(f, _PG_LOG_RECORD)
+    assert not _logql_line_filter_matches(f, _pg_record("FATAL", "57P01", "terminating connection due to administrator command"))
+    assert not _logql_line_filter_matches(f, _pg_record("FATAL", "57P03", "the database system is starting up"))
+    assert not _logql_line_filter_matches(f, _KYVERNO_ERR)
+
+
 # (tripwire label, log line) pairs that are RECORDS of a keyword and must
 # NOT surface. Shapes copied from Loki, 2026-09-26.
 _RECORD_LINES = [
@@ -621,6 +718,22 @@ _RECORD_LINES = [
         '{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata",'
         '"requestURI":"/api/v1/pods","reason":"OOMKilled"}'
     ), id="apiserver-audit-record"),
+    # kube-apiserver's post-timeout notice: nothing panicked (#1535, #1536).
+    pytest.param("panic", (
+        'E1010 14:23:24.069551       1 finisher.go:175] "Unhandled Error" err="FinishRequest: '
+        'post-timeout activity - time-elapsed: 1.246373ms, panicked: false, err: <nil>"'
+    ), id="apiserver-post-timeout-panicked-false"),
+    # Grafana's search-index cache, 216 a day per cluster (2026-10-10).
+    pytest.param("evicted", (
+        'logger=bleve-backend t=2026-10-10T16:59:35.40208982Z level=info msg="index evicted from '
+        'cache" reason=expired key="{Namespace:default Group:folder.grafana.app Resource:folders}"'
+    ), id="grafana-index-cache-eviction"),
+    # What every planned Postgres restart writes (#1438, #1439, #1447, #1509).
+    pytest.param("fatal", _pg_record("FATAL", "57P03", "the database system is starting up"),
+                 id="postgres-starting-up-57P03"),
+    pytest.param("fatal", _pg_record("FATAL", "57P01", "terminating connection due to administrator command"),
+                 id="postgres-admin-shutdown-57P01"),
+    pytest.param("fatal", _CNPG_EXPORTER_DURING_SHUTDOWN, id="cnpg-exporter-quoting-57P03"),
 ]
 
 # (tripwire label, log line) pairs that are real EVENTS and must still
@@ -661,6 +774,17 @@ _EVENT_LINES = [
     pytest.param("connection_refused",
                  "[RUNNER 2026-09-24 23:30:30Z ERR  JobDispatcher] dial tcp: connection refused",
                  id="runner-ERR-line"),
+    # A Postgres FATAL that is no planned restart must still match.
+    pytest.param("fatal", _pg_record("FATAL", "28P01", 'password authentication failed for user "giks"'),
+                 id="postgres-auth-failure-28P01"),
+    pytest.param("evicted", (
+        '{"count":1,"eventRV":"8424999","kind":"Pod","msg":"The node was low on resource: memory.",'
+        '"name":"jobserver-6d9f","reason":"Evicted","type":"Warning"}'
+    ), id="kubernetes-evicted-event"),
+    pytest.param("panic", (
+        'E1010 14:23:24.069551       1 runtime.go:79] Observed a panic: "invalid memory address or '
+        'nil pointer dereference" (runtime error: invalid memory address)'
+    ), id="klog-observed-panic"),
 ]
 
 
