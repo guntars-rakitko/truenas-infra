@@ -21,7 +21,7 @@
 name = "cluster-agent"
 version = "0.1.0"
 description = "LLM-driven SRE assistant for homelab K8s clusters"
-requires-python = ">=3.13"
+requires-python = ">=3.14.8"
 dependencies = [
     "fastapi>=0.143.0",
     "uvicorn[standard]>=0.54.0",

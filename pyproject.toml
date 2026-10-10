@@ -7,7 +7,7 @@ description = "API-driven TrueNAS Community Edition 25.10 configuration for the 
 # Python" rationale never actually worked once that dep was added — macOS
 # system Python is 3.9, which the client rejects anyway. Use any 3.10+ (the
 # operator venv runs 3.14; `uv venv --python 3.12`+ all fine).
-requires-python = ">=3.10"
+requires-python = ">=3.14.8"
 readme = "README.md"
 license = { text = "MIT" }
 
