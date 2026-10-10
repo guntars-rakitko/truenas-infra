@@ -683,13 +683,49 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    scan on every alert-quiet day.
 2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
    alerts (not for self_healed/transient — presumed noise).
-3. **P3: Mines Loki for notable log patterns** — namespaces with
-   24h error/warn line count ≥ 3× their 7d baseline (`ratio_outlier`),
+3. **P3: Mines Loki for notable log patterns** — namespaces whose 24h
+   count of **error-level** lines is ≥ 3× their daily mean over the 6
+   days before (`ratio_outlier`),
    PLUS 10 hard-coded tripwire regexes that surface on any occurrence
    (`panic`, `fatal`, `OOMKilled`, `CrashLoopBackOff`, `ImagePullBackOff`,
    `certificate_expired`, `x509_expired`, `connection_refused`,
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
+   **How it counts (since 2026-10-10, kube-infra #1534/#1537/#1487):**
+   - **Every count is an hourly-step range query over hour-aligned
+     windows**, summed per namespace (`_hour_windows`). ⚠ Until then the
+     24h window was one 24h-step point, which Loki
+     (`align_queries_with_step: true`) rounded to two UTC midnights: it
+     counted two days, so every ratio was ~2× too high and the 3×
+     threshold acted like 1.5×.
+   - **The ratio counts error/panic/fatal lines, not warn**, and drops a
+     line whose own level is below error in each format the clusters
+     emit: zerolog console, klog, logfmt, JSON, zap console, the Actions
+     runner and Serilog (`_BELOW_ERROR_LEVEL_EXCLUDE`). The tripwires'
+     record exclusions apply too. ⚠ The keyword is a gate: a line counts
+     only if it says error, panic or fatal, or carries Serilog's `ERR]` /
+     `FTL]` (GIKS logs Hangfire and Polly failures without the word: 38 a
+     day on msa2-dev, 12 on msa2-prd). klog `E…` and zerolog `ERR` lines
+     without the word do not count (5 a day per cluster, all Talos's
+     kubelet "manifest file is empty"). A Postgres record counts by its own
+     `error_severity` (ERROR, FATAL, PANIC), in a second query over the
+     `postgres` containers: every record's wrapper says `"level":"info"`
+     and carries the key `error_severity`, so all of them used to count.
+     On msa2-prd (2026-10-10) the daily count fell from 49,367 lines to
+     5,238, and Kyverno's from 15,293 to 1.
+   - **A namespace is judged on the baseline days it existed**
+     (`kube_namespace_created`) and is no ratio outlier before 3 of
+     them. A failed age read is a coverage gap, and then every
+     namespace is judged on the full window.
+   - **A tripwire's count is the namespace's true count** (a metric
+     query); its sample lines come from one narrow query per pattern
+     that makes the cut. ⚠ Until then a 15-line streams query across all
+     namespaces capped every count at 15 and could crowd a hit out.
+     Up to 3 of the 10 places are kept for ratio outliers.
+   - **Planned-restart Postgres noise never counts:** SQLSTATE 57P01 and
+     57P03, as a record's own field or quoted by CNPG's metrics exporter
+     (`_POSTGRES_RESTART_EXCLUDE`, on the ratio and the `fatal`
+     tripwire).
    **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26,
    kube-infra #1263/#1268/#1287). These negative filters drop lines that *record* a
    keyword instead of reporting an event:

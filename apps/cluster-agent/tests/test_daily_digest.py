@@ -7,6 +7,83 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_prometheus(monkeypatch):
+    """run_async reads namespace ages from Prometheus: no test reaches a cluster."""
+    from cluster_agent.modes import daily_digest
+    monkeypatch.setattr(daily_digest, "prometheus_query",
+                        lambda cluster, promql: {"data": {"result": [
+                            {"metric": {"namespace": "giks"}, "value": [1791676800, "1791504000"]}]}})
+
+
+def test_an_empty_namespace_age_answer_raises(monkeypatch):
+    """No namespace at all (kube-state-metrics down) is no answer: it must
+    not read as "every namespace is old", silently."""
+    from cluster_agent.modes import daily_digest
+    monkeypatch.setattr(daily_digest, "prometheus_query",
+                        lambda cluster, promql: {"data": {"result": []}})
+    with pytest.raises(LookupError):
+        daily_digest._namespace_created("dev")
+
+
+def test_namespace_created_reads_kube_state_metrics(monkeypatch):
+    from cluster_agent.modes import daily_digest
+    seen = {}
+
+    def fake(cluster, promql):
+        seen["promql"] = promql
+        return {"data": {"result": [
+            {"metric": {"namespace": "sms-gateway"}, "value": [1791676800, "1791504000"]},
+            {"metric": {}, "value": [1791676800, "1"]},
+        ]}}
+    monkeypatch.setattr(daily_digest, "prometheus_query", fake)
+    assert daily_digest._namespace_created("dev") == {
+        "sms-gateway": dt.datetime.fromtimestamp(1791504000, tz=dt.timezone.utc)}
+    assert seen["promql"] == "max by (namespace) (kube_namespace_created)"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_namespace_age_read_is_a_coverage_gap(tmp_path, monkeypatch):
+    """Without namespace ages the aggregator judges every namespace on the full
+    window, and the summary must say the ages were not read."""
+    from cluster_agent.modes import daily_digest
+    from cluster_agent.schema import Report
+
+    now = dt.datetime.now(dt.timezone.utc)
+    samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(5, 0, -1)]
+    monkeypatch.setattr(daily_digest, "alertmanager_history",
+                        lambda cluster, since_hours=24: {"data": {"result": [
+                            {"metric": {"alertname": "X"}, "values": samples}]}})
+    monkeypatch.setattr(daily_digest, "alertmanager_alerts", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_gather_context_for_chronic", lambda groups, cluster: "")
+
+    def no_prometheus(cluster, promql):
+        raise RuntimeError("prometheus unreachable")
+    monkeypatch.setattr(daily_digest, "prometheus_query", no_prometheus)
+    seen = {}
+
+    def fake_aggregate(cluster, **kw):
+        seen.update(kw)
+        return []
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns", fake_aggregate)
+
+    async def fake_triage(**kw):
+        return Report(
+            id="01JK3R8Q9M01234567890123XZ", cluster="dev", digest_window_hours=24,
+            summary="quiet", quiet_period=True, findings=[],
+            total_alerts_24h=1, chronic_count=0, transient_count=1, self_healed_count=0,
+        )
+    monkeypatch.setattr(daily_digest, "triage_digest", fake_triage)
+    monkeypatch.setattr(daily_digest, "dispatch", MagicMock())
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+
+    result = await daily_digest.run_async(cluster="dev")
+    assert result.error is None
+    assert seen["namespace_created"] is None
+    assert seen["failures"] == ["namespace ages: RuntimeError"]
+
+
 @pytest.mark.asyncio
 async def test_daily_digest_quiet_day_no_findings(tmp_path, monkeypatch):
     """If Prom returns no ALERTS series, the runner short-circuits to a

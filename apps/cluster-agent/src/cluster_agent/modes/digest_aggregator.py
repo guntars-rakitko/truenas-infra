@@ -216,10 +216,16 @@ def enrich_with_annotations(
 
 # ── P3: Log-pattern aggregator (2026-05-26) ───────────────────────────
 #
-# Surface logs containing errors/warnings that didn't trigger an alert.
+# Surface logs containing errors that didn't trigger an alert.
 # Two signal types per the P3 spec § 10:
-#   - ratio_outlier: 24h count ≥ 3× 7d baseline AND ≥ 50 lines absolute
+#   - ratio_outlier: 24h count of ERROR-LEVEL lines ≥ 3× the namespace's
+#                    daily baseline AND ≥ 50 lines absolute
+#                    (_ERROR_LINE_FILTER / _POSTGRES_ERROR_FILTER below)
 #   - tripwire:      one of these regexes matches (one occurrence enough)
+#
+# Every count comes from an hourly-step range query over hour-aligned
+# windows (_hour_windows), summed in Python: see that function for why a
+# 24h step counted two days.
 
 # Tripwire regexes — always surface even if they only fire once. These
 # are patterns the operator definitely wants to see; deferring to the
@@ -318,9 +324,30 @@ _RECORD_EXCLUDE = (
     + _LOKI_QUERY_LOG_EXCLUDE
 )
 
+# Postgres records that every PLANNED restart writes, under any name:
+# SQLSTATE 57P01 (admin_shutdown, "terminating connection due to
+# administrator command") and 57P03 (cannot_connect_now, "the database
+# system is starting up" / "is shutting down"). On one node each reboot,
+# CNPG hibernation and weekly restore drill (its temporary `*-verify`
+# Cluster) writes them as FATAL records: kube-infra #1438, #1439, #1447,
+# #1509 were nothing else. A crash or a failed recovery has other codes.
+# Two forms: a Postgres record's own field, and CNPG's instance manager
+# quoting the server's answer (`{"level":"error","msg":"Error collecting
+# user query",…,"error":"…FATAL: the database system is shutting down
+# (SQLSTATE 57P03)"}`: its metrics exporter connecting during a smart
+# shutdown, ~170 lines per restart, 2026-10-10 14:00–15:00Z).
+_POSTGRES_RESTART_EXCLUDE = r' !~ `"sql_state_code":"57P0[13]"|\(SQLSTATE 57P0[13]\)`'
+
 _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
-    ("panic",                '|= "panic" or "Panic" or "PANIC"' + _RECORD_EXCLUDE),
-    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"' + _RECORD_EXCLUDE),
+    # kube-apiserver's `"Unhandled Error" err="FinishRequest: post-timeout
+    # activity - time-elapsed: …, panicked: false, …"` says a request
+    # finished after its timeout, and that nothing panicked. It shows up in
+    # every restart window (kube-infra #1535, #1536).
+    ("panic",                '|= "panic" or "Panic" or "PANIC"'
+                             + ' != "panicked: false"'
+                             + _RECORD_EXCLUDE),
+    ("fatal",                '|= "fatal" or "FATAL" or "Fatal"' + _RECORD_EXCLUDE
+                             + _POSTGRES_RESTART_EXCLUDE),
     ("OOMKilled",            '|= "OOMKilled"' + _RECORD_EXCLUDE),
     ("CrashLoopBackOff",     '|= "CrashLoopBackOff"' + _RECORD_EXCLUDE),
     ("ImagePullBackOff",     '|= "ImagePullBackOff"' + _RECORD_EXCLUDE),
@@ -348,8 +375,86 @@ _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
     ("permission_denied",    '|= "permission denied"' + _RECORD_EXCLUDE),
     # Kubelet emits `Evicted` in Pod event reasons (capital E); some
     # kubelet log paths use lowercase. Cover both.
-    ("evicted",              '|= "Evicted" or "evicted"' + _RECORD_EXCLUDE),
+    # Grafana's search index logs `level=info msg="index evicted from
+    # cache"` whenever a cache entry expires: 216 lines a day on each
+    # cluster (2026-10-10), every one of the "evicted" hits. It is its
+    # cache, not a pod.
+    ("evicted",              '|= "Evicted" or "evicted"'
+                             + ' != "index evicted from cache"'
+                             + _RECORD_EXCLUDE),
 ]
+
+# ── The ratio outlier's line filters (2026-10-10) ─────────────────────
+# The ratio outlier counts ERROR-LEVEL lines. Until 2026-10-10 it counted
+# every line holding error/warn/panic/fatal in any case, which counted:
+#   - Kyverno 1.19.1's client-go deprecation warnings, ~21,700 a day per
+#     cluster at INFO (`INF …/rest/warnings.go:107 > Warning: …`): "warn"
+#     matched `warnings.go` (kube-infra #1534, #1537);
+#   - every CNPG Postgres record, checkpoints included: each carries the
+#     JSON key "error_severity" (#1487);
+#   - the apiserver's audit records (the tripwires already excluded them,
+#     the ratio query did not): 16,728 of msa2-prd's 49,367 counted lines
+#     in the 24h to 2026-10-10 18:00Z. This filter counts 5,238 of them.
+# Now the keyword stage is error/panic/fatal only, the tripwires' record
+# exclusions apply, a line whose OWN level is below error is dropped, and
+# a Postgres record is judged by its own severity (a separate query).
+#
+# ⚠ The keyword stage is a GATE: a line counts only if it says error,
+# panic or fatal (any of three cases), or carries Serilog's abbreviated
+# error level (`[12:00:00 ERR]`, `FTL]`: GIKS logs Hangfire and Polly
+# failures that way without the word, 38 lines a day on msa2-dev and 12
+# on msa2-prd, 2026-10-10). Two abbreviated error levels still do not
+# count without the word: klog's `E1010 …` (5 a day per cluster, all
+# Talos's kubelet "The manifest file is empty, ignoring.") and zerolog's
+# coloured `ERR` (none in that day).
+
+# A line's own level below error (info/warn/debug/trace), in the formats
+# this estate's namespaces emit. A line with no level token stays: free
+# text that says "error" still counts. Kubernetes event lines are JSON
+# with no `level` field, so a Warning event that says "error" counts.
+_BELOW_ERROR_LEVEL_EXCLUDE = (
+    # zerolog console, coloured (Kyverno): `\x1b[32mINF\x1b[0m`.
+    r' !~ `\x1b\[[0-9;]*m(?:INF|WRN|DBG|TRC)\x1b\[0m`'
+    # klog: `I1010 12:34:56.789012 …`, `W1010 …`.
+    r' !~ `^[IW][0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}`'
+    # logfmt: `level=info`, `lvl=warn`.
+    r' !~ `(?:^|\s)(?:level|lvl)=(?:info|warn|warning|debug|trace|INFO|WARN|WARNING|DEBUG|TRACE)(?:\s|$)`'
+    # JSON (zap, zerolog, controller-runtime, CNPG's instance manager).
+    r' !~ `"(?:level|lvl|severity)":"(?:info|warn|warning|debug|trace|INFO|WARN|WARNING|DEBUG|TRACE)"`'
+    # zap console (the Doppler operator): `<ts>\tINFO\t…`.
+    r' !~ `^\S+\t(?:INFO|WARN|DEBUG)\t`'
+    # GitHub Actions runner diagnostics: `[WORKER 2026-10-10 12:00:00Z INFO
+    # ExecutionContext]   "errorMessages": [],`. Its ERR lines (`ERR  `)
+    # stay. _RUNNER_JOB_MESSAGE_EXCLUDE drops only the Worker's job dump.
+    r' !~ `^\[(?:WORKER|RUNNER) [0-9-]+ [0-9:]+Z (?:INFO|WARN|VERB) `'
+    # Serilog console (GIKS): `[12:00:00 INF] Executed DbCommand …`.
+    r' !~ `^\[[0-9]{2}:[0-9]{2}:[0-9]{2} (?:INF|WRN|DBG|VRB)\]`'
+)
+
+# CNPG instance pods write every Postgres record as JSON with
+# `"logger":"postgres"`, from the container named `postgres` (read on both
+# clusters, 2026-10-10). The record's wrapper is always `"level":"info"`;
+# its real severity is `error_severity` (LOG, WARNING, ERROR, FATAL, …).
+_POSTGRES_RECORD = '`"logger":"postgres"`'
+_ALL_NAMESPACES = '{namespace=~".+"}'
+_POSTGRES_CONTAINERS = '{namespace=~".+", container="postgres"}'
+
+_ERROR_LINE_FILTER = (
+    '|= "error" or "Error" or "ERROR" or "panic" or "Panic" or "PANIC"'
+    ' or "fatal" or "Fatal" or "FATAL" or " ERR]" or " FTL]"'
+    + ' != ' + _POSTGRES_RECORD
+    + _RECORD_EXCLUDE
+    + _POSTGRES_RESTART_EXCLUDE
+    + _BELOW_ERROR_LEVEL_EXCLUDE
+)
+_POSTGRES_ERROR_FILTER = (
+    '|= ' + _POSTGRES_RECORD
+    + r' |~ `"error_severity":"(?:ERROR|FATAL|PANIC)"`'
+    + _POSTGRES_RESTART_EXCLUDE
+)
+
+# A namespace name is a DNS label; anything else never reaches a selector.
+_NS_NAME = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 
 # Secret-redaction regexes — applied to every log line before it's
 # included in a LogPattern's `sample_lines`. Over-redaction is OK
@@ -374,6 +479,64 @@ def _redact(line: str, *, max_len: int = 200) -> str:
     return line[:max_len]
 
 
+def _hour_windows(
+    now: dt.datetime, *, window_hours: int, baseline_days: int,
+) -> tuple[dt.datetime, dt.datetime, dt.datetime, dt.datetime]:
+    """(recent_start, end, baseline_start, baseline_end) for hourly-step
+    range queries of `count_over_time(…[1h])`.
+
+    A point at t counts the hour (t-1h, t], so N points from `start` to
+    `end` inclusive count exactly N hours. Both ends sit on the hour: the
+    recent window is the `window_hours` full hours before `now`, the
+    baseline the `(baseline_days - 1) * 24` hours before that.
+
+    ⚠ Why not one point with a 24h step, as until 2026-10-10: Loki runs
+    with `align_queries_with_step: true` (kube-infra loki.yaml), which
+    rounds start and end down to a multiple of the step, so a 24h-step
+    query over [now-24h, now] evaluated at TWO UTC midnights, and summing
+    them counted two days (the older one also sat in the baseline, and
+    00:00Z to the run time was never counted). Every ratio was about 2×
+    too high: a 3× threshold acted like 1.5×. Hour-aligned windows are
+    unchanged by the rounding, and their hourly splits cache across runs.
+    """
+    end = now.replace(minute=0, second=0, microsecond=0)
+    recent_start = end - dt.timedelta(hours=window_hours - 1)
+    baseline_end = end - dt.timedelta(hours=window_hours)
+    baseline_start = baseline_end - dt.timedelta(hours=(baseline_days - 1) * 24 - 1)
+    return recent_start, end, baseline_start, baseline_end
+
+
+def _count_by_namespace(selector: str, line_filter: str) -> str:
+    """Lines per namespace per hour, for the hour-aligned range queries."""
+    return f"sum by (namespace) (count_over_time({selector} {line_filter} [1h]))"
+
+
+def _sum_series(resp: dict) -> dict[str, float]:
+    """Total of every point, per namespace."""
+    out: dict[str, float] = {}
+    for series in resp.get("data", {}).get("result", []):
+        ns = series.get("metric", {}).get("namespace")
+        if not ns:
+            continue
+        out[ns] = out.get(ns, 0.0) + sum(float(v) for _ts, v in series.get("values", []))
+    return out
+
+
+def _seen_span(resp: dict) -> dict[str, tuple[dt.datetime, dt.datetime]]:
+    """(first, last) hour with a matching line, per namespace. Hour
+    precision: the point at t counts (t-1h, t]."""
+    out: dict[str, tuple[dt.datetime, dt.datetime]] = {}
+    for series in resp.get("data", {}).get("result", []):
+        ns = series.get("metric", {}).get("namespace")
+        hours = sorted(float(ts) for ts, v in series.get("values", []) if float(v) > 0)
+        if ns and hours:
+            out[ns] = (
+                dt.datetime.fromtimestamp(hours[0], tz=dt.timezone.utc) - dt.timedelta(hours=1),
+                dt.datetime.fromtimestamp(hours[-1], tz=dt.timezone.utc),
+            )
+    return out
+
+
 def aggregate_log_patterns(
     cluster: str,
     *,
@@ -383,27 +546,35 @@ def aggregate_log_patterns(
     baseline_days: int = 7,
     ratio_threshold: float = 3.0,
     min_count_floor: int = 50,
+    min_history_days: float = 3.0,
+    namespace_created: dict[str, dt.datetime] | None = None,
     max_patterns: int = 10,
+    ratio_slots: int = 3,
     sample_lines_per_pattern: int = 3,
     now: dt.datetime | None = None,
     failures: list[str] | None = None,
 ) -> list[LogPattern]:
     """Surface notable log patterns from Loki history.
 
-    Returns up to `max_patterns` `LogPattern` objects, sorted with
-    tripwires first (most-actionable), then ratio outliers by ratio
-    descending.
+    Returns up to `max_patterns` `LogPattern` objects: tripwires first
+    (in `_TRIPWIRE_PATTERNS` order, then by count), then ratio outliers
+    by ratio descending, with up to `ratio_slots` places kept for them.
 
-    Per § 5 of the P3 spec:
-      1. Loki metric query: per-namespace error+warn line counts over
-         the trailing `baseline_days` (default 7d) at 1h granularity
-      2. For each namespace series: sum last 24h → `count_24h`
-      3. Mean of previous (baseline_days - 1) daily totals → baseline
-      4. Outliers: ratio ≥ ratio_threshold AND count_24h ≥ min_count_floor
-      5. Tripwires: separate Loki streams query for each tripwire
-         regex; if ≥1 match in 24h, surface as a LogPattern
-      6. For each surfaced pattern, fetch up to N sample lines (or 0
-         for tripwires which already carry their match excerpt)
+      1. Ratio outliers: error-level lines per namespace (_ERROR_LINE_FILTER,
+         plus Postgres records by their own severity, _POSTGRES_ERROR_FILTER)
+         over the last `window_hours` against the daily mean of the
+         `baseline_days - 1` days before it. Surfaced when the count is
+         ≥ `min_count_floor` and ≥ `ratio_threshold` × that mean.
+      2. Tripwires: each `_TRIPWIRE_PATTERNS` filter's TRUE count per
+         namespace (a metric query), surfaced on any occurrence.
+      3. Up to `sample_lines_per_pattern` redacted lines for each tripwire
+         pattern that made the cut, one query per namespace.
+
+    A namespace with a known creation time (`namespace_created`, from
+    kube-state-metrics) is judged on the baseline days it existed, and
+    is no ratio outlier until it has `min_history_days` of them: on its
+    first day everything it logs is "N× a baseline of 0" (kube-infra
+    #1486, #1401/#1402). Unknown namespaces are judged on the full window.
 
     Tool dependencies are passed in (not imported) so tests can stub
     them cleanly. In production, callers pass tools.loki.loki_query +
@@ -427,218 +598,176 @@ def aggregate_log_patterns(
 
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
-
-    baseline_start = now - dt.timedelta(days=baseline_days)
-    # LogQL: count error/warn/panic/fatal lines per namespace.
-    # Substring filter (`|=`) instead of regex (`|~`) per Loki best-
-    # practices — ~5-10× faster. `or` ORs case variants within a single
-    # filter (Loki 2.9+). The literals match common log-level shapes:
-    #   `level=error`, `level=warn`, `ERROR`, `WARN`, `FATAL`, `panic`,
-    #   plus capitalized forms. JSON-structured logs (level=error),
-    #   logfmt, glog (E0526), and free-form all caught.
-    promql = (
-        'sum by (namespace) '
-        '(count_over_time({namespace=~".+"} '
-        '|= "error" or "Error" or "ERROR" or "warn" or "Warn" or "WARN" '
-        'or "panic" or "Panic" or "PANIC" or "fatal" or "Fatal" or "FATAL" '
-        f'[{window_hours}h]))'
+    recent_start, end, baseline_start, baseline_end = _hour_windows(
+        now, window_hours=window_hours, baseline_days=baseline_days,
     )
+    window_start = end - dt.timedelta(hours=window_hours)
+
+    def _failed(what: str, e: Exception) -> None:
+        log.warning("digest log-pattern query %s failed: %r", what, e)
+        if failures is not None:
+            detail = type(e).__name__
+            # A Loki 400 (a LogQL parse error) says why in its body, which
+            # httpx's exception text leaves out. One line, no backticks: it
+            # lands in a markdown list in the digest-summary.
+            response = getattr(e, "response", None)
+            status = getattr(response, "status_code", None)
+            if status is not None:
+                body = " ".join((getattr(response, "text", "") or "").split())[:120]
+                detail += f" {status}" + (f": {body}" if body else "")
+            failures.append(f"{what}: {detail}".replace("`", "'"))
 
     # ── Sequential execution with graceful degradation ──────────────
     # Concurrency was tried (PR #57 at max=12, PR #58 at max=3) — both
     # saturated single-binary homelab Loki and produced ZERO patterns.
-    # Sequential trades wall time (~8 min per digest at 60s timeout)
-    # for sustainable Loki load. For a once-a-day cron at 06:00 EEST
-    # this is fine; the digest can take 16 minutes total across both
-    # clusters and still produce findings well before the operator
-    # starts their day.
+    # Sequential trades wall time for sustainable Loki load: up to 24
+    # queries per cluster (4 ratio, 10 tripwire, up to 10 sample), each
+    # capped at 60 s, so a slow Loki could take ~24 min per cluster.
+    # Measured on a healthy one, 2026-10-10: msa2-prd's 24 in 31.5 s.
+    # For a once-a-day cron at 06:00 EEST that is fine.
     #
     # If a future Loki HA setup raises capacity, we can revisit
     # parallelization. Until then, sequential is the only thing
     # that actually returns signal.
     outliers: list[LogPattern] = []
-    tripwires: list[LogPattern] = []
+    tripwires: list[tuple[LogPattern, str]] = []   # (pattern, its line filter)
 
-    # Ratio outliers — two sequential queries (recent + baseline)
+    # Ratio outliers: four sequential queries (recent + baseline, each for
+    # the non-Postgres lines and the Postgres records), summed per namespace.
     try:
-        recent_resp = loki_metric_query_fn(
-            cluster, promql,
-            start=now - dt.timedelta(hours=window_hours),
-            end=now,
-            step_seconds=window_hours * 3600,
-        )
-        baseline_resp = loki_metric_query_fn(
-            cluster, promql,
-            start=baseline_start,
-            end=now - dt.timedelta(hours=window_hours),
-            step_seconds=24 * 3600,
-        )
+        recent: dict[str, float] = {}
+        baseline: dict[str, float] = {}
+        for selector, line_filter in ((_ALL_NAMESPACES, _ERROR_LINE_FILTER),
+                                      (_POSTGRES_CONTAINERS, _POSTGRES_ERROR_FILTER)):
+            query = _count_by_namespace(selector, line_filter)
+            for ns, n in _sum_series(loki_metric_query_fn(
+                    cluster, query, start=recent_start, end=end, step_seconds=3600)).items():
+                recent[ns] = recent.get(ns, 0.0) + n
+            for ns, n in _sum_series(loki_metric_query_fn(
+                    cluster, query, start=baseline_start, end=baseline_end, step_seconds=3600)).items():
+                baseline[ns] = baseline.get(ns, 0.0) + n
         outliers = _build_ratio_outliers(
-            recent_resp=recent_resp,
-            baseline_resp=baseline_resp,
+            recent=recent,
+            baseline_totals=baseline,
+            baseline_days=baseline_days - 1,
+            baseline_until=window_start,
+            namespace_created=namespace_created,
+            min_history_days=min_history_days,
             ratio_threshold=ratio_threshold,
             min_count_floor=min_count_floor,
+            window_start=window_start,
             now=now,
-            window_hours=window_hours,
         )
     except Exception as e:
-        log.warning("digest log-pattern outlier query failed: %r", e)
-        if failures is not None:
-            failures.append(f"ratio_outlier: {type(e).__name__}")
+        _failed("ratio_outlier", e)
 
-    # Tripwires — sequential queries, per-tripwire graceful degradation.
-    # Each pattern carries its own LogQL line filter (substring `|=`,
-    # not regex `|~`) — see _TRIPWIRE_PATTERNS comment for rationale.
+    # Tripwires: one metric query each, for the true count per namespace.
+    # Until 2026-10-10 a streams query with `limit=15` across ALL
+    # namespaces counted the lines it returned, so every count was capped
+    # at 15 (the "15 fatal" findings were the cap; "evicted" was really
+    # 216) and a noisy namespace could push another's real hit out.
     for label, logql_filter in _TRIPWIRE_PATTERNS:
         try:
-            resp = loki_query_fn(
-                cluster,
-                f'{{namespace=~".+"}} {logql_filter}',
-                start=now - dt.timedelta(hours=window_hours),
-                end=now,
-                limit=sample_lines_per_pattern * 5,
+            resp = loki_metric_query_fn(
+                cluster, _count_by_namespace(_ALL_NAMESPACES, logql_filter),
+                start=recent_start, end=end, step_seconds=3600,
             )
-            tripwires.extend(_extract_tripwire_patterns(
-                resp, label=label, now=now,
-                window_hours=window_hours,
-                sample_lines_per_pattern=sample_lines_per_pattern,
-            ))
+            # Parsed inside the try: a malformed response loses this
+            # tripwire, recorded, not every pattern of the run.
+            spans = _seen_span(resp)
+            found: list[tuple[LogPattern, str]] = []
+            for ns, count in sorted(_sum_series(resp).items(), key=lambda kv: (-kv[1], kv[0])):
+                if count <= 0:
+                    continue
+                first, last = spans.get(ns, (window_start, now))
+                found.append((LogPattern(
+                    namespace=ns,
+                    level="panic" if label == "panic" else ("fatal" if label == "fatal" else "error"),
+                    chronicity="tripwire",
+                    count_24h=int(count),
+                    baseline_mean_24h=None,
+                    ratio_vs_baseline=None,
+                    matched_tripwire=label,
+                    sample_lines=[],
+                    first_seen_at=first,
+                    last_seen_at=min(last, now),
+                ), logql_filter))
         except Exception as e:
-            log.warning("digest tripwire query for %s failed: %r", label, e)
-            if failures is not None:
-                failures.append(f"tripwire {label}: {type(e).__name__}")
+            _failed(f"tripwire {label}", e)
+            continue
+        tripwires.extend(found)
 
-    # ── Merge: tripwires first, then ratio outliers, cap at max_patterns
-    combined = tripwires + sorted(
-        outliers,
-        key=lambda p: (-(p.ratio_vs_baseline or 0.0), -p.count_24h),
-    )
-    # De-dupe by (namespace, level, chronicity, matched_tripwire) — a
-    # namespace might both ratio-outlier AND tripwire; we keep both
-    # entries since they describe different signals.
-    return combined[:max_patterns]
+    # ── Merge: tripwires first, then ratio outliers, cap at max_patterns.
+    # Up to `ratio_slots` places are kept for ratio outliers: on a restart
+    # day the readiness-probe `connection_refused` hits alone filled all
+    # ten (msa2-dev, 2026-10-10), and no outlier could reach the LLM.
+    outliers = sorted(outliers, key=lambda p: (-(p.ratio_vs_baseline or 0.0), -p.count_24h))
+    trip_kept = [p for p, _f in tripwires][:max(0, max_patterns - min(len(outliers), ratio_slots))]
+    kept = trip_kept + outliers[:max(0, max_patterns - len(trip_kept))]
 
-
-def _logql_escape(pat: str) -> str:
-    """Escape a Python regex source for embedding in a LogQL string
-    literal. LogQL needs backslashes doubled (it's a JSON-ish string)."""
-    return pat.replace("\\", "\\\\").replace('"', '\\"')
+    # Sample lines, only for the tripwire patterns that made the cut: one
+    # narrow query each (one namespace, `limit` lines, newest first).
+    line_filter_of = {id(p): f for p, f in tripwires}
+    for p in kept:
+        line_filter = line_filter_of.get(id(p))
+        if line_filter is None or not _NS_NAME.fullmatch(p.namespace):
+            continue
+        try:
+            resp = loki_query_fn(
+                cluster, f'{{namespace="{p.namespace}"}} {line_filter}',
+                start=window_start, end=now, limit=sample_lines_per_pattern,
+            )
+            lines = [line for stream in resp.get("data", {}).get("result", [])
+                     for _ts, line in stream.get("values", [])]
+            p.sample_lines = [_redact(line) for line in lines[:sample_lines_per_pattern]]
+        except Exception as e:
+            _failed(f"tripwire {p.matched_tripwire} samples {p.namespace}", e)
+    return kept
 
 
 def _build_ratio_outliers(
     *,
-    recent_resp: dict,
-    baseline_resp: dict,
+    recent: dict[str, float],
+    baseline_totals: dict[str, float],
+    baseline_days: int,
+    baseline_until: dt.datetime,
+    namespace_created: dict[str, dt.datetime] | None,
+    min_history_days: float,
     ratio_threshold: float,
     min_count_floor: int,
+    window_start: dt.datetime,
     now: dt.datetime,
-    window_hours: int,
 ) -> list[LogPattern]:
-    """Compute ratio outliers from two Loki metric responses."""
-    # Each response: {data: {result: [{metric: {namespace: X}, values: [[ts, "N"], ...]}]}}
-    def _sum_series(resp: dict) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for series in resp.get("data", {}).get("result", []):
-            ns = series.get("metric", {}).get("namespace")
-            if not ns:
-                continue
-            total = sum(float(v) for _ts, v in series.get("values", []))
-            out[ns] = total
-        return out
-
-    def _daily_baseline(resp: dict) -> dict[str, float]:
-        """Mean per-24h-bucket count for each namespace."""
-        out: dict[str, float] = {}
-        for series in resp.get("data", {}).get("result", []):
-            ns = series.get("metric", {}).get("namespace")
-            if not ns:
-                continue
-            daily_totals = [float(v) for _ts, v in series.get("values", [])]
-            if not daily_totals:
-                continue
-            out[ns] = sum(daily_totals) / len(daily_totals)
-        return out
-
-    recent = _sum_series(recent_resp)
-    baseline = _daily_baseline(baseline_resp)
-
+    """Ratio outliers from per-namespace totals: the recent window's count
+    against the daily mean of the baseline days the namespace existed."""
+    created = namespace_created or {}
     patterns: list[LogPattern] = []
     for ns, count in recent.items():
         if count < min_count_floor:
             continue
-        base = baseline.get(ns, 0.0)
-        # Treat zero baseline as 1.0 to avoid divide-by-zero AND to
-        # prevent infinitely-large ratios on never-before-seen errors
-        # (which we WANT to surface — but a count of 1 still won't
-        # pass min_count_floor, so we don't accidentally flag tiny ns).
-        denom = max(base, 1.0)
-        ratio = count / denom
+        days = float(baseline_days)
+        born = created.get(ns)
+        if born is not None:
+            days = min(days, (baseline_until - born).total_seconds() / 86400)
+        if days < min_history_days:
+            continue   # too new to have a baseline
+        base = baseline_totals.get(ns, 0.0) / days
+        # A zero baseline counts as 1.0: no divide-by-zero, and a quiet
+        # namespace that suddenly logs errors still surfaces (with the
+        # floor above keeping "1 → 5" out).
+        ratio = count / max(base, 1.0)
         if ratio < ratio_threshold:
             continue
         patterns.append(LogPattern(
             namespace=ns,
-            level="error",     # we can't easily distinguish error vs warn at this layer
+            level="error",
             chronicity="ratio_outlier",
             count_24h=int(count),
             baseline_mean_24h=round(base, 1),
             ratio_vs_baseline=round(ratio, 2),
             matched_tripwire=None,
             sample_lines=[],   # the LLM can ask for samples separately if needed
-            first_seen_at=now - dt.timedelta(hours=window_hours),
+            first_seen_at=window_start,
             last_seen_at=now,
-        ))
-    return patterns
-
-
-def _extract_tripwire_patterns(
-    resp: dict,
-    *,
-    label: str,
-    now: dt.datetime,
-    window_hours: int,
-    sample_lines_per_pattern: int,
-) -> list[LogPattern]:
-    """Build LogPattern entries from a tripwire Loki streams response.
-
-    One LogPattern per (namespace, label) — i.e. if `panic` matched in
-    both `flux-system` and `velero`, we emit two patterns. Within each
-    namespace, collect up to N sample lines, redacted.
-    """
-    results = resp.get("data", {}).get("result", [])
-    by_ns: dict[str, dict] = {}
-    for stream in results:
-        ns = stream.get("stream", {}).get("namespace") or stream.get("stream", {}).get("kubernetes_namespace_name")
-        if not ns:
-            continue
-        bucket = by_ns.setdefault(ns, {"count": 0, "lines": [], "first": None, "last": None})
-        for ts, line in stream.get("values", []):
-            bucket["count"] += 1
-            if len(bucket["lines"]) < sample_lines_per_pattern:
-                bucket["lines"].append(_redact(line))
-            try:
-                t = dt.datetime.fromtimestamp(int(ts) / 1e9, tz=dt.timezone.utc)
-                if bucket["first"] is None or t < bucket["first"]:
-                    bucket["first"] = t
-                if bucket["last"] is None or t > bucket["last"]:
-                    bucket["last"] = t
-            except (ValueError, TypeError):
-                pass
-
-    patterns: list[LogPattern] = []
-    fallback_first = now - dt.timedelta(hours=window_hours)
-    for ns, bucket in by_ns.items():
-        if bucket["count"] == 0:
-            continue
-        patterns.append(LogPattern(
-            namespace=ns,
-            level="panic" if label == "panic" else ("fatal" if label == "fatal" else "error"),
-            chronicity="tripwire",
-            count_24h=bucket["count"],
-            baseline_mean_24h=None,
-            ratio_vs_baseline=None,
-            matched_tripwire=label,
-            sample_lines=bucket["lines"],
-            first_seen_at=bucket["first"] or fallback_first,
-            last_seen_at=bucket["last"] or now,
         ))
     return patterns

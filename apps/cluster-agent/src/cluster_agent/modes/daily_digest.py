@@ -41,6 +41,7 @@ from ..state.db import StateDB
 from ..state.dedup import lookup, mark_closed, DedupAction
 from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
 from ..tools.loki import loki_query, loki_metric_query_range
+from ..tools.prometheus import prometheus_query
 from ..tools.kubectl import kubectl_describe, ToolError
 from ..tools.github import gh_issue_list
 from ..dispatch import dispatch, _findings_repo
@@ -116,12 +117,22 @@ async def run_async(*, cluster: str) -> DigestResult:
     # Every failed query is recorded in `log_mining_failures` and shown in
     # the summary: an unchecked tripwire must not read as a clean one.
     log_mining_failures: list[str] = []
+    # Namespace ages, so a namespace on its first days is no "N× a
+    # baseline of 0" ratio outlier. Without them every namespace is
+    # judged on the full window, as before, and the summary says so.
+    try:
+        namespace_created = _namespace_created(cluster)
+    except Exception as e:
+        log.warning("digest %s: namespace ages failed: %r", cluster, e)
+        namespace_created = None
+        log_mining_failures.append(f"namespace ages: {type(e).__name__}")
     try:
         log_patterns = aggregate_log_patterns(
             cluster,
             loki_query_fn=loki_query,
             loki_metric_query_fn=loki_metric_query_range,
             window_hours=window_hours,
+            namespace_created=namespace_created,
             failures=log_mining_failures,
         )
     except Exception as e:
@@ -304,6 +315,27 @@ def _gather_context_for_chronic(groups: list, cluster: str) -> str:
         except Exception as e:
             lines.append(f"_(loki query failed: {e})_")
     return "\n".join(lines)
+
+
+def _namespace_created(cluster: str) -> dict[str, dt.datetime]:
+    """Each namespace's creation time, from kube-state-metrics.
+
+    `max by (namespace)`: after a kube-state-metrics restart the old and
+    the new pod's series overlap for a few minutes, with the same value.
+    An answer with no namespace at all (kube-state-metrics down, say) is
+    no answer: it raises, so the caller records a coverage gap instead of
+    silently judging every namespace on the full window.
+    """
+    resp = prometheus_query(cluster, "max by (namespace) (kube_namespace_created)")
+    out: dict[str, dt.datetime] = {}
+    for series in resp.get("data", {}).get("result", []):
+        ns = series.get("metric", {}).get("namespace")
+        value = series.get("value") or [None, None]
+        if ns and value[1] is not None:
+            out[ns] = dt.datetime.fromtimestamp(float(value[1]), tz=dt.timezone.utc)
+    if not out:
+        raise LookupError("kube_namespace_created returned no namespace")
+    return out
 
 
 def _extract_log_excerpts(loki_response: dict, *, max_lines: int) -> list[str]:
