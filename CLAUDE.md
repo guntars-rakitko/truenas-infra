@@ -1290,7 +1290,10 @@ is the full reasoning; the rules below. ⚠ **Merged ≠ live:** the NAS runs th
 copy staged under `/mnt/tank/system/talos/`, so a change here does nothing until
 it is re-staged (below). This fan-out (#185) is **live since its re-stage on
 2026-10-06**: in the operator's sudo check the staged orchestrator's sha256
-matched the checkout's, and both boxes answered `Server: v1.14.1`.
+matched the checkout's, and both boxes answered `Server: v1.14.1`. Re-staged
+2026-10-10 after both boxes moved to Talos v1.14.2 (#197): the same orchestrator
+sha256 (`63796603…`), `Client: Talos v1.14.2`, and both boxes answered
+`Server: v1.14.2` to the staged `os:operator` configs (operator's sudo check).
 
 | | msa2-prd | msa2-dev |
 |---|---|---|
