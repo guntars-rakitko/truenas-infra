@@ -398,6 +398,15 @@ _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
 # Now the keyword stage is error/panic/fatal only, the tripwires' record
 # exclusions apply, a line whose OWN level is below error is dropped, and
 # a Postgres record is judged by its own severity (a separate query).
+#
+# ⚠ The keyword stage is a GATE: a line counts only if it says error,
+# panic or fatal (any of three cases), or carries Serilog's abbreviated
+# error level (`[12:00:00 ERR]`, `FTL]`: GIKS logs Hangfire and Polly
+# failures that way without the word, 38 lines a day on msa2-dev and 12
+# on msa2-prd, 2026-10-10). Two abbreviated error levels still do not
+# count without the word: klog's `E1010 …` (5 a day per cluster, all
+# Talos's kubelet "The manifest file is empty, ignoring.") and zerolog's
+# coloured `ERR` (none in that day).
 
 # A line's own level below error (info/warn/debug/trace), in the formats
 # this estate's namespaces emit. A line with no level token stays: free
@@ -432,7 +441,7 @@ _POSTGRES_CONTAINERS = '{namespace=~".+", container="postgres"}'
 
 _ERROR_LINE_FILTER = (
     '|= "error" or "Error" or "ERROR" or "panic" or "Panic" or "PANIC"'
-    ' or "fatal" or "Fatal" or "FATAL"'
+    ' or "fatal" or "Fatal" or "FATAL" or " ERR]" or " FTL]"'
     + ' != ' + _POSTGRES_RECORD
     + _RECORD_EXCLUDE
     + _POSTGRES_RESTART_EXCLUDE
@@ -597,16 +606,25 @@ def aggregate_log_patterns(
     def _failed(what: str, e: Exception) -> None:
         log.warning("digest log-pattern query %s failed: %r", what, e)
         if failures is not None:
-            failures.append(f"{what}: {type(e).__name__}")
+            detail = type(e).__name__
+            # A Loki 400 (a LogQL parse error) says why in its body, which
+            # httpx's exception text leaves out. One line, no backticks: it
+            # lands in a markdown list in the digest-summary.
+            response = getattr(e, "response", None)
+            status = getattr(response, "status_code", None)
+            if status is not None:
+                body = " ".join((getattr(response, "text", "") or "").split())[:120]
+                detail += f" {status}" + (f": {body}" if body else "")
+            failures.append(f"{what}: {detail}".replace("`", "'"))
 
     # ── Sequential execution with graceful degradation ──────────────
     # Concurrency was tried (PR #57 at max=12, PR #58 at max=3) — both
     # saturated single-binary homelab Loki and produced ZERO patterns.
-    # Sequential trades wall time (~8 min per digest at 60s timeout)
-    # for sustainable Loki load. For a once-a-day cron at 06:00 EEST
-    # this is fine; the digest can take 16 minutes total across both
-    # clusters and still produce findings well before the operator
-    # starts their day.
+    # Sequential trades wall time for sustainable Loki load: up to 24
+    # queries per cluster (4 ratio, 10 tripwire, up to 10 sample), each
+    # capped at 60 s, so a slow Loki could take ~24 min per cluster.
+    # Measured on a healthy one, 2026-10-10: msa2-prd's 24 in 31.5 s.
+    # For a once-a-day cron at 06:00 EEST that is fine.
     #
     # If a future Loki HA setup raises capacity, we can revisit
     # parallelization. Until then, sequential is the only thing
@@ -654,34 +672,38 @@ def aggregate_log_patterns(
                 cluster, _count_by_namespace(_ALL_NAMESPACES, logql_filter),
                 start=recent_start, end=end, step_seconds=3600,
             )
+            # Parsed inside the try: a malformed response loses this
+            # tripwire, recorded, not every pattern of the run.
+            spans = _seen_span(resp)
+            found: list[tuple[LogPattern, str]] = []
+            for ns, count in sorted(_sum_series(resp).items(), key=lambda kv: (-kv[1], kv[0])):
+                if count <= 0:
+                    continue
+                first, last = spans.get(ns, (window_start, now))
+                found.append((LogPattern(
+                    namespace=ns,
+                    level="panic" if label == "panic" else ("fatal" if label == "fatal" else "error"),
+                    chronicity="tripwire",
+                    count_24h=int(count),
+                    baseline_mean_24h=None,
+                    ratio_vs_baseline=None,
+                    matched_tripwire=label,
+                    sample_lines=[],
+                    first_seen_at=first,
+                    last_seen_at=min(last, now),
+                ), logql_filter))
         except Exception as e:
             _failed(f"tripwire {label}", e)
             continue
-        spans = _seen_span(resp)
-        for ns, count in sorted(_sum_series(resp).items(), key=lambda kv: (-kv[1], kv[0])):
-            if count <= 0:
-                continue
-            first, last = spans.get(ns, (window_start, now))
-            tripwires.append((LogPattern(
-                namespace=ns,
-                level="panic" if label == "panic" else ("fatal" if label == "fatal" else "error"),
-                chronicity="tripwire",
-                count_24h=int(count),
-                baseline_mean_24h=None,
-                ratio_vs_baseline=None,
-                matched_tripwire=label,
-                sample_lines=[],
-                first_seen_at=first,
-                last_seen_at=min(last, now),
-            ), logql_filter))
+        tripwires.extend(found)
 
     # ── Merge: tripwires first, then ratio outliers, cap at max_patterns.
     # Up to `ratio_slots` places are kept for ratio outliers: on a restart
     # day the readiness-probe `connection_refused` hits alone filled all
     # ten (msa2-dev, 2026-10-10), and no outlier could reach the LLM.
     outliers = sorted(outliers, key=lambda p: (-(p.ratio_vs_baseline or 0.0), -p.count_24h))
-    trip_kept = [p for p, _f in tripwires][:max_patterns - min(len(outliers), ratio_slots)]
-    kept = trip_kept + outliers[:max_patterns - len(trip_kept)]
+    trip_kept = [p for p, _f in tripwires][:max(0, max_patterns - min(len(outliers), ratio_slots))]
+    kept = trip_kept + outliers[:max(0, max_patterns - len(trip_kept))]
 
     # Sample lines, only for the tripwire patterns that made the cut: one
     # narrow query each (one namespace, `limit` lines, newest first).
@@ -695,12 +717,11 @@ def aggregate_log_patterns(
                 cluster, f'{{namespace="{p.namespace}"}} {line_filter}',
                 start=window_start, end=now, limit=sample_lines_per_pattern,
             )
+            lines = [line for stream in resp.get("data", {}).get("result", [])
+                     for _ts, line in stream.get("values", [])]
+            p.sample_lines = [_redact(line) for line in lines[:sample_lines_per_pattern]]
         except Exception as e:
             _failed(f"tripwire {p.matched_tripwire} samples {p.namespace}", e)
-            continue
-        lines = [line for stream in resp.get("data", {}).get("result", [])
-                 for _ts, line in stream.get("values", [])]
-        p.sample_lines = [_redact(line) for line in lines[:sample_lines_per_pattern]]
     return kept
 
 

@@ -702,7 +702,12 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
      line whose own level is below error in each format the clusters
      emit: zerolog console, klog, logfmt, JSON, zap console, the Actions
      runner and Serilog (`_BELOW_ERROR_LEVEL_EXCLUDE`). The tripwires'
-     record exclusions apply too. A Postgres record counts by its own
+     record exclusions apply too. ⚠ The keyword is a gate: a line counts
+     only if it says error, panic or fatal, or carries Serilog's `ERR]` /
+     `FTL]` (GIKS logs Hangfire and Polly failures without the word: 38 a
+     day on msa2-dev, 12 on msa2-prd). klog `E…` and zerolog `ERR` lines
+     without the word do not count (5 a day per cluster, all Talos's
+     kubelet "manifest file is empty"). A Postgres record counts by its own
      `error_severity` (ERROR, FATAL, PANIC), in a second query over the
      `postgres` containers: every record's wrapper says `"level":"info"`
      and carries the key `error_severity`, so all of them used to count.

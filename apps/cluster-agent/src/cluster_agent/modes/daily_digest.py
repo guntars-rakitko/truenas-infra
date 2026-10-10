@@ -322,6 +322,9 @@ def _namespace_created(cluster: str) -> dict[str, dt.datetime]:
 
     `max by (namespace)`: after a kube-state-metrics restart the old and
     the new pod's series overlap for a few minutes, with the same value.
+    An answer with no namespace at all (kube-state-metrics down, say) is
+    no answer: it raises, so the caller records a coverage gap instead of
+    silently judging every namespace on the full window.
     """
     resp = prometheus_query(cluster, "max by (namespace) (kube_namespace_created)")
     out: dict[str, dt.datetime] = {}
@@ -330,6 +333,8 @@ def _namespace_created(cluster: str) -> dict[str, dt.datetime]:
         value = series.get("value") or [None, None]
         if ns and value[1] is not None:
             out[ns] = dt.datetime.fromtimestamp(float(value[1]), tz=dt.timezone.utc)
+    if not out:
+        raise LookupError("kube_namespace_created returned no namespace")
     return out
 
 

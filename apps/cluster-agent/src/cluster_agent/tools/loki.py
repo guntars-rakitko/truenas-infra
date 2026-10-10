@@ -82,10 +82,12 @@ def loki_metric_query_range(
     series per label set, each series a list of [timestamp, value]
     pairs at `step_seconds` granularity.
 
-    Used by P3 log-pattern mining to compute per-namespace error/warn
-    counts over the 7-day baseline window. Step defaults to 1h
-    (3600s) — fine-grained enough to compute daily totals, coarse
-    enough to keep response size manageable.
+    Used by P3 log-pattern mining for per-namespace counts: error-level
+    lines for the ratio outlier (24h against the 6 days before) and each
+    tripwire's 24h count. Step defaults to 1h (3600s): the aggregator sums
+    hourly points over hour-aligned windows, so Loki's
+    `align_queries_with_step` moves no window edge (digest_aggregator
+    _hour_windows).
 
     Note: limit param is irrelevant for metric queries (Loki returns
     the full series). Don't pass one.

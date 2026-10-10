@@ -396,6 +396,57 @@ def test_every_failed_query_is_recorded_and_the_rest_still_run():
     ]
 
 
+def test_a_malformed_tripwire_answer_loses_that_tripwire_only():
+    """Parsing happens inside each query's try: one bad answer is a recorded
+    gap, and every other pattern of the run survives."""
+    sim = _SimLoki({"panic": {"giks": {_hours_back(1): 2}}})
+
+    def metric(cluster, query, **kw):
+        if sim.kind_of(query) == "fatal":
+            return {"data": {"result": [{"metric": {"namespace": "x"}, "values": [["bad"]]}]}}
+        return sim.metric(cluster, query, **kw)
+    failures: list[str] = []
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+    patterns = aggregate_log_patterns("dev", loki_query_fn=sim.streams,
+                                      loki_metric_query_fn=metric, now=_NOW, failures=failures)
+    assert [(p.matched_tripwire, p.namespace) for p in patterns] == [("panic", "giks")]
+    assert failures == ["tripwire fatal: ValueError"]
+
+
+def test_a_loki_400_names_its_reason_in_the_gap():
+    """A LogQL parse error is a 400 whose body says why; httpx's exception
+    text does not. The gap line carries status and body, on one line."""
+    import httpx
+    sim = _SimLoki()
+
+    def metric(cluster, query, **kw):
+        if sim.kind_of(query) == "panic":
+            request = httpx.Request("GET", "https://apiserver/loki")
+            response = httpx.Response(400, request=request,
+                                      text="parse error at line 1,\n col 52: `syntax error`")
+            raise httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+        return sim.metric(cluster, query, **kw)
+    failures: list[str] = []
+    from cluster_agent.modes.digest_aggregator import aggregate_log_patterns
+    aggregate_log_patterns("dev", loki_query_fn=sim.streams, loki_metric_query_fn=metric,
+                           now=_NOW, failures=failures)
+    assert failures == ["tripwire panic: HTTPStatusError 400: parse error at line 1, col 52: 'syntax error'"]
+
+
+def test_every_backtick_regex_is_re2():
+    """Loki runs RE2; the tests evaluate with Python's `re`, which also
+    accepts lookarounds and backreferences. One such edit to a shared
+    filter would 400 every query, so it is refused here."""
+    from cluster_agent.modes import digest_aggregator as da
+    filters = [da._ERROR_LINE_FILTER, da._POSTGRES_ERROR_FILTER] + [f for _l, f in da._TRIPWIRE_PATTERNS]
+    regexes = [r for f in filters for r in re.findall(r"`([^`]*)`", f)]
+    assert regexes, "no backtick regex found: the guard is checking nothing"
+    for rx in regexes:
+        assert not re.search(r"\(\?(?:=|!|<=|<!|>)", rx), f"lookaround/atomic group, not RE2: {rx}"
+        assert not re.search(r"\\[1-9]", rx), f"backreference, not RE2: {rx}"
+        re.compile(rx)
+
+
 def test_a_namespace_that_is_not_a_dns_label_never_reaches_a_selector():
     sim = _SimLoki({"fatal": {'x"} or {namespace=~".+': {_hours_back(1): 1}}})
     (p,) = _run(sim)
@@ -616,6 +667,10 @@ _ERROR_LINES = [
                  id="kubernetes-warning-event"),
     pytest.param("panic: runtime error: invalid memory address or nil pointer dereference", id="go-panic"),
     pytest.param("fatal error: concurrent map writes", id="go-fatal-error"),
+    # Serilog's abbreviated error level, without the word (GIKS, msa2-dev 2026-10-10).
+    pytest.param("[14:20:02 ERR] 10 state change attempt(s) failed due to an exception, "
+                 "moving job to the FailedState", id="serilog-ERR-without-the-word"),
+    pytest.param("[14:20:02 FTL] Host terminated unexpectedly", id="serilog-FTL"),
 ]
 
 

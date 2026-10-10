@@ -12,7 +12,18 @@ def _no_prometheus(monkeypatch):
     """run_async reads namespace ages from Prometheus: no test reaches a cluster."""
     from cluster_agent.modes import daily_digest
     monkeypatch.setattr(daily_digest, "prometheus_query",
+                        lambda cluster, promql: {"data": {"result": [
+                            {"metric": {"namespace": "giks"}, "value": [1791676800, "1791504000"]}]}})
+
+
+def test_an_empty_namespace_age_answer_raises(monkeypatch):
+    """No namespace at all (kube-state-metrics down) is no answer: it must
+    not read as "every namespace is old", silently."""
+    from cluster_agent.modes import daily_digest
+    monkeypatch.setattr(daily_digest, "prometheus_query",
                         lambda cluster, promql: {"data": {"result": []}})
+    with pytest.raises(LookupError):
+        daily_digest._namespace_created("dev")
 
 
 def test_namespace_created_reads_kube_state_metrics(monkeypatch):
