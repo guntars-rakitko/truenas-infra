@@ -70,8 +70,8 @@
 #   cd ~/github/truenas-infra && git switch main && git pull --ff-only && git log -1 --oneline
 #   doppler run -p infrastructure -c ops -- ./scripts/setup-talos-shutdown-orchestrator.sh
 #
-# Pin TALOSCTL_VERSION to the RUNNING cluster version: v1.14.1, both MS-A2
-# boxes (kube-infra talos-os/patches/node-msa2-*.yaml). Same MINOR is the
+# Pin TALOSCTL_VERSION to the RUNNING cluster version: v1.14.2, both MS-A2
+# boxes since 2026-10-10 (kube-infra talos-os/patches/node-msa2-*.yaml; v1.14.1 before). Same MINOR is the
 # compatibility line this file relies on (a client newer than a server only
 # WARNS — talosctl ClientVersionCheck); a full-minor gap was never verified
 # here, and "nothing else would surface a break until a real power outage"
@@ -83,7 +83,7 @@
 # the NAS — the configs are 0600).
 set -euo pipefail
 
-TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.1}"   # ⚠ must match the RUNNING nodes — see note above
+TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.14.2}"   # ⚠ must match the RUNNING nodes — see note above
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH_LOCAL="$REPO/scripts/nas-ups-orchestrator.sh"

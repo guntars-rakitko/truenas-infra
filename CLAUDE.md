@@ -1374,8 +1374,8 @@ matched the checkout's, and both boxes answered `Server: v1.14.1`.
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary
-(the setup script's `TALOSCTL_VERSION`, default **v1.14.1**, both MS-A2 boxes'
-version). Same-minor compatibility was **empirically confirmed** on 2026-07-29
+(the setup script's `TALOSCTL_VERSION`, default **v1.14.2**, both MS-A2 boxes'
+version since 2026-10-10; v1.14.1 before). Same-minor compatibility was **empirically confirmed** on 2026-07-29
 (a v1.13.2 client plus the real `os:operator` credential authenticating to a
 v1.13.7 node), but a major/minor gap would break the UPS shutdown path
 **silently**, surfacing only during a real outage. The printed check's second
