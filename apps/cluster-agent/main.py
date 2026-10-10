@@ -9,9 +9,9 @@ Exposes:
   - /        — basic identity endpoint.
 
 APScheduler runs in a BackgroundScheduler thread; lifecycle managed
-by FastAPI's lifespan context-manager. P0 registers no modes (the
-scheduler starts empty). P1+ adds modes via _scheduler.add_mode(...)
-inside the lifespan startup block.
+by FastAPI's lifespan context-manager. The lifespan startup block
+registers the Mode A daily digest, one job per cluster
+(_scheduler.add_daily_digest).
 """
 from __future__ import annotations
 import os
@@ -43,13 +43,13 @@ from cluster_agent.scheduler import Scheduler
 # footgun still applies — if both keys reach the SDK, it silently uses
 # the API key and we lose visibility. Routing first means there's only
 # ever one key in env by the time the rest of the app boots.
-# Default `oauth` — the daily-digest cadence (2 calls/day at 06:00
-# EEST, well outside operator interactive-Claude-Code hours) means the
-# OAuth/Max-subscription path is the cheaper, safer default. Operator
-# set Doppler `LLM_AUTH_MODE=oauth` 2026-05-26. The default here is
-# the fallback if the env var disappears (it shouldn't, but cheap to
-# match the operational intent).
-_AUTH_MODE = os.environ.get("LLM_AUTH_MODE", "oauth").lower()
+# Default `api_key`, the value Doppler has held since 2026-05-27: OAuth
+# tokens may not call the Messages API directly (Anthropic's credential
+# policy), and that path never reached the LLM here (truenas-infra
+# CLAUDE.md § cluster-agent ops, "LLM auth toggle"). The default is the
+# fallback if the env var disappears. Until 2026-10-10 it was `oauth`,
+# the 2026-05-26 intent, a day before that path was found blocked.
+_AUTH_MODE = os.environ.get("LLM_AUTH_MODE", "api_key").lower()
 if _AUTH_MODE == "oauth":
     os.environ.pop("ANTHROPIC_API_KEY", None)
 elif _AUTH_MODE == "api_key":
@@ -138,10 +138,11 @@ app = FastAPI(title="cluster-agent", version="0.1.0", lifespan=lifespan)
 async def health() -> dict:
     """Container healthcheck + ops endpoint.
 
-    Returns ok/degraded based on per-mode last-success timestamps.
-    In P0 no modes are registered, so the response just reports
-    config visibility (enabled flag, disabled modes list) + uptime
-    + scheduler liveness.
+    Reports config visibility (enabled flag, disabled modes), uptime,
+    scheduler liveness and each digest job's next run. It says nothing
+    about whether a run SUCCEEDED: an expired kubeconfig token fails every
+    run while this stays "ok" (truenas-infra CLAUDE.md § cluster-agent ops;
+    kube-infra's ClusterAgentNoSuccessfulRun watches the run counter).
     """
     enabled = os.environ.get("ENABLED", "true").lower() == "true"
     disabled_modes = sorted({
@@ -149,7 +150,7 @@ async def health() -> dict:
         for m in os.environ.get("DISABLED_MODES", "").split(",")
         if m.strip()
     })
-    # P1: per-mode last-run / status from scheduler job inspection
+    # Each digest job's next run, from the scheduler.
     modes: dict[str, dict] = {}
     for job in _scheduler._sched.get_jobs():
         if job.id.startswith("mode-A-"):

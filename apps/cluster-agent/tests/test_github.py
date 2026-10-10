@@ -2,10 +2,12 @@
 import respx
 import httpx
 
+import pytest
+
 from cluster_agent.tools.github import (
     _build_app_jwt,
     gh_get_installation_token,
-    gh_list_prs,
+    gh_issue_get,
 )
 
 
@@ -33,26 +35,43 @@ def test_jwt_has_iss_iat_exp(monkeypatch):
     assert called["algorithm"] == "RS256"
 
 
-@respx.mock
-def test_gh_list_prs_returns_array(monkeypatch):
-    """gh_list_prs hits /repos/<owner>/<repo>/pulls with the installation token."""
-    monkeypatch.setenv("CLUSTER_AGENT_GH_APP_ID", "12345")
-    monkeypatch.setenv("CLUSTER_AGENT_GH_APP_PRIVATE_KEY", "LS0tLS1pZ25vcmVk")
-    monkeypatch.setenv("CLUSTER_AGENT_GH_APP_INSTALLATION_ID", "67890")
-
+def _fake_auth(monkeypatch):
     import cluster_agent.tools.github as gh
     # Short-circuit the JWT + installation-token exchange
     monkeypatch.setattr(gh, "_build_app_jwt", lambda: "fake.jwt")
     monkeypatch.setattr(gh, "gh_get_installation_token", lambda: "ghs_faketoken")
 
-    url = "https://api.github.com/repos/guntars-rakitko/kube-infra/pulls"
-    respx.get(url).mock(return_value=httpx.Response(200, json=[
-        {"number": 1, "title": "test pr", "state": "open"},
-    ]))
 
-    prs = gh_list_prs("guntars-rakitko/kube-infra")
-    assert len(prs) == 1
-    assert prs[0]["title"] == "test pr"
+@respx.mock
+def test_gh_issue_get_returns_the_issue(monkeypatch):
+    """gh_issue_get reads /repos/<owner>/<repo>/issues/<n> with the installation token."""
+    _fake_auth(monkeypatch)
+    url = "https://api.github.com/repos/guntars-rakitko/kube-infra/issues/1600"
+    route = respx.get(url).mock(return_value=httpx.Response(200, json={
+        "number": 1600, "state": "closed", "closed_at": "2026-10-10T12:00:00Z"}))
+    issue = gh_issue_get("guntars-rakitko/kube-infra", 1600)
+    assert issue["state"] == "closed"
+    assert route.calls.last.request.headers["Authorization"] == "Bearer ghs_faketoken"
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [404, 410])
+def test_gh_issue_get_answers_none_for_an_issue_that_does_not_exist(monkeypatch, status):
+    _fake_auth(monkeypatch)
+    respx.get("https://api.github.com/repos/guntars-rakitko/kube-infra/issues/5").mock(
+        return_value=httpx.Response(status, json={"message": "Not Found"}))
+    assert gh_issue_get("guntars-rakitko/kube-infra", 5) is None
+
+
+@respx.mock
+def test_gh_issue_get_raises_on_any_other_failure(monkeypatch):
+    """A 502, or the 301 of a renamed repo: the reconcile decides by repo
+    whether that means closed (a retired repo) or "cannot tell"."""
+    _fake_auth(monkeypatch)
+    respx.get("https://api.github.com/repos/guntars-rakitko/kube-infra/issues/6").mock(
+        return_value=httpx.Response(502, text="Bad Gateway"))
+    with pytest.raises(httpx.HTTPStatusError):
+        gh_issue_get("guntars-rakitko/kube-infra", 6)
 
 
 def test_gh_issue_create_refuses_non_allowlisted_repo(monkeypatch):
@@ -77,19 +96,17 @@ def test_gh_issue_create_refuses_non_allowlisted_repo(monkeypatch):
         raise AssertionError("expected PermissionError on non-allowlisted repo")
 
 
-def test_write_allowlist_includes_graduation_repos():
-    """The 2026-07-06 findings-graduation must have the ops repo + the
-    renamed digest repo on the write-allowlist (and keep the transitional
-    sandbox entry). `_assert_write_allowed` returns None (no raise) for
-    each."""
-    from cluster_agent.tools.github import _assert_write_allowed
+def test_write_allowlist_is_exactly_the_two_destinations():
+    """The ops repo (findings) and the digest repo (summaries), and nothing
+    else: the transitional `cluster-agent-sandbox` entry went on 2026-10-10,
+    with no state.db row naming it."""
+    from cluster_agent.tools.github import _WRITE_ALLOWED_REPOS, _assert_write_allowed
 
-    for repo in (
-        "guntars-rakitko/kube-infra",
-        "guntars-rakitko/cluster-agent-digest",
-        "guntars-rakitko/cluster-agent-sandbox",
-    ):
+    assert _WRITE_ALLOWED_REPOS == {"guntars-rakitko/kube-infra", "guntars-rakitko/cluster-agent-digest"}
+    for repo in _WRITE_ALLOWED_REPOS:
         _assert_write_allowed(repo)   # must not raise
+    with pytest.raises(PermissionError):
+        _assert_write_allowed("guntars-rakitko/cluster-agent-sandbox")
 
 
 def test_gh_issue_comment_refuses_non_allowlisted_repo(monkeypatch):

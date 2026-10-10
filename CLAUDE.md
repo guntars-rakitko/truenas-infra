@@ -434,7 +434,7 @@ prunes it (`loki-chunks`, `pocket-id-litestream`):
 
 | Bucket | Consumer |
 |---|---|
-| `cluster-agent` | cluster-agent — `state.db` nightly backups |
+| `cluster-agent` | ⚠ **ORPHAN — no consumer.** Meant for nightly `state.db` copies (cluster-agent design § 4.4), which were never built: empty on both instances (2026-10-10). This row said "`state.db` nightly backups" until then. `state.db` itself has no copy; losing it costs the dedup memory (the next run re-files what is still firing) and nothing else, since the finding issues live in GitHub. Removal is the `loki-chunks` procedure below. |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 | `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
@@ -498,7 +498,7 @@ Current ILM rules:
 
 | Bucket | Expiration | Why |
 |---|---|---|
-| `cluster-agent` (both clusters) | 30 days | cluster-agent `state.db` nightly backups — 30d of history is ample to recover the dedup/state DB; older copies are noise. |
+| `cluster-agent` (both clusters) | 30 days | Inert: the bucket is an orphan, nothing writes it (§ setup-minio-buckets.sh). It goes with the bucket. |
 | `etcd-snapshots` (dev) | **7 days** | Hourly `talosctl etcd snapshot`. 168 snapshots. Dev cluster state is re-creatable, so a week of hourly granularity is generous. Added 2026-08-07 — see the warning below. |
 | `etcd-snapshots` (prd) | **14 days** | 336 snapshots. Production gets the longer window so a problem noticed a week late still has pre-incident snapshots. |
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
@@ -682,7 +682,11 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    when the history is empty. Excluding it would silently drop the tripwire
    scan on every alert-quiet day.
 2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
-   alerts (not for self_healed/transient — presumed noise).
+   alerts (not for self_healed/transient — presumed noise). The chronicity
+   thresholds are `digest_aggregator.CHRONIC_THRESHOLD_SECONDS` (1 h in
+   total), `FLAPPING_THRESHOLD_CYCLES` (3) and `TRANSIENT_THRESHOLD_SECONDS`
+   (5 min); the summary's section headers are built from them (until
+   2026-10-10 they said "> 6h" and "> 3 cycles").
 3. **P3: Mines Loki for notable log patterns** — namespaces whose 24h
    count of **error-level** lines is ≥ 3× their daily mean over the 6
    days before (`ratio_outlier`),
@@ -744,6 +748,25 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    measured evidence per filter, and the tests evaluate each tripwire
    against captured record lines and real event lines (e.g. trivy's
    `FATAL … image scan error`, the #1312 signal).
+3b. **Reads the known events** (2026-10-10, `modes/known_events.py`):
+   what the cluster went through from an hour before the window to its
+   end. Node boots and kube-apiserver restarts are the distinct values of
+   `node_boot_time_seconds` and `process_start_time_seconds{job="apiserver"}`
+   (Prometheus, 5-min steps; an apiserver start within 15 min after a boot
+   is part of the boot). HelmRelease upgrades come from each release's
+   `status.history`, restore drills from the Jobs of the `*-restore-drill`
+   CronJobs (both `kubectl get` with the agent's read-only kubeconfig). A
+   planned change makes noise, and without these the LLM filed it as
+   findings: kube-infra #1437 (a Talos config apply's apiserver restart),
+   #1509 (a drill's Postgres "starting up"), #1535 (three upgrades) and
+   the reboot findings of 2026-10-02..07. The prompt tells the LLM to fold
+   a signal that starts within ~30 min after an event into one summary
+   line naming it, unless it outlasts the event by about an hour. A source
+   that fails is a `known events <source>: <Exception>` coverage gap, like
+   a failed Loki query.
+3c. **Numbers every signal** (`modes/signals.py`): alert groups A1, A2, …,
+   log patterns L1, …, known events E1, …. A Finding cites the ids it
+   covers in `signals`.
 4. **Reconciles state.db against live GH issue state** (2026-07-16,
    `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
    remaining open dedup_keys from state.db (LLM avoids semantic
@@ -753,8 +776,33 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    and the LLM keeps skipping the chronic condition as "already tracked"
    against a dead issue (the 2026-07 "digest cites closed issues as open"
    gap). Spec: `docs/superpowers/specs/2026-07-16-finding-state-reconcile.md`.
-5. ONE LLM call → Report (alerts + log patterns + dedup context).
-6. Each Finding dispatched to Grafana annotation + GH issue +
+   Since 2026-10-10 it reads each open finding's issue on its own
+   (`gh_issue_get`). ⚠ Until then it LISTED the repo's issues, one page of
+   100 per state, and closed every open finding whose issue the page did
+   not reach: kube-infra holds thousands of issues and PRs. Then each alert
+   group and log pattern that an OPEN finding issue already tracks gets
+   `tracked_by` = that issue, which the LLM sees (it then names the issue
+   instead of re-filing) and the summary's `rolled into` column shows.
+5. ONE LLM call → Report (alerts + log patterns + known events + dedup
+   context).
+6. **Each Finding's dedup key is built in code from its signals**
+   (`modes/signals.py`, 2026-10-10): `alert:<alertname>:<namespace>:<cluster>`,
+   `log:ratio:<namespace>:<cluster>`, `log:tripwire:<label>:<namespace>:<cluster>`.
+   ⚠ Until then the LLM invented the key, and its scope changed daily
+   (state.db on 2026-10-10: `…:prd-node-17h04:prd`,
+   `…:prd-node-20261006T1231:prd`), so a recurring condition filed a new
+   issue instead of commenting on the open one. A finding that cites
+   several signals takes the first key state.db already knows (an open
+   issue, or one closed less than 7 days ago), else the first in sorted
+   order; its other keys become **aliases** of its issue in state.db (a key
+   open on a different issue is never repointed), so tomorrow any one of
+   them lands there. A signal belongs to the first finding that cites it. A
+   finding citing no alert group or log pattern keeps the LLM's key, its
+   cluster suffix forced. ⚠ The switch has no migration: an old LLM key never
+   equals a code-built one, so a condition still firing under an issue filed
+   with an old key files once more under its new key; close the old issue
+   then. (Every finding issue filed before 2026-10-10 was closed that day.)
+   Then each Finding is dispatched to Grafana annotation + GH issue +
    state.db record. The annotation is best-effort: a failure is logged and
    counted, never fatal (`dispatch.py`). It goes to the cluster's
    `grafana-nas` NodePort with a service-account token (kube-infra#1366,
@@ -764,7 +812,13 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    failure after a restart is a rise that `ClusterAgentDispatchErrors`
    (`increase(…[6h]) > 0`) sees. A series born at 1 has no earlier sample,
    and that first failure never fired. A new surface goes into that tuple
-   (`tests/test_metrics.py` checks it).
+   (`tests/test_metrics.py` checks it). Every metric `emit/metrics.py`
+   declares is one the agent sets, and that test fails on one nothing sets:
+   seven declared for never-built modes (findings, PR actions, the
+   "anthropic" cost and tokens, backup verification, doctrine drift) went
+   on 2026-10-10; a dashboard tile had read the always-0 cost counter
+   (kube-infra MS-A2 plan Task D6c moved it to
+   `cluster_agent_llm_cost_usd_total`).
 
 Cost: ~$0.25-0.50/day on Sonnet 4.6 (cached prefix shared between
 dev + prd runs since they fire 60s apart).
@@ -805,6 +859,12 @@ pytest `__pycache__/*.pyc` on every deploy.
   uploaded; they log a `cluster_agent_untracked_not_uploaded` warning. Commit
   them via a PR. Run outside a git work tree, the phase fails before the
   first upload rather than falling back to the walk.
+- ⚠ **Files deleted from git stay on the NAS**, inert: the phase uploads,
+  and TrueNAS 25.10 has no file-delete API. Since 2026-10-10 that includes
+  `code/src/cluster_agent/modes/context.py`, `code/prompts/alert_triage.md`
+  and `code/prompts/_shared/output_schema.md` (nothing imports or renders
+  them). Remove them once, by hand:
+  `ssh -t truenas_admin@10.10.5.10 'sudo rm -f /mnt/tank/system/apps-config/cluster-agent/code/src/cluster_agent/modes/context.py /mnt/tank/system/apps-config/cluster-agent/code/prompts/alert_triage.md /mnt/tank/system/apps-config/cluster-agent/code/prompts/_shared/output_schema.md'`.
 - ⚠ **37 stale `.pyc` files remain on the NAS** under
   `code/src/cluster_agent/**/__pycache__/` (cpython-311 and -314, including
   `modes/alert_triage` and `tools/mc`, deleted from git in May 2026).
@@ -893,6 +953,9 @@ doppler secrets set LLM_AUTH_MODE=api_key --project cluster-agent --config prd
 ./manage.sh phase apps --apply       # env hash changed → container recreated
 ```
 
+`main.py` falls back to `api_key` when the key is missing (since
+2026-10-10; it fell back to `oauth` before, the intent of 2026-05-26).
+
 **Current default: `api_key` — and OAuth is no longer a viable path
 for cluster-agent.** Flipped 2026-05-27 after discovering OAuth has
 effectively never worked for this use case. Two compounding
@@ -967,7 +1030,14 @@ Per-day issue: title carries date + counts (e.g. `Daily digest — prd
 preview. Yesterday's auto-closes when today's is filed. Body groups
 alerts by chronicity (chronic / flapping / active / self-healed /
 transient), with a `rolled into` column linking back to the per-
-Finding issues. Watchdog is silently excluded from the rendering.
+Finding issues (a finding of the run that cites the row's signal id;
+else, for an alert group, one whose alert evidence names it; else the open
+issue in `tracked_by`, marked `(already open)`). ⚠ Until 2026-10-10 the
+column read `ev.source`, which Evidence never had, so it was empty on every
+summary. The log-pattern table has the same column, and a `Known events`
+section lists the run's events with their ids (a `⚠ Known-events coverage
+gaps` section names a source that failed). Watchdog is silently excluded
+from the rendering.
 **Since 2026-09-26 the body also names every Loki query that failed**
 in a `⚠ Log-mining coverage gaps` section, for example
 `tripwire OOMKilled: ReadTimeout`. A tripwire that timed out was never
@@ -1057,7 +1127,10 @@ its own (`Finding.cluster` `nas` / `global`) is its own label.
   exist in Doppler (empty is fine) or `manage.sh phase apps` fails loud.
 - `SANDBOX_REPO` / `LLM_MODEL` — legacy fallback repo (redirects to
   `cluster-agent-digest` post-rename) + model name for `_MODEL_RATES_PER_1M`.
-- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` — runtime kill switches.
+- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` — kill switches, read
+  when a job fires (`MODE_A_CLUSTERS` at start). Like every key, a change
+  reaches the container only with `manage.sh phase apps --only
+  cluster-agent --apply`, which recreates it.
 
 **Reserved-for-future keys (paused after 2026-05-27 wrap):**
 - `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for Mode G

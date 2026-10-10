@@ -10,7 +10,8 @@ issue nobody has investigated.
 
 This module produces ONE markdown summary per cluster per day listing
 ALL alert groups (and log patterns) grouped by chronicity, with a
-`rolled_into` column linking the Finding-issue covering each group.
+`rolled into` column linking the Finding-issue covering each one (by the
+signal ids the finding cites), and the known events of the window.
 
 **Delivery destinations** controlled by Doppler key `DIGEST_SUMMARY`
 (CSV, empty = disabled):
@@ -45,9 +46,14 @@ import os
 from typing import Any
 
 from ..clusters import all_names, cluster_name
-from ..schema import AlertGroup, Finding, LogPattern
+from ..schema import AlertGroup, Finding, KnownEvent, LogPattern
 from ..tools.email import send_email
 from ..tools.github import gh_issue_close, gh_issue_create, gh_issue_list
+from .digest_aggregator import (
+    CHRONIC_THRESHOLD_SECONDS,
+    FLAPPING_THRESHOLD_CYCLES,
+    TRANSIENT_THRESHOLD_SECONDS,
+)
 
 
 log = logging.getLogger(__name__)
@@ -86,13 +92,18 @@ _CHRONICITY_ORDER = ["chronic", "flapping", "active", "self_healed", "transient"
 
 
 def _bucket_label(chronicity: str) -> str:
-    """Human-readable section header per chronicity bucket."""
+    """Human-readable section header per chronicity bucket, built from the
+    aggregator's own thresholds (until 2026-10-10 these headers said "> 6h"
+    and "> 3 cycles" while the code classified at 1h and >= 3)."""
+    chronic = _fmt_duration(CHRONIC_THRESHOLD_SECONDS)
+    transient = _fmt_duration(TRANSIENT_THRESHOLD_SECONDS)
+    cycles = FLAPPING_THRESHOLD_CYCLES
     return {
-        "chronic":     "Chronic (firing > 6h, never resolved)",
-        "flapping":    "Flapping (> 3 fire/resolve cycles in 24h)",
-        "active":      "Active (currently firing, < 6h)",
-        "self_healed": "Self-healed transient (single cycle)",
-        "transient":   "Transient (single short fire)",
+        "chronic":     f"Chronic (firing ≥ {chronic} in total)",
+        "flapping":    f"Flapping (≥ {cycles} fire/resolve cycles, < {chronic} in total)",
+        "active":      f"Active (firing now, < {chronic} in total, < {cycles} cycles)",
+        "self_healed": f"Self-healed (resolved: 2 cycles, or one fire longer than {transient})",
+        "transient":   f"Transient (one fire of ≤ {transient}, resolved)",
     }.get(chronicity, chronicity.replace("_", " ").title())
 
 
@@ -150,32 +161,41 @@ def _alert_target(g: AlertGroup) -> str:
     return ", ".join(pairs) if pairs else "—"
 
 
-def _finding_index_for_group(
-    group: AlertGroup,
+def _rolled_into(
+    signal: AlertGroup | LogPattern,
     findings: list[Finding],
     dispatch_refs: dict[str, str],
 ) -> str:
-    """Return the finding's full `owner/repo#NN` issue ref if this
-    AlertGroup is plausibly covered by one of the emitted findings; else
-    empty string.
+    """The issue ref covering this alert group or log pattern, or "".
 
-    The FULL ref (not a bare `#NN`) is deliberate: since the 2026-07-06
-    graduation, findings live in `kube-infra` while this summary lives in
-    `cluster-agent-digest`, so GitHub needs the `owner/repo#NN` form to
-    render a cross-repo link (a bare `#NN` would resolve inside the digest
-    repo — the wrong issue).
+    A finding of this run that cites the signal's `signal_id` in its
+    `signals` gives its full `owner/repo#NN` ref. The FULL ref (not a bare
+    `#NN`) is deliberate: findings live in `kube-infra` while this summary
+    lives in `cluster-agent-digest`, so GitHub needs the `owner/repo#NN`
+    form to render a cross-repo link.
 
-    `dispatch_refs` maps Finding.id → "owner/repo#NN" (from DispatchResult).
-    Heuristic: match alertname substring in any evidence-source field.
+    An alert group no finding cites by id falls back to a finding whose
+    alert evidence names its alertname (findings from an LLM that cited no
+    signals). Last, a signal an OPEN issue already tracks (`tracked_by`)
+    shows that issue, marked as such.
+
+    ⚠ Until 2026-10-10 this read `ev.source`, which Evidence never had, so
+    the column was empty on every summary since 2026-05-27.
     """
+    sid = signal.signal_id
     for f in findings:
         ref = dispatch_refs.get(f.id, "")
-        if not ref:
-            continue
-        for ev in getattr(f, "evidence", []) or []:
-            source = getattr(ev, "source", "") or ""
-            if group.alertname in source:
+        if ref and sid and sid in f.signals:
+            return ref
+    if isinstance(signal, AlertGroup):
+        for f in findings:
+            ref = dispatch_refs.get(f.id, "")
+            if ref and not f.signals and any(
+                ev.type == "alert" and signal.alertname in ev.ref for ev in f.evidence
+            ):
                 return ref
+    if signal.tracked_by:
+        return f"{signal.tracked_by} (already open)"
     return ""
 
 
@@ -193,24 +213,29 @@ def _render_groups_table(
     if not groups:
         return "_(none)_\n"
     rows = [
-        "| alertname | target | fires | total firing | last seen | rolled into |",
-        "|---|---|---:|---:|---|---|",
+        "| id | alertname | target | fires | total firing | last seen | rolled into |",
+        "|---|---|---|---:|---:|---|---|",
     ]
     for g in groups:
         rows.append(
-            "| `{}` | {} | {} | {} | {} | {} |".format(
+            "| {} | `{}` | {} | {} | {} | {} | {} |".format(
+                g.signal_id or " ",
                 g.alertname,
                 _alert_target(g),
                 g.fire_count,
                 _fmt_duration(g.total_firing_seconds),
                 _fmt_time(g.last_seen_at),
-                _finding_index_for_group(g, findings, dispatch_refs) or " ",
+                _rolled_into(g, findings, dispatch_refs) or " ",
             )
         )
     return "\n".join(rows) + "\n"
 
 
-def _render_log_patterns_table(patterns: list[LogPattern]) -> str:
+def _render_log_patterns_table(
+    patterns: list[LogPattern],
+    findings: list[Finding] | None = None,
+    dispatch_refs: dict[str, str] | None = None,
+) -> str:
     """One-row-per-pattern table for the log-mining tail of the digest.
 
     `signal` is either the tripwire label (e.g. "OOMKilled") or the
@@ -218,9 +243,11 @@ def _render_log_patterns_table(patterns: list[LogPattern]) -> str:
     """
     if not patterns:
         return "_(none)_\n"
+    findings = findings or []
+    dispatch_refs = dispatch_refs or {}
     rows = [
-        "| signal | namespace | level | count_24h | baseline | chronicity |",
-        "|---|---|---|---:|---|---|",
+        "| id | signal | namespace | level | count_24h | baseline | chronicity | rolled into |",
+        "|---|---|---|---|---:|---|---|---|",
     ]
     for p in patterns:
         if p.matched_tripwire:
@@ -233,16 +260,39 @@ def _render_log_patterns_table(patterns: list[LogPattern]) -> str:
             else:
                 baseline = "—"
         rows.append(
-            "| `{}` | `{}` | {} | {} | {} | {} |".format(
+            "| {} | `{}` | `{}` | {} | {} | {} | {} | {} |".format(
+                p.signal_id or " ",
                 signal,
                 p.namespace,
                 p.level,
                 p.count_24h,
                 baseline,
                 p.chronicity,
+                _rolled_into(p, findings, dispatch_refs) or " ",
             )
         )
     return "\n".join(rows) + "\n"
+
+
+def _render_known_events(events: list[KnownEvent]) -> str:
+    """The changes the cluster went through: what the LLM was told to fold
+    an alert or a log line into instead of filing it."""
+    if not events:
+        return "_(none)_\n"
+    rows = ["| id | time | event |", "|---|---|---|"]
+    for e in events:
+        rows.append(f"| {e.signal_id or ' '} | {_fmt_time(e.at)} | {e.what} |")
+    return "\n".join(rows) + "\n"
+
+
+def _render_known_event_gaps(failures: list[str]) -> str:
+    lines = "\n".join(f"- `{f}`" for f in failures)
+    return (
+        f"## ⚠ Known-events coverage gaps ({len(failures)})\n\n"
+        "These sources FAILED, so their events are **unknown** this run: a "
+        "reboot or an upgrade there may have been filed as a finding.\n\n"
+        + lines + "\n"
+    )
 
 
 def _render_log_mining_gaps(failures: list[str]) -> str:
@@ -274,6 +324,8 @@ def render_summary_body(
     model: str,
     digest_summary: str,
     log_mining_failures: list[str] | None = None,
+    known_events: list[KnownEvent] | None = None,
+    known_event_failures: list[str] | None = None,
 ) -> str:
     """Produce the markdown body for the per-cluster daily summary issue.
 
@@ -308,7 +360,7 @@ def render_summary_body(
         actionable_block = "\n".join(
             "- {ref} **[{sev}]** {title}".format(
                 # Full `owner/repo#NN` ref so the link resolves to the
-                # kube-infra finding cross-repo (see _finding_index_for_group).
+                # kube-infra finding cross-repo (see _rolled_into).
                 ref=dispatch_refs[f.id]
                 if dispatch_refs.get(f.id)
                 else "(no issue)",
@@ -329,6 +381,16 @@ def render_summary_body(
     sections.append(
         f"## Actionable findings ({len(findings)})\n\n" + actionable_block
     )
+    known_events = known_events or []
+    sections.append(
+        f"## Known events ({len(known_events)})\n\n"
+        "Changes the cluster went through (boots, apiserver restarts, Helm "
+        "upgrades, restore drills). Alerts and log lines that followed one "
+        "are its noise unless they outlasted it.\n\n"
+        + _render_known_events(known_events)
+    )
+    if known_event_failures:
+        sections.append(_render_known_event_gaps(known_event_failures))
     sections.append(
         f"## Background activity ({len(groups)} alert groups, "
         f"Watchdog excluded)\n\n"
@@ -348,7 +410,7 @@ def render_summary_body(
     if log_patterns:
         sections.append(
             f"## Log patterns ({len(log_patterns)})\n\n"
-            + _render_log_patterns_table(log_patterns)
+            + _render_log_patterns_table(log_patterns, findings, dispatch_refs)
         )
     if log_mining_failures:
         sections.append(_render_log_mining_gaps(log_mining_failures))
@@ -550,6 +612,8 @@ def emit_summary(
     model: str,
     digest_summary: str,
     log_mining_failures: list[str] | None = None,
+    known_events: list[KnownEvent] | None = None,
+    known_event_failures: list[str] | None = None,
 ) -> dict[str, bool]:
     """Top-level summary-delivery orchestrator.
 
@@ -575,6 +639,8 @@ def emit_summary(
         model=model,
         digest_summary=digest_summary,
         log_mining_failures=log_mining_failures,
+        known_events=known_events,
+        known_event_failures=known_event_failures,
     )
 
     results: dict[str, bool] = {}

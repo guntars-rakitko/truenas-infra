@@ -26,14 +26,23 @@ from typing import Any
 from ..schema import AlertGroup, Chronicity, LogPattern
 
 
+# The chronicity thresholds. The digest-summary's section headers are built
+# from these (summary_issue._bucket_label), so the two cannot drift apart:
+# until 2026-10-10 those headers said "> 6h" and "> 3 cycles" while the code
+# classified at 1h and 3.
+CHRONIC_THRESHOLD_SECONDS = 3600
+TRANSIENT_THRESHOLD_SECONDS = 300
+FLAPPING_THRESHOLD_CYCLES = 3
+
+
 def aggregate(
     prom_response: dict[str, Any],
     *,
     step_seconds: int = 60,
     now: dt.datetime | None = None,
-    chronic_threshold_seconds: int = 3600,
-    transient_threshold_seconds: int = 300,
-    flapping_threshold_cycles: int = 3,
+    chronic_threshold_seconds: int = CHRONIC_THRESHOLD_SECONDS,
+    transient_threshold_seconds: int = TRANSIENT_THRESHOLD_SECONDS,
+    flapping_threshold_cycles: int = FLAPPING_THRESHOLD_CYCLES,
 ) -> list[AlertGroup]:
     """Convert a `prometheus_query_range` response into AlertGroups.
 
@@ -154,11 +163,12 @@ def _classify_chronicity(
 
     Priority order (matters: an alert can be both flapping AND chronic;
     we surface the most actionable label):
-      1. chronic if total firing > 1h cumulative
+      1. chronic if total firing >= 1h cumulative
       2. flapping if >= 3 cycles (regardless of duration)
       3. active if currently firing but doesn't meet 1 or 2 yet
       4. self_healed if not currently firing and fire count >= 2
-      5. transient if single short fire, resolved
+      5. transient if one fire of <= 5 min, resolved
+      6. self_healed otherwise (one fire longer than 5 min, resolved)
     """
     if total_firing_seconds >= chronic_threshold_seconds:
         return "chronic"
@@ -358,20 +368,9 @@ _TRIPWIRE_PATTERNS: list[tuple[str, str]] = [
     ("x509_expired",         '|= "x509" |= "expired"' + _RECORD_EXCLUDE),
     # Simpler than the original — most "dial tcp ... connect: connection
     # refused" lines contain exactly this substring, no need for the
-    # full structured match.
-    #
-    # ALSO filter Longhorn manager warnings against detached engines.
-    # RWO Job volumes (e.g. renovate-cache attached to the Renovate
-    # CronJob every 2h) cycle attached→detached with their Job's
-    # lifecycle. While detached, Longhorn's manager periodically polls
-    # the engine pod for clone-status / purge-status and gets connection
-    # refused because the engine pod doesn't exist. Not a real failure
-    # signal — expected lifecycle. Hit on 2026-05-28 (cluster-agent-
-    # sandbox #43, renovate-cache pvc-0ce5a477).
-    ("connection_refused",   '|= "connection refused"'
-                             + ' != "Failed to get clone status"'
-                             + ' != "Failed to get purge status"'
-                             + _RECORD_EXCLUDE),
+    # full structured match. (Two Longhorn excludes, its manager polling a
+    # detached engine, went with Longhorn: the MS-A2 clusters never ran it.)
+    ("connection_refused",   '|= "connection refused"' + _RECORD_EXCLUDE),
     ("permission_denied",    '|= "permission denied"' + _RECORD_EXCLUDE),
     # Kubelet emits `Evicted` in Pod event reasons (capital E); some
     # kubelet log paths use lowercase. Cover both.

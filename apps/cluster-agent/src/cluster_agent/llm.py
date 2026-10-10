@@ -1,11 +1,14 @@
 """LLM wrapper — direct Anthropic `/v1/messages` REST call, structured JSON output.
 
-For Mode A (P1 dev soak), the wrapper is intentionally minimal:
-  - Single LLM call per alert (no MCP, no tools, no multi-turn)
+For Mode A (the daily digest), the wrapper is intentionally minimal:
+  - ONE LLM call per cluster per day (no MCP, no tools, no multi-turn)
   - Pre-gathered context stuffed into the rendered prompt
-  - Output parsed as JSON, validated against schema.Finding
+  - Output parsed as JSON, validated against schema.Report
   - Pre-call cost estimate from len(prompt) → tokens → $; abort if
     it exceeds the per-mode budget
+(The per-alert `triage_alert` of the 5-min model, its `alert_triage.md`
+prompt and `_shared/output_schema.md` went on 2026-10-10: nothing had
+called them since the 2026-05-26 daily-digest pivot.)
 
 **Transport:** direct httpx POST to `https://api.anthropic.com/v1/messages`
 with `Authorization: Bearer ${CLAUDE_CODE_OAUTH_TOKEN}` (the same
@@ -42,7 +45,7 @@ import httpx
 import jinja2
 
 from .prompts.loader import load_prompt
-from .schema import Finding, Report
+from .schema import Report
 from .emit.metrics import (
     LLM_TOKENS_INPUT, LLM_TOKENS_OUTPUT, LLM_COST_USD,
     LLM_CACHE_READ_TOKENS, LLM_CACHE_CREATE_TOKENS,
@@ -52,26 +55,18 @@ from .emit.metrics import (
 # Anthropic prompt-caching multipliers (vs base input rate, per docs:
 # https://docs.claude.com/en/docs/build-with-claude/prompt-caching).
 # Writing to cache costs more than a normal token, but the breakeven
-# is ~2 reads. Our 5-min cron with 5-min cache TTL gives us 1 read per
-# write on average; longer-running clusters (alert keeps firing for 1h)
-# get many reads per write, so the savings compound.
+# is ~2 reads. The digest fires dev at HH:MM and prd at HH:MM+1, inside
+# the 5-min cache TTL, so prd's call reads the prefix dev's wrote.
 _CACHE_WRITE_MULT = 1.25
 _CACHE_READ_MULT = 0.10
 
 
-# The split boundary inside the alert_triage.md template. Everything
-# above this header line (system role + cluster context + included
-# house_style + output_schema) is identical across every Mode A call
-# and is sent as a cached prefix. Everything below contains the
-# per-call {{ alert_json }} / {{ kubectl_describe }} / ... substitutions
-# and is sent uncached.
-_CACHE_BOUNDARY_MARKER = "\n## Active alert\n"
-
-# Same idea for the daily-digest prompt. Boundary is the `## Cluster:`
-# header — everything above (role, estate context, alertname guidance,
-# output rules, selection criteria, house_style include) is identical
-# across every digest call. The cached prefix is ~2300 tokens — well
-# above Anthropic's 1024-token minimum for caching to kick in.
+# The split boundary inside the digest prompt: the `## Cluster:` header.
+# Everything above it (role, estate context, alertname guidance, output
+# rules, selection criteria, house_style include) is identical across
+# every digest call and is sent as a cached prefix; everything below
+# carries the per-call substitutions and is sent uncached. The cached
+# prefix is ~2300 tokens, above Anthropic's 1024-token caching minimum.
 _DIGEST_CACHE_BOUNDARY_MARKER = "\n## Cluster: `"
 
 
@@ -169,14 +164,10 @@ async def _sdk_query(prompt: str, options: dict[str, Any]) -> dict[str, Any]:
         # Plain API key
         headers["x-api-key"] = token
     # Two-content-block message (2026-05-26 cost-cut): the static prefix
-    # of the prompt (system role + cluster context + house_style + output
-    # schema — everything up to "## Active alert") is marked with
-    # cache_control=ephemeral so Anthropic caches it for 5min. The variable
-    # tail (the alert + its context excerpts) is sent uncached. With our
-    # 5-min cron cadence we expect ~1 cache read per cache write per
-    # cluster, falling to 0 reads/write when the cluster is quiet (cache
-    # expires before next call) but climbing to many reads/write when the
-    # cluster is busy and Mode A fires repeatedly.
+    # of the prompt (everything above `## Cluster:`) is marked with
+    # cache_control=ephemeral so Anthropic caches it for 5 min; the
+    # per-cluster tail is sent uncached. prd's call, a minute after dev's,
+    # reads the prefix dev's wrote.
     #
     # Caller passes prompt as either a string (legacy — wrap in single
     # uncached block) or a tuple (cached_prefix, uncached_suffix).
@@ -226,156 +217,13 @@ async def _sdk_query(prompt: str, options: dict[str, Any]) -> dict[str, Any]:
         return r.json()
 
 
-async def triage_alert(
-    *,
-    alert: dict[str, Any],
-    context: dict[str, str],
-    cluster: str,
-    model: str,
-    budget_usd: float,
-    context_window_minutes: int = 30,
-) -> Finding:
-    """One LLM round for one alert → Finding.
-
-    Raises:
-        LLMBudgetExceeded: pre-call estimate > budget_usd
-        ValueError:        LLM returned non-JSON or schema-invalid JSON
-    """
-    alert_namespace = (
-        alert.get("labels", {}).get("namespace")
-        or alert.get("labels", {}).get("pod_namespace")
-        or "(unknown)"
-    )
-    prompt_template = load_prompt("alert_triage")
-    # Per-call Jinja render — the loader's _PreservingUndefined kept
-    # {{ alert_json }} etc as literal text so we can fill them in here.
-    filled = jinja2.Template(prompt_template).render(
-        alert_json=json.dumps(alert, indent=2),
-        alert_namespace=alert_namespace,
-        context_window_minutes=context_window_minutes,
-        loki_excerpt=context.get("loki_excerpt", "(empty)"),
-        kubectl_describe=context.get("kubectl_describe", "(empty)"),
-        prom_values=context.get("prom_values", "(empty)"),
-        flux_state=context.get("flux_state", "(empty)"),
-    )
-
-    # Pre-call budget gate
-    input_tokens_est = _estimate_input_tokens(filled)
-    est_cost = _input_cost_usd(model, input_tokens_est)
-    if est_cost > budget_usd:
-        raise LLMBudgetExceeded(
-            f"estimated input cost ${est_cost:.4f} exceeds budget ${budget_usd:.2f} "
-            f"({input_tokens_est} input tokens at model {model})"
-        )
-
-    # Split the rendered prompt at the "## Active alert" boundary so the
-    # prefix (system role + cluster context + included house_style +
-    # output_schema — all static across every Mode A call) can be cached.
-    # If the marker isn't found (someone edited the template without
-    # respecting the boundary contract), fall back to sending the whole
-    # prompt uncached — correctness over cost optimization.
-    split_at = filled.find(_CACHE_BOUNDARY_MARKER)
-    if split_at == -1:
-        prompt_payload: str | tuple[str, str] = filled
-    else:
-        prompt_payload = (filled[:split_at], filled[split_at:])
-
-    # Call the API. _sdk_query returns the full response dict in the
-    # new (REST) shape OR the legacy stub shape (raw string) for back-
-    # compat with existing tests that monkeypatch it with a string return.
-    # max_tokens=4096 — bumped from 1024 after observing truncation on
-    # complex prd findings (KubeJobFailed alert produced a partial JSON
-    # with `Unterminated string` mid-summary 2026-05-26). A complete
-    # Finding is typically ~600-1200 output tokens; complex multi-evidence
-    # findings can push 2000+. 4096 leaves headroom without meaningful
-    # cost impact (output tokens dominate cost but Sonnet 4.6 caps the
-    # actual generation at what the model decides — max_tokens is a
-    # ceiling, not a target).
-    raw_response = await _sdk_query(prompt_payload, {"model": model, "max_tokens": 4096})
-
-    # Back-compat: tests still stub _sdk_query to return a JSON string
-    # directly (the assistant-text body). Branch on type.
-    cache_read = 0
-    cache_create = 0
-    if isinstance(raw_response, str):
-        raw_text = raw_response
-        usage_in = input_tokens_est
-        usage_out = max(1, len(raw_text) // 4)
-    else:
-        # Real API response: {"content": [{"type":"text","text":"..."}],
-        #                     "usage": {"input_tokens":..., "output_tokens":...,
-        #                               "cache_creation_input_tokens":...,
-        #                               "cache_read_input_tokens":...}}
-        text_blocks = [
-            b.get("text", "") for b in raw_response.get("content", [])
-            if b.get("type") == "text"
-        ]
-        raw_text = "".join(text_blocks)
-        usage = raw_response.get("usage", {})
-        usage_in = usage.get("input_tokens", input_tokens_est)
-        usage_out = usage.get("output_tokens", max(1, len(raw_text) // 4))
-        cache_create = usage.get("cache_creation_input_tokens", 0)
-        cache_read = usage.get("cache_read_input_tokens", 0)
-
-    # Parse + validate
-    # LLM sometimes wraps JSON in ```json ... ``` fences despite explicit
-    # "no prose, no fences" instructions in the prompt. Strip them
-    # leniently before parsing — first observed on Mode A's first
-    # successful Watchdog run 2026-05-26 04:38 UTC.
-    cleaned = _strip_code_fences(raw_text.strip())
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"LLM output is not valid JSON: {e!r}\nRaw: {raw_text[:500]}")
-
-    # Inject the fields we know cluster-side
-    data["mode"] = "A"
-    data["cluster"] = cluster
-    ulid = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
-    data["id"] = ulid
-
-    # Override the LLM-picked cluster suffix in dedup_key. The LLM is
-    # non-deterministic about scope-id naming — observed picking `:prd`,
-    # `:monitoring`, and other values across runs for dev-cluster alerts.
-    # Each run with a fresh scope would create a NEW issue, destroying
-    # dedup. We trust the LLM for the alertname + scope-id parts but
-    # always overwrite the cluster suffix with the actual cluster.
-    if "dedup_key" in data and isinstance(data["dedup_key"], str):
-        parts = data["dedup_key"].rsplit(":", 1)
-        if len(parts) == 2:
-            data["dedup_key"] = f"{parts[0]}:{cluster}"
-
-    try:
-        finding = Finding(**data)
-    except Exception as e:
-        raise ValueError(f"LLM output failed schema validation: {e!r}\nRaw: {raw_text[:500]}")
-
-    # Metrics from real usage (or estimates if test-stubbed). Cache-tier
-    # cost accounting follows Anthropic's pricing:
-    #   - usage_in is BARE-input (uncached) tokens — counts at base rate
-    #   - cache_create tokens count at 1.25x base rate (one-time write cost)
-    #   - cache_read tokens count at 0.10x base rate (the big savings)
-    LLM_TOKENS_INPUT.labels(mode="A").inc(usage_in)
-    LLM_TOKENS_OUTPUT.labels(mode="A").inc(usage_out)
-    LLM_CACHE_READ_TOKENS.labels(mode="A").inc(cache_read)
-    LLM_CACHE_CREATE_TOKENS.labels(mode="A").inc(cache_create)
-    base_input_rate, _ = _MODEL_RATES_PER_1M.get(model, (3.0, 15.0))
-    cost = (
-        _input_cost_usd(model, usage_in)
-        + cache_create * base_input_rate * _CACHE_WRITE_MULT / 1_000_000
-        + cache_read * base_input_rate * _CACHE_READ_MULT / 1_000_000
-        + _output_cost_usd(model, usage_out)
-    )
-    LLM_COST_USD.labels(mode="A").inc(cost)
-
-    return finding
-
-
 async def triage_digest(
     *,
     cluster: str,
     alert_groups: list,            # list[AlertGroup] — typed loosely to avoid circular import
     log_patterns: list | None = None,   # list[LogPattern] — P3 (default None for tests)
+    known_events: list | None = None,   # list[KnownEvent] — modes/known_events.py
+    known_event_failures: list[str] | None = None,
     open_issue_keys: list[str],
     context_excerpts: str,
     window_hours: int,
@@ -406,6 +254,10 @@ async def triage_digest(
         [p.model_dump(mode="json") for p in (log_patterns or [])],
         indent=2, default=str,
     )
+    known_events_json = json.dumps(
+        [e.model_dump(mode="json") for e in (known_events or [])],
+        indent=2, default=str,
+    )
     window_end = "now (UTC)"
     filled = jinja2.Template(prompt_template).render(
         cluster=cluster,
@@ -413,6 +265,15 @@ async def triage_digest(
         window_end=window_end,
         alert_groups_json=groups_json,
         log_patterns_json=log_patterns_json,
+        known_events_json=known_events_json,
+        # Rendered here, not with `{% if %}` in the template: the loader's
+        # first pass drops an `if` on a not-yet-defined name (loader.py).
+        known_events_note=(
+            "Sources that FAILED this run, so their events are unknown (an "
+            "empty list above does NOT mean nothing happened there): "
+            + ", ".join(known_event_failures) + "\n"
+            if known_event_failures else ""
+        ),
         open_issue_keys_json=json.dumps(open_issue_keys, indent=2),
         context_excerpts=context_excerpts or "(no context excerpts gathered)",
     )
@@ -501,9 +362,9 @@ async def triage_digest(
         f["mode"] = "A"
         f["cluster"] = cluster
         f["id"] = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
-        # Same dedup-key cluster-suffix normalization the per-alert
-        # triage applies — the LLM is non-deterministic about scope
-        # naming, and we want consistent state.db keys.
+        # The LLM's own key is only the fallback (the digest runner builds
+        # the key from the finding's `signals`: modes/signals.py), but its
+        # cluster suffix is still forced to the real cluster.
         if "dedup_key" in f and isinstance(f["dedup_key"], str):
             parts = f["dedup_key"].rsplit(":", 1)
             if len(parts) == 2:
@@ -514,7 +375,7 @@ async def triage_digest(
     except Exception as e:
         raise ValueError(f"Digest output failed schema validation: {e!r}\nRaw: {raw_text[:500]}")
 
-    # Metrics (shared with per-alert triage — mode label still "A")
+    # Metrics (mode label "A")
     LLM_TOKENS_INPUT.labels(mode="A").inc(usage_in)
     LLM_TOKENS_OUTPUT.labels(mode="A").inc(usage_out)
     LLM_CACHE_READ_TOKENS.labels(mode="A").inc(cache_read)

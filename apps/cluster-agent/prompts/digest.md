@@ -33,7 +33,7 @@ disruptions is normal. Topology:
 
 ### Standing workloads (do not flag absence as a problem)
 
-Every cluster runs the following — they should always be present:
+Both clusters run the following (namespaces read live 2026-10-10):
 - `flux-system`: source-controller, helm-controller, kustomize-controller, notification-controller
 - `monitoring`: kube-prometheus-stack (Prometheus, Alertmanager, Grafana, Watchdog), Loki, Alloy
 - `kube-system`: Cilium CNI + Hubble (BGP to the router for LoadBalancer IPs)
@@ -43,13 +43,53 @@ Every cluster runs the following — they should always be present:
 - `cnpg-system`, `giks-db`, `w1-db`: CloudNativePG and its Postgres clusters (Barman WAL + base backups to MinIO, a weekly restore drill, off-site dumps to B2)
 - `etcd-backup`: etcd snapshots to MinIO
 - `traefik-admin`: ingress for admin UIs (Grafana, AM, etc.) behind OIDC; `traefik-internal`, `traefik-public`
+- `cloudflared`: the Cloudflare Tunnel connector for the public hostnames; `health`: the tunnel's liveness page
 - `giks`: GIKS .NET 10 app (adminapp + jobserver) — prd and dev each run one
+- `giks-jobs`: the nightly LatvianRegisters importer CronJob
+- `sms-gateway`: the self-built SMS gateway (app + gammu with a USB modem); `device-plugins`: hands that modem to one pod
 - `local-path-storage`: local-path-provisioner, the storage for every PVC
+
+prd (msa2-prd) only: `giks-v1-monitor` (checks the GIKS v1 box's MSSQL
+backups in MinIO) and `maintenance` (the giks.lv operator page).
+dev (msa2-dev) only: `web-tracker`, and the CI substrate: `actions-runner-system`
+(GitHub ARC runners), `buildkit-system`, `renovate`.
 
 There is no `longhorn-system` or `velero` any more: they ran only on the
 3-node Q170S1 clusters (`kub-*`) that the MS-A2 boxes replaced.
 
 (MSSQL is gone: the `sql-*` StatefulSets were decommissioned 2026-06-17.)
+
+### Signals and known events
+
+Every alert group, log pattern and known event below carries a
+`signal_id`: `A1`, `A2`, … for alert groups, `L1`, … for log patterns,
+`E1`, … for known events. List in each Finding's `signals` the ids of every
+alert group and log pattern it covers (and the known events it blames, if
+any). The runtime builds the Finding's dedup key from those ids, so the
+same alert lands on the same GitHub issue every day: cite them exactly,
+and give each alert group and log pattern to **at most one** Finding.
+
+An alert group or log pattern with `tracked_by` set (e.g.
+`guntars-rakitko/kube-infra#1600`) is already tracked by that OPEN issue.
+Name the issue in the summary ("still open: kube-infra#1600") and emit no
+Finding for it, unless it got clearly worse; then emit it with that signal
+and the runtime comments on the open issue.
+
+**Known events** are changes the cluster went through, read from the
+cluster itself: node boots and kube-apiserver restarts (Prometheus),
+HelmRelease upgrades (Flux's release history) and restore drills (their
+Jobs). A planned change makes noise: pods restart, probes fail, operators
+reconnect, Postgres says "starting up". So:
+- An alert group or log pattern that STARTS within about 30 minutes after
+  a known event, in a namespace the event touched (a node boot or an
+  apiserver restart touches every namespace), is most likely that event's
+  consequence. Fold all of them into ONE line of the summary that names
+  the event, e.g. "E1, the node rebooted at 14:21 UTC: 6 alert groups and
+  2 log patterns followed and resolved". Emit no Finding for them.
+- It is NOT noise if it is still firing more than about an hour after the
+  event, or never resolved: then it is a Finding, with the event in its
+  `signals` and evidence as the likely cause.
+- A known event is never a Finding by itself.
 
 ### Alert categories — pre-classification guidance
 
@@ -115,7 +155,8 @@ fences. The schema is below — Pydantic strict.
         {"type": "log", "ref": "<loki:{namespace='X'}|<window>>", "excerpt": "<optional, ≤200 chars>"},
         {"type": "metric", "ref": "<PromQL or alertname:fingerprint>", "excerpt": "<optional>"}
       ],
-      "dedup_key": "<alert:<alertname>:<scope-id>:<cluster>>"
+      "signals": ["<the signal_ids this Finding covers, e.g. A3, L1, E2>"],
+      "dedup_key": "<alert:<alertname>:<namespace>:<cluster> — the runtime replaces it when `signals` names an alert group or log pattern>"
     }
   ],
   "total_alerts_24h": <integer>,
@@ -140,10 +181,11 @@ Do NOT emit a Finding for:
 - `Watchdog` (skip silently)
 - Single `transient` alerts (mention in summary, don't create issue)
 - One-off `self_healed` events
+- The noise of a known event (see "Signals and known events" above)
 - Alerts that have an existing OPEN GH issue with the same root cause —
-  reference the existing issue in your summary instead of creating a new
-  finding (the runtime will pass you a list of recent open finding
-  dedup_keys for this purpose)
+  a signal with `tracked_by` set, or one whose root cause matches a key
+  in the open-issue list below. Reference the existing issue in your
+  summary instead of creating a new finding
 
 ## Finding count guidance
 
@@ -180,6 +222,15 @@ durations are over the digest window.
 {{ alert_groups_json }}
 ```
 
+### Known events in the window
+
+Changes the cluster went through, oldest first, from an hour before the
+window to its end (see "Signals and known events" above).
+
+```json
+{{ known_events_json }}
+```
+{{ known_events_note }}
 ### Notable log patterns (P3 — logs without alerts)
 
 These are log-volume / log-content patterns the aggregator surfaced.

@@ -8,16 +8,17 @@ Flow:
                               for an installation access token. Cached
                               in-memory for ~50min (GH default token TTL
                               is 1h; refresh at 50min for safety).
-  3. Subsequent REST calls (gh_list_prs, gh_get_pr, etc.) include the
+  3. Subsequent REST calls (the issue tools below) include the
      installation token as a Bearer credential.
 
 Per spec § 6.1: the App `cluster-agent` has per-repo fine-grained perms
 (Issues RW everywhere, PRs RW on writable repos, Contents R or RW per
 the table). It NEVER has admin/settings/org/secrets/packages/workflows.
 
-Read tools used in P0 smoke; write tools (issue_create, issue_comment,
-pr_comment) are functional but unexercised until P1+. P0 just needs the
-auth path proven.
+The daily digest uses the issue tools only: create, comment, close, list
+(the summary issue's predecessors) and get (the finding-state reconcile).
+The PR and commit readers of the never-built Mode I went on 2026-10-10,
+unused.
 """
 from __future__ import annotations
 import base64
@@ -94,43 +95,7 @@ def _gh_headers() -> dict[str, str]:
     }
 
 
-# ── Read tools (exercised in P0 smoke + Mode I) ──────────────────────────
-
-@audit(tool="gh_list_prs")
-def gh_list_prs(repo: str, *, state: str = "open") -> list[dict[str, Any]]:
-    r = httpx.get(
-        f"{_GH_API}/repos/{repo}/pulls",
-        params={"state": state, "per_page": 50},
-        headers=_gh_headers(),
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-@audit(tool="gh_get_pr")
-def gh_get_pr(repo: str, number: int) -> dict[str, Any]:
-    r = httpx.get(
-        f"{_GH_API}/repos/{repo}/pulls/{number}",
-        headers=_gh_headers(),
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-@audit(tool="gh_get_commit")
-def gh_get_commit(repo: str, sha: str) -> dict[str, Any]:
-    r = httpx.get(
-        f"{_GH_API}/repos/{repo}/commits/{sha}",
-        headers=_gh_headers(),
-        timeout=15,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-# ── Write tools (P0 lands them, P1+ exercises them) ──────────────────────
+# ── Write tools ──────────────────────────────────────────────────────────
 
 # Hard-coded allowlist of repos this module may WRITE to. The GH App
 # `cluster-agent[bot]` carries Issues RW + PRs RW on every repo it's
@@ -138,9 +103,8 @@ def gh_get_commit(repo: str, sha: str) -> dict[str, Any]:
 #   - Doppler typo on `SANDBOX_REPO` redirecting writes to a real repo
 #   - Future code path taking `repo` from an LLM-controlled string
 #   - Container env override via compromise
-# Read tools (gh_issue_list, gh_get_pr) are NOT scoped — read-only is
-# fine even cross-repo and we need it for cross-cluster awareness in
-# future modes.
+# Read tools (gh_issue_list, gh_issue_get) are NOT scoped: the reconcile
+# reads issues in whatever repo a stored finding names.
 # To add a new write target, add it here AND ensure the GH App is
 # installed there with Issues R/W only (no contents/PRs/workflows).
 _WRITE_ALLOWED_REPOS: frozenset[str] = frozenset({
@@ -148,10 +112,9 @@ _WRITE_ALLOWED_REPOS: frozenset[str] = frozenset({
     # Mode A graduated out of P1 soak (2026-07-06 graduation spec:
     # truenas-infra/docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).
     "guntars-rakitko/cluster-agent-digest",
-    # Transitional: kept so in-flight state.db findings whose stored
-    # gh_issue_ref still points at the old repo can be commented on
-    # through the rename cutover. Drop once no open finding references it.
-    "guntars-rakitko/cluster-agent-sandbox",
+    # (`cluster-agent-sandbox`, kept through the rename for findings whose
+    # stored issue was there, went on 2026-10-10: state.db held no row
+    # naming it, open or closed.)
     # Individual findings (all severities) graduated to the ops repo
     # (2026-07-06). The App is scoped to Issues R/W ONLY on kube-infra;
     # this in-code allowlist is the second lock.
@@ -180,7 +143,7 @@ def _assert_write_allowed(repo: str) -> None:
     tool="gh_issue_create",
     # `body` can contain raw log excerpts + kubectl describe output
     # (un-redacted per current digest pipeline). The audit log is
-    # written to stdout → captured by Loki → indexed. Redact body to
+    # written to stdout, the container log (tools/audit.py). Redact body to
     # keep secrets out of the log pipeline; title stays so operator
     # can still see WHICH issue was created from audit alone.
     redact=["body"],
@@ -219,11 +182,22 @@ def gh_issue_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     return r.json()
 
 
-@audit(tool="gh_pr_comment")
-def gh_pr_comment(repo: str, number: int, body: str) -> dict[str, Any]:
-    # PR comments and issue comments share the same GH API endpoint —
-    # the URL doesn't care whether the number is a PR or an issue.
-    return gh_issue_comment(repo, number, body)
+@audit(tool="gh_issue_get")
+def gh_issue_get(repo: str, number: int) -> dict[str, Any] | None:
+    """One issue (state, closed_at, ...), or None when GitHub says it does
+    not exist (404, or 410 for a deleted one). Any other failure raises.
+
+    Used by the digest's finding-state reconcile, which reads each open
+    finding's issue on its own (modes/daily_digest.py)."""
+    r = httpx.get(
+        f"{_GH_API}/repos/{repo}/issues/{number}",
+        headers=_gh_headers(),
+        timeout=15,
+    )
+    if r.status_code in (404, 410):
+        return None
+    r.raise_for_status()
+    return r.json()
 
 
 @audit(tool="gh_issue_list")

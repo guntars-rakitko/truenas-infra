@@ -65,6 +65,20 @@ class Finding(BaseModel):
     runbook_ref: str | None = None
     auto_action: AutoAction | None = None
     dedup_key: str
+    # The digest signals this finding covers, by their `signal_id` (A1 = an
+    # alert group, L1 = a log pattern, E1 = a known event). The daily digest
+    # builds `dedup_key` from them (modes/signals.py), so the same alert gets
+    # the same key every day; the LLM's own key is only the fallback.
+    signals: list[str] = Field(default_factory=list)
+
+    @field_validator("signals", mode="before")
+    @classmethod
+    def signals_lenient(cls, v: object) -> list[str]:
+        """Signals are bookkeeping, never a reason to drop a whole Report:
+        a missing or malformed list reads as no signals."""
+        if not isinstance(v, list):
+            return []
+        return [s.strip().upper() for s in v if isinstance(s, str) and s.strip()]
 
     @field_validator("title")
     @classmethod
@@ -84,12 +98,13 @@ class Finding(BaseModel):
 # summarized in narrative form but do NOT create GH issues.
 
 
+# Thresholds: digest_aggregator.CHRONIC_THRESHOLD_SECONDS and friends.
 Chronicity = Literal[
-    "chronic",      # firing > 1h cumulative duration in window
-    "transient",    # one-off, resolved within 5min
-    "flapping",     # > 3 fire/resolve cycles in window
-    "self_healed",  # fired and resolved without intervention
-    "active",       # currently firing, not yet long enough to call chronic
+    "chronic",      # firing >= 1h in total in the window (resolved or not)
+    "transient",    # one fire of <= 5 min, resolved
+    "flapping",     # >= 3 fire/resolve cycles, < 1h in total
+    "self_healed",  # resolved: 2 cycles, or one fire longer than 5 min
+    "active",       # firing now, < 1h in total and < 3 cycles
 ]
 
 
@@ -111,6 +126,9 @@ class AlertGroup(BaseModel):
     last_seen_at: dt.datetime
     currently_firing: bool
     sample_annotation: str | None = None   # one-line summary from the latest alert annotations
+    # Set by the digest runner after aggregation (modes/signals.py):
+    signal_id: str | None = None    # "A1", "A2", ...: what a Finding cites in `signals`
+    tracked_by: str | None = None   # "owner/repo#NN": an open finding issue already on it
 
 
 class Report(BaseModel):
@@ -199,3 +217,27 @@ class LogPattern(BaseModel):
     sample_lines: list[str] = Field(default_factory=list)
     first_seen_at: dt.datetime
     last_seen_at: dt.datetime
+    signal_id: str | None = None    # "L1", "L2", ... (modes/signals.py)
+    tracked_by: str | None = None   # "owner/repo#NN": an open finding issue already on it
+
+
+# ── Known events (2026-10-10) ───────────────────────────────────────
+#
+# Changes the cluster went through in the window, read from the cluster
+# itself (modes/known_events.py): node boots, kube-apiserver restarts,
+# HelmRelease upgrades and restore drills. A planned change makes noise
+# (pods restart, probes fail, Postgres says "starting up"), and without
+# these the LLM filed that noise as findings. Among the 12 filed
+# 2026-10-02..07: reboots, an apiserver restart (kube-infra#1437, a
+# Talos config apply), three Helm upgrades (#1535) and a drill (#1509).
+
+KnownEventKind = Literal["node_boot", "apiserver_restart", "helm_upgrade", "restore_drill"]
+
+
+class KnownEvent(BaseModel):
+    """One change the cluster went through in (or just before) the window."""
+    kind: KnownEventKind
+    at: dt.datetime
+    what: str                       # one line, operator-readable
+    namespace: str | None = None    # None = cluster-wide (a boot, an apiserver restart)
+    signal_id: str | None = None    # "E1", "E2", ... (modes/signals.py)

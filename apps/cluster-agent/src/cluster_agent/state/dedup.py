@@ -147,3 +147,42 @@ def record(
             mode, cluster, severity, payload_json,
         ),
     )
+
+
+def record_aliases(
+    db: StateDB,
+    aliases: list[str],
+    *,
+    gh_issue_ref: str,
+    mode: str,
+    cluster: str,
+    severity: str,
+    payload_json: str,
+) -> list[str]:
+    """Point each alias key at `gh_issue_ref`, so tomorrow a finding filed
+    under any one of them lands on this issue (modes/signals.py).
+
+    An alias whose row is OPEN on a different issue is left alone: that
+    issue still tracks it, and repointing it would silently merge two open
+    issues. A missing row, a closed one, or an open orphan (no issue ref)
+    is (re)pointed. Returns the aliases recorded.
+    """
+    recorded: list[str] = []
+    for alias in aliases:
+        row = db.fetchone(
+            "SELECT gh_issue_ref, state FROM findings WHERE dedup_key=?", (alias,)
+        )
+        if (row is not None and row["state"] == "open" and row["gh_issue_ref"]
+                and row["gh_issue_ref"] != gh_issue_ref):
+            continue
+        record(
+            db, alias,
+            gh_issue_ref=gh_issue_ref,
+            state="open",
+            mode=mode,
+            cluster=cluster,
+            severity=severity,
+            payload_json=payload_json,
+        )
+        recorded.append(alias)
+    return recorded

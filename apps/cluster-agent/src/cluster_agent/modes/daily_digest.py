@@ -9,12 +9,19 @@ cluster at DAILY_DIGEST_HOUR:MINUTE in DAILY_DIGEST_TZ. Each run:
   3. Enrich currently-firing groups with annotations from AM /api/v2/alerts
   4. Pull context excerpts (Loki + kubectl describe) for chronic +
      flapping groups only — transient/self_healed get no context
+  4b. Mine Loki for log patterns (digest_aggregator.py)
+  4c. Read the known events: node boots, apiserver restarts, Helm
+     upgrades, restore drills (known_events.py)
+  4d. Number every alert group, log pattern and known event (A1, L1, E1:
+     signals.py), the ids a Finding cites in `signals`
   5. Look up open finding dedup_keys for this cluster from state.db
-     (so LLM can avoid re-creating issues for things already tracked)
+     (so LLM can avoid re-creating issues for things already tracked),
+     and mark each signal an open issue already tracks (`tracked_by`)
   6. ONE LLM call → Report (0..N actionable Findings)
-  7. For each Finding: dispatch through existing pipeline (Grafana
-     annotation + GH issue + state.db record)
-  8. Update mode_runs audit row with cost + token totals
+  7. For each Finding: build its dedup key from its signals (signals.py),
+     then dispatch through existing pipeline (Grafana annotation + GH
+     issue + state.db record)
+  8. Update the run metrics
 
 If 0 findings emitted (quiet day or all noise), the digest is "silent" —
 no GH issues created. The metric `cluster_agent_run_total{mode='A',
@@ -28,7 +35,6 @@ import json
 import logging
 import os
 import re
-from collections import defaultdict
 from typing import Any
 
 from ..emit.metrics import (
@@ -38,18 +44,27 @@ from ..emit.metrics import (
 )
 from ..llm import triage_digest, LLMBudgetExceeded
 from ..state.db import StateDB
-from ..state.dedup import lookup, mark_closed, DedupAction
+from ..state.dedup import lookup, mark_closed, record_aliases
 from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
+from ..tools.audit import set_run_id
 from ..tools.loki import loki_query, loki_metric_query_range
-from ..tools.prometheus import prometheus_query
-from ..tools.kubectl import kubectl_describe, ToolError
-from ..tools.github import gh_issue_list
+from ..tools.prometheus import prometheus_query, prometheus_query_range
+from ..tools.kubectl import kubectl_describe, kubectl_get, ToolError
+from ..tools.github import gh_issue_get
 from ..dispatch import dispatch, _findings_repo
 from .digest_aggregator import (
     aggregate,
     aggregate_log_patterns,
     enrich_with_annotations,
     _redact,
+)
+from .known_events import gather_known_events
+from .signals import (
+    assign_signal_ids,
+    candidate_keys,
+    choose_dedup_key,
+    mark_tracked,
+    one_finding_per_signal,
 )
 
 
@@ -69,6 +84,9 @@ class DigestResult:
 async def run_async(*, cluster: str) -> DigestResult:
     """Daily-digest runner. See module docstring."""
     start = dt.datetime.now(dt.timezone.utc)
+    # Every tool call of this run logs the same `agent_run_id` (tools/audit.py),
+    # so one run's audit lines in the container log can be told apart.
+    set_run_id(f"A-{cluster}-{start:%Y%m%dT%H%M%SZ}")
     window_hours = int(os.environ.get("DAILY_DIGEST_WINDOW_HOURS", "24"))
     model = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
     budget = float(os.environ.get("DAILY_DIGEST_BUDGET_USD", "0.50"))
@@ -140,6 +158,27 @@ async def run_async(*, cluster: str) -> DigestResult:
         log_patterns = []
         log_mining_failures.append(f"log-pattern mining: {type(e).__name__}")
 
+    # ── 4c. Known events (boots, apiserver restarts, Helm upgrades,
+    # restore drills), so the LLM can tell a change's noise from a fault.
+    # Each source fails on its own, recorded like a failed Loki query.
+    known_event_failures: list[str] = []
+    try:
+        known_events = gather_known_events(
+            cluster,
+            start=start - dt.timedelta(hours=window_hours),
+            end=start,
+            prometheus_range_fn=prometheus_query_range,
+            kubectl_get_fn=kubectl_get,
+            failures=known_event_failures,
+        )
+    except Exception as e:
+        log.warning("digest %s: known events failed: %r", cluster, e)
+        known_events = []
+        known_event_failures.append(f"known events: {type(e).__name__}")
+
+    # ── 4d. Signal ids: A1.. alert groups, L1.. log patterns, E1.. events.
+    signals_by_id = assign_signal_ids(groups, log_patterns, known_events)
+
     # ── 5. Open issue dedup keys ────────────────────────────────────
     sdb = StateDB(os.environ["STATE_DB_PATH"])
     # 5a. Reconcile state.db against real GH issue state FIRST, so the
@@ -152,6 +191,10 @@ async def run_async(*, cluster: str) -> DigestResult:
     except Exception as e:  # never let reconcile break the digest
         log.warning("digest %s: finding-state reconcile failed: %r", cluster, e)
     open_keys = _load_open_dedup_keys(sdb, cluster)
+    # 5b. Each alert group / log pattern an open issue already tracks names
+    # it (`tracked_by`): the LLM then knows exactly what is tracked, and the
+    # summary's `rolled into` column shows the issue.
+    mark_tracked(sdb, [*groups, *log_patterns], cluster)
 
     # ── 6. ONE LLM call → Report ────────────────────────────────────
     try:
@@ -159,6 +202,8 @@ async def run_async(*, cluster: str) -> DigestResult:
             cluster=cluster,
             alert_groups=groups,
             log_patterns=log_patterns,
+            known_events=known_events,
+            known_event_failures=known_event_failures,
             open_issue_keys=open_keys,
             context_excerpts=context_excerpts,
             window_hours=window_hours,
@@ -188,15 +233,31 @@ async def run_async(*, cluster: str) -> DigestResult:
         )
 
     # ── 7. Dispatch each Finding through the existing pipeline ──────
+    # Its dedup key comes from the signals it cites (signals.py), so the
+    # same alert files under the same key every day; the LLM's own key is
+    # the fallback for a finding that cites no alert group or log pattern.
+    one_finding_per_signal(report.findings)
     emitted = 0
     dispatch_refs: dict[str, str] = {}    # finding.id → "owner/repo#NN"
     for finding in report.findings:
         try:
+            candidates = candidate_keys(finding.signals, signals_by_id, cluster)
+            if candidates:
+                finding.dedup_key = choose_dedup_key(sdb, candidates)
             action = lookup(sdb, finding.dedup_key)
             result = dispatch(finding, action, db=sdb)
             emitted += 1
             if result is not None and result.gh_issue_ref:
                 dispatch_refs[finding.id] = result.gh_issue_ref
+                aliases = [k for k in candidates if k != finding.dedup_key]
+                if aliases:
+                    record_aliases(
+                        sdb, aliases,
+                        gh_issue_ref=result.gh_issue_ref,
+                        mode=finding.mode, cluster=finding.cluster,
+                        severity=finding.severity,
+                        payload_json=finding.model_dump_json(),
+                    )
         except Exception as e:
             log.warning("digest %s: dispatch of finding %s failed: %r",
                         cluster, finding.id, e)
@@ -232,6 +293,8 @@ async def run_async(*, cluster: str) -> DigestResult:
             model=model,
             digest_summary=report.summary or "",
             log_mining_failures=log_mining_failures,
+            known_events=known_events,
+            known_event_failures=known_event_failures,
         )
     except Exception as e:
         # Summary delivery is best-effort — never break the digest.
@@ -367,18 +430,22 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
     alerts were still being suppressed against sandbox#NN records last-seen
     in May. (Spec: docs/superpowers/specs/2026-07-16-finding-state-reconcile.md.)
 
-    For each open finding, look up its GH issue's real state (grouped by
-    repo → ≤2 API calls per distinct repo). Mark it closed in state.db when
-    the issue is closed on GitHub, the issue is gone, or its repo is
-    unreachable (e.g. the retired `cluster-agent-sandbox`). closed_at =
-    the GH close date when known, else the finding's last_seen_at (old →
-    lands outside REOPEN_WINDOW → the next emit CREATEs a fresh issue in
-    the active findings repo instead of commenting on a dead one).
+    Each open finding's issue is read on its own (`gh_issue_get`, one call
+    per distinct issue: alias rows share one). Until 2026-10-10 the repo's
+    issues were LISTED instead, one page of 100 per state, and an issue the
+    page did not reach was treated as closed: kube-infra holds far more than
+    100 issues and PRs, so an open finding issue outside the first page
+    could be closed in state.db while still open on GitHub.
 
-    Best-effort: a GH error on the *active* findings repo is swallowed so a
-    transient GitHub outage can't false-close live findings; a retired /
-    unreachable *other* repo is treated as "all closed" (correct — nothing
-    is tracking those anymore). Returns the number of rows closed.
+    The row is marked closed when the issue is closed on GitHub, when GitHub
+    says it does not exist (404/410: deleted), or when its repo cannot be
+    read and is not the active findings repo (e.g. the retired
+    `cluster-agent-sandbox`). closed_at = the GH close date when known, else
+    the finding's last_seen_at (old → lands outside REOPEN_WINDOW → the next
+    emit CREATEs a fresh issue in the active findings repo instead of
+    commenting on a dead one). Any other error on the ACTIVE findings repo
+    leaves the row open: a GitHub outage must not false-close live findings.
+    Returns the number of rows closed.
     """
     rows = [
         dict(r)
@@ -387,41 +454,30 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
             "WHERE state='open' AND gh_issue_ref IS NOT NULL"
         ).fetchall()
     ]
-    if not rows:
-        return 0
-
-    by_repo: dict[str, list[tuple[dict, int]]] = defaultdict(list)
+    # (repo, number) -> (state, closed_at), or None while it cannot be told.
+    seen: dict[tuple[str, int], tuple[str, str | None] | None] = {}
+    closed = 0
     for r in rows:
         repo, sep, num = r["gh_issue_ref"].rpartition("#")
-        if sep and repo and num.isdigit():
-            by_repo[repo].append((r, int(num)))
-
-    closed = 0
-    for repo, items in by_repo.items():
-        # number -> (state, closed_at); None sentinel = repo unreachable
-        state_map: dict[int, tuple[str, str | None]] | None = {}
-        try:
-            for st in ("open", "closed"):
-                for issue in gh_issue_list(repo, state=st, per_page=100):
-                    state_map[issue["number"]] = (issue["state"], issue.get("closed_at"))
-        except Exception as e:
-            log.warning("reconcile: gh_issue_list(%s) failed: %r", repo, e)
-            if repo == findings_repo:
-                # Active repo + transient error → do NOT false-close.
-                continue
-            state_map = None  # retired/unreachable repo → treat all as closed
-
-        for r, num in items:
-            if state_map is None:
-                gh_state, gh_closed = "closed", None
-            else:
-                gh = state_map.get(num)
-                # Missing from a reachable repo (deleted / paged past 100)
-                # is treated as closed — it's not an open tracker either way.
-                gh_state, gh_closed = gh if gh is not None else ("closed", None)
-            if gh_state == "closed":
-                mark_closed(sdb, r["dedup_key"], closed_at=gh_closed or r["last_seen_at"])
-                closed += 1
+        if not (sep and repo and num.isdigit()):
+            continue
+        issue_key = (repo, int(num))
+        if issue_key not in seen:
+            try:
+                issue = gh_issue_get(repo, int(num))
+                seen[issue_key] = (
+                    ("closed", None) if issue is None
+                    else (issue.get("state", "open"), issue.get("closed_at"))
+                )
+            except Exception as e:
+                log.warning("reconcile: gh_issue_get(%s#%s) failed: %r", repo, num, e)
+                # Active repo + error → cannot tell: do NOT false-close.
+                # Any other repo → retired/unreachable: nothing tracks it there.
+                seen[issue_key] = None if repo == findings_repo else ("closed", None)
+        state = seen[issue_key]
+        if state is not None and state[0] == "closed":
+            mark_closed(sdb, r["dedup_key"], closed_at=state[1] or r["last_seen_at"])
+            closed += 1
 
     if closed:
         log.info("reconcile: closed %d stale-open finding(s) vs live GH state", closed)
