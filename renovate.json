@@ -10,7 +10,8 @@
   "prConcurrentLimit": 8,
   "packageRules": [
     {
-      "description": "MinIO AIStor uses non-semver RELEASE.<ISO8601> tags. Map year->major, month->minor, day->patch and the time as build so newer releases sort higher and Renovate proposes upgrades (free-tier license covers them; deploy minio-dev first, then minio-prd — brief S3 blip). pinDigests keeps the @sha256 in sync.",
+      "description": "MinIO AIStor uses non-semver RELEASE.<ISO8601> tags. Map year->major, month->minor, day->patch and the time as build so newer releases sort higher. ⚠ HELD BEHIND DASHBOARD APPROVAL since 2026-10-10: from RELEASE.2026-09-19 the Free tier refuses every write to a bucket with SSE-S3 configured (all our backup buckets) and stores other writes in plaintext (tested with our licence, CLAUDE.md § Object store). Renovate lists new releases on the Dependency Dashboard and opens a PR only when ticked there. pinDigests keeps the @sha256 in sync.",
+      "dependencyDashboardApproval": true,
       "matchDatasources": ["docker"],
       "matchPackageNames": ["quay.io/minio/aistor/minio"],
       "versioning": "regex:^RELEASE\\.(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})T(?<build>\\d{2}-\\d{2}-\\d{2})Z$"
