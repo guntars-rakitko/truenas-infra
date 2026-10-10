@@ -20,7 +20,7 @@ not reachable here at all; its annotations go through tools/grafana.py.
 from __future__ import annotations
 import base64
 import os
-import tempfile
+import ssl
 from typing import Any
 
 import httpx
@@ -42,18 +42,18 @@ def _apiserver_url(kubeconfig: dict[str, Any]) -> str:
     return kubeconfig["clusters"][0]["cluster"]["server"]
 
 
-def _ca_bundle(kubeconfig: dict[str, Any]) -> str | bool:
-    """Return path to a temp file with the CA bundle, or False (skip verify)
+def _tls_verify(kubeconfig: dict[str, Any]) -> ssl.SSLContext | bool:
+    """An SSLContext trusting the kubeconfig's CA, or False (skip verify)
     if no CA data is present in the kubeconfig.
+
+    Built in memory. Until 2026-10-10 every call wrote the CA to a new temp
+    file and never removed it: one file per proxied query (~30 per cluster
+    per digest), kept until the container was recreated.
     """
     ca_b64 = kubeconfig["clusters"][0]["cluster"].get("certificate-authority-data")
     if not ca_b64:
         return False
-    ca_pem = base64.b64decode(ca_b64).decode("utf-8")
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
-    tmp.write(ca_pem)
-    tmp.close()
-    return tmp.name
+    return ssl.create_default_context(cadata=base64.b64decode(ca_b64).decode("utf-8"))
 
 
 def _bearer_token(kubeconfig: dict[str, Any]) -> str:
@@ -88,7 +88,7 @@ def proxy_get(
     """
     kc = _kubeconfig_for(cluster)
     url = _build_proxy_url(kc, namespace, service, port, path)
-    verify = _ca_bundle(kc)
+    verify = _tls_verify(kc)
     headers = {"Authorization": f"Bearer {_bearer_token(kc)}"}
     r = httpx.get(url, params=params, headers=headers, timeout=timeout, verify=verify)
     r.raise_for_status()

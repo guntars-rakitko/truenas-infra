@@ -1,8 +1,13 @@
-"""Prometheus metrics — see spec § 3.4 for the full list.
+"""Prometheus metrics, exposed on /metrics and scraped by both clusters'
+Prometheus (kube-infra). The kube-infra `cluster-agent` dashboard and the
+ClusterAgent* rules read them.
 
-These 10 metrics are exposed via /metrics (Task 18) and scraped by both
-clusters' Prometheus instances via an additionalScrapeConfigs entry
-(Task 20). The Grafana dashboard (Task 21) queries them.
+Every metric here is SET by the agent; tests/test_metrics.py fails on one
+that nothing sets. Until 2026-10-10 seven declared ones were never set
+(finding/open-findings, PR actions, "anthropic" tokens and cost, backup
+verification, doctrine drift: modes that were never built), and a
+dashboard tile read the always-0 cost counter (kube-infra MS-A2 plan Task
+D6c moved it to `cluster_agent_llm_cost_usd_total`).
 
 Metric naming follows Prometheus conventions:
   - _total suffix: counters
@@ -33,57 +38,11 @@ cluster_agent_run_duration_seconds = Histogram(
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800),
 )
 
-# Findings (the agent's output)
-cluster_agent_finding_total = Counter(
-    "cluster_agent_finding_total",
-    "Findings produced",
-    ["mode", "severity", "category"],
-)
-
-cluster_agent_open_findings = Gauge(
-    "cluster_agent_open_findings",
-    "Currently open findings (GH issues opened by agent)",
-    ["severity"],
-)
-
-# PR triage (Mode I + J)
-cluster_agent_pr_action_total = Counter(
-    "cluster_agent_pr_action_total",
-    "PR actions taken",
-    ["action"],  # comment / auto_merge / skip_for_review
-)
-
-# LLM cost tracking (the cost ceiling alert at $75/mo fires off these)
-cluster_agent_anthropic_tokens_total = Counter(
-    "cluster_agent_anthropic_tokens_total",
-    "Anthropic API token counts",
-    ["kind"],   # input / output / cache_read
-)
-
-cluster_agent_anthropic_cost_usd_total = Counter(
-    "cluster_agent_anthropic_cost_usd_total",
-    "Cumulative Anthropic spend in USD",
-)
-
 # Liveness — alert if last_success > 2× cadence ago
 cluster_agent_last_success_timestamp = Gauge(
     "cluster_agent_last_success_timestamp",
     "Unix epoch of last successful run per mode",
     ["mode"],
-)
-
-# Mode G outputs
-cluster_agent_backup_verification_status = Gauge(
-    "cluster_agent_backup_verification_status",
-    "1=pass, 0=fail per target",
-    ["target"],   # b2 / velero / litestream
-)
-
-# Mode H outputs
-cluster_agent_doctrine_drift_count = Gauge(
-    "cluster_agent_doctrine_drift_count",
-    "Doctrine violations found in last scan",
-    ["repo"],
 )
 
 # Dispatch failure tracking (P1+) — each surface is best-effort, so a
@@ -115,7 +74,9 @@ for _surface in DISPATCH_SURFACES:
     DISPATCH_ERRORS.labels(surface=_surface)
 del _surface
 
-# Mode A LLM accounting (P1+)
+# Mode A LLM accounting. The cost counter is an estimate from the
+# response's `usage` block and llm._MODEL_RATES_PER_1M; no alert enforces a
+# monthly ceiling (the design's $75 is only the dashboard tile's threshold).
 LLM_TOKENS_INPUT = Counter(
     "cluster_agent_llm_input_tokens_total",
     "Total input tokens sent to the LLM, per mode",

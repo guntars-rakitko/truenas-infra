@@ -1,4 +1,4 @@
-"""Prometheus metrics emit module — declares the 10 metrics from spec § 3.4."""
+"""Prometheus metrics emit module: every metric declared is one the agent sets."""
 import os
 import re
 import subprocess
@@ -8,9 +8,6 @@ from pathlib import Path
 from cluster_agent.emit.metrics import (
     DISPATCH_SURFACES,
     cluster_agent_run_total,
-    cluster_agent_finding_total,
-    cluster_agent_anthropic_cost_usd_total,
-    cluster_agent_last_success_timestamp,
     render,
 )
 
@@ -22,21 +19,37 @@ def test_counter_increments():
     assert after == before + 1
 
 
-def test_render_includes_all_required_metrics():
+def test_render_includes_the_metrics_kube_infra_reads():
+    """kube-infra's dashboard and ClusterAgent* rules read these names."""
     output = render()
     for metric_name in [
         "cluster_agent_run_total",
         "cluster_agent_run_duration_seconds",
-        "cluster_agent_finding_total",
-        "cluster_agent_open_findings",
-        "cluster_agent_pr_action_total",
-        "cluster_agent_anthropic_tokens_total",
-        "cluster_agent_anthropic_cost_usd_total",
         "cluster_agent_last_success_timestamp",
-        "cluster_agent_backup_verification_status",
-        "cluster_agent_doctrine_drift_count",
+        "cluster_agent_dispatch_errors_total",
+        "cluster_agent_llm_input_tokens_total",
+        "cluster_agent_llm_output_tokens_total",
+        "cluster_agent_llm_cost_usd_total",
+        "cluster_agent_llm_cache_read_tokens_total",
+        "cluster_agent_llm_cache_create_tokens_total",
     ]:
         assert metric_name in output, f"missing metric: {metric_name}"
+
+
+def test_every_declared_metric_is_set_somewhere():
+    """A declared metric nothing sets is a permanent 0 or no series, and a
+    dashboard reading it is a false clean (2026-10-10: seven such were
+    removed, one of them behind the spend tile). A CALL is required
+    (`NAME[.labels(…)].inc/set/observe(`): an import or a docstring
+    naming the metric is no evidence."""
+    src = Path(__file__).resolve().parents[1] / "src" / "cluster_agent"
+    module = (src / "emit" / "metrics.py").read_text()
+    declared = re.findall(r"^(\w+) = (?:Counter|Gauge|Histogram)\(", module, re.MULTILINE)
+    assert len(declared) >= 9, declared
+    others = "\n".join(p.read_text() for p in src.rglob("*.py") if p.name != "metrics.py")
+    for name in declared:
+        call = rf"\b{name}(?:\.labels\([^)]*\))?\.(?:inc|dec|set|observe)\("
+        assert re.search(call, others), f"{name} is declared but never set"
 
 
 def test_dispatch_error_series_exist_at_zero_before_any_failure():

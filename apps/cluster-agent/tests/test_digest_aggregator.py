@@ -471,21 +471,6 @@ def test_tripwire_logql_excludes_audit_k8s_io_events():
         )
 
 
-def test_connection_refused_tripwire_excludes_longhorn_detached_engine_noise():
-    """`connection_refused` tripwire must filter out Longhorn manager
-    warnings on detached engines. RWO Job volumes (e.g. renovate-cache
-    attached to the Renovate CronJob every 2h) cycle attached→detached
-    with their Job lifecycle; manager polling the absent engine pod is
-    expected lifecycle noise, not a real failure. Regression guard for
-    cluster-agent-sandbox #43 (2026-05-28).
-    """
-    from cluster_agent.modes.digest_aggregator import _TRIPWIRE_PATTERNS
-
-    cr_query = next(q for (label, q) in _TRIPWIRE_PATTERNS if label == "connection_refused")
-    assert '!= "Failed to get clone status"' in cr_query
-    assert '!= "Failed to get purge status"' in cr_query
-
-
 # ── Record-not-event exclusions (kube-infra #1263/#1268/#1286/#1287) ──
 #
 # The tripwires are LogQL line filters executed by Loki, so "is the

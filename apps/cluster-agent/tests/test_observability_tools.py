@@ -18,7 +18,7 @@ from cluster_agent.tools.alertmanager import alertmanager_alerts, alertmanager_h
 def _fake_kubeconfig() -> str:
     """Return a base64-encoded minimal kubeconfig for tests.
 
-    No CA data — k8s_proxy._ca_bundle() returns False (skip verify),
+    No CA data — k8s_proxy._tls_verify() returns False (skip verify),
     which is fine in tests.
     """
     kc = {
@@ -133,3 +133,37 @@ def test_alertmanager_history_excludes_info_inhibitor_but_keeps_watchdog(monkeyp
         "Watchdog must not be excluded at the source: an empty history "
         "makes run_async skip log mining and the summary"
     )
+
+
+def test_the_cluster_ca_is_trusted_from_memory_never_a_temp_file(monkeypatch):
+    """Until 2026-10-10 each proxied query wrote the CA to a new temp file
+    and never removed it."""
+    import datetime as dt
+    import ssl
+    import tempfile
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    from cluster_agent.tools import k8s_proxy
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "kubernetes-test-ca")])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(1)
+            .not_valid_before(now).not_valid_after(now + dt.timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    pem = cert.public_bytes(serialization.Encoding.PEM)
+
+    def no_temp_files(*a, **kw):
+        raise AssertionError("the CA must not be written to a temp file")
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", no_temp_files)
+
+    kc = {"clusters": [{"cluster": {"certificate-authority-data": base64.b64encode(pem).decode()}}]}
+    ctx = k8s_proxy._tls_verify(kc)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    assert [dict(x[0] for x in c["subject"]) for c in ctx.get_ca_certs()] == [
+        {"commonName": "kubernetes-test-ca"}]

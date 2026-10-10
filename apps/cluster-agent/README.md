@@ -1,8 +1,12 @@
 # cluster-agent
 
-LLM-driven SRE assistant for the homelab. Reads alerts / logs / state
-from both K8s clusters, produces actionable GH issues, triages Renovate
-PRs, runs scheduled backup verification + doctrine compliance scans.
+LLM-driven SRE assistant for the homelab. One mode runs: **Mode A, the
+daily digest**. Once a day per cluster (06:00 / 06:01 Europe/Riga) it reads
+24 h of alerts, Loki log patterns and the cluster's known events (boots,
+apiserver restarts, Helm upgrades, restore drills), makes ONE LLM call, files
+0-N findings as issues in `kube-infra` and a full summary in
+`cluster-agent-digest`. The other modes of the design (Renovate PR triage,
+backup verification, doctrine scans) were never built.
 
 ## Design + spec
 
@@ -33,13 +37,12 @@ A lock-only change does not recreate the container. After
 
 ## Runbook
 
-`wiki/docs/runbooks/cluster-agent-runbook.md` (lands with Task 22 of the P0 plan).
+[`wiki/docs/runbooks/cluster-agent-runbook.md`](https://wiki.w1.lv/runbooks/cluster-agent-runbook/).
+Operations (deploy, tokens, Doppler keys, the digest's architecture):
+truenas-infra `CLAUDE.md` § cluster-agent ops.
 
-## P0 phase status
+## Status
 
-| Phase | Status |
-|---|---|
-| P0 — Foundation | in progress (Tasks 1-7 done — RBAC + Doppler keys + MinIO bucket + compose) |
-| P1 — Mode A on dev sandbox repo | not started (target: June 15+) |
-| P2 — Mode A on dev+prd, real issues | not started |
-| P3-P7 | not started |
+Mode A has run on both clusters since 2026-05-26 (P3: log mining; findings
+graduated to `kube-infra` on 2026-07-06). (A P0-era phase table stood here
+until 2026-10-10, still saying "P1 not started".)

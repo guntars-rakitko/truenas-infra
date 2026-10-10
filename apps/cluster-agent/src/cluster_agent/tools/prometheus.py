@@ -1,16 +1,18 @@
 """Prometheus PromQL tool — via K8s apiserver proxy.
 
 Reaches the in-cluster Prometheus Service directly via the K8s API server,
-bypassing the OIDC-gated metrics-{env}.w1.lv ingress. Auth: the kubeconfig
+bypassing the OIDC-gated prom-<env>.w1.lv ingress. Auth: the kubeconfig
 SA token from Doppler (KUBECONFIG_DEV / KUBECONFIG_PRD).
 
 Live service (confirmed 2026-05-25 against dev cluster):
   monitoring/kube-prometheus-stack-prometheus:9090
 
-Prerequisite: the cluster-agent-readonly ClusterRole (kube-infra Task 1)
-must gain `services/proxy` GET on the monitoring namespace. This is a
-kube-infra change — flagged as a follow-up in spec § 6.2. Until that
-RBAC update is applied, these calls will return 403.
+Access: kube-infra's `cluster-agent-services-proxy` Role grants the
+agent's ServiceAccount `services/proxy` `get` on exactly Loki, Prometheus
+and Alertmanager (flux-cd/infrastructure/configs/base/cluster-agent-rbac.yaml;
+`get` only since kube-infra#1366). Until 2026-10-10 this said the calls
+would 403 until that grant existed; it has existed since before Mode A
+went live (2026-05).
 """
 from __future__ import annotations
 from typing import Any

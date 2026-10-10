@@ -3,7 +3,7 @@
 Prompts live at apps/cluster-agent/prompts/<name>.md, with shared
 partials at apps/cluster-agent/prompts/_shared/*.md included via
 Jinja {% include %}. Templates are loaded relative to the prompts/
-directory root so {% include '_shared/output_schema.md' %} works
+directory root so {% include '_shared/house_style.md' %} works
 regardless of which top-level prompt did the include.
 
 Path resolution: the prompts/ directory is at the project root
@@ -24,7 +24,14 @@ import jinja2
 
 
 class _PreservingUndefined(jinja2.Undefined):
-    """Preserve undefined variable syntax so per-call templates can be filled in later."""
+    """Preserve undefined variable syntax so per-call templates can be filled in later.
+
+    Only `{{ name }}` survives this first pass. A `{% if name %}` on a per-call
+    name sees an undefined (false) value here and is dropped before the
+    second render ever sees it, so per-call conditionals are rendered in
+    Python and passed in as one variable (llm.triage_digest's
+    `known_events_note`).
+    """
 
     def __str__(self) -> str:
         return "{{ " + self._undefined_name + " }}"

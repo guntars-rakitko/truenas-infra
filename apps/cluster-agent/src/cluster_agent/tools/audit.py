@@ -1,8 +1,11 @@
 """Audit-log decorator — wraps every MCP tool call.
 
-Emits one JSON line per call to stdout. The NAS log shipper routes it
-to Loki, where it's indexed by `tool`, `agent_run_id`, `status`. Per
-spec § 4.3: "Every action queryable in Loki forever."
+Emits one JSON line per call to stdout: the container log
+(`sudo docker logs cluster-agent`). The spec (§ 4.3) planned to ship it to
+Loki, "every action queryable in Loki forever"; no log shipper on the NAS
+was ever built, so the container log is the only copy, and it goes when
+the container is recreated. `agent_run_id` ties one digest run's lines
+together (`set_run_id`, called by daily_digest.run_async).
 
 Usage:
 
@@ -33,6 +36,7 @@ from typing import Any, Callable
 
 # Set per-mode-run by the mode runner so all tool calls during a run
 # share an ID. ContextVar (not threading.local) so async tasks inherit it.
+# Never called until 2026-10-10: every line read `adhoc-<uuid>`.
 _current_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "agent_run_id", default=None
 )
@@ -46,7 +50,7 @@ def set_run_id(run_id: str) -> None:
 def get_run_id() -> str:
     v = _current_run_id.get()
     if v is None:
-        # P0: no mode runner yet. Tests + ad-hoc calls fall through here.
+        # Outside a digest run (tests, a manual tool call).
         return f"adhoc-{uuid.uuid4()}"
     return v
 
@@ -88,7 +92,7 @@ def audit(
                 whose RETURN value is itself a secret (e.g. an installation
                 access token), so the audit still records that the call
                 happened + its status/duration without leaking the credential
-                to stdout → Loki.
+                into the container log.
         summarize: callable that turns the return value into a one-line
                    summary string (default: repr() + 200-char truncation)
     """
