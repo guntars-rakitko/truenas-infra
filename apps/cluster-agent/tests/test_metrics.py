@@ -39,14 +39,17 @@ def test_render_includes_the_metrics_kube_infra_reads():
 def test_every_declared_metric_is_set_somewhere():
     """A declared metric nothing sets is a permanent 0 or no series, and a
     dashboard reading it is a false clean (2026-10-10: seven such were
-    removed, one of them behind the spend tile)."""
+    removed, one of them behind the spend tile). A CALL is required
+    (`NAME[.labels(…)].inc/set/observe(`): an import or a docstring
+    naming the metric is no evidence."""
     src = Path(__file__).resolve().parents[1] / "src" / "cluster_agent"
     module = (src / "emit" / "metrics.py").read_text()
     declared = re.findall(r"^(\w+) = (?:Counter|Gauge|Histogram)\(", module, re.MULTILINE)
     assert len(declared) >= 9, declared
     others = "\n".join(p.read_text() for p in src.rglob("*.py") if p.name != "metrics.py")
     for name in declared:
-        assert re.search(rf"\b{name}\b", others), f"{name} is declared but never set"
+        call = rf"\b{name}(?:\.labels\([^)]*\))?\.(?:inc|dec|set|observe)\("
+        assert re.search(call, others), f"{name} is declared but never set"
 
 
 def test_dispatch_error_series_exist_at_zero_before_any_failure():

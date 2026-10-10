@@ -129,7 +129,8 @@ async def test_triage_digest_forces_the_cluster_suffix_of_the_llm_key(monkeypatc
 @pytest.mark.asyncio
 @pytest.mark.parametrize("raw,expected", [
     (None, []),
-    ("A1", []),
+    (7, []),
+    ("A1, l2", ["A1", "L2"]),
     (["a1", " L2 ", 3, ""], ["A1", "L2"]),
 ])
 async def test_a_malformed_signals_list_never_drops_the_report(monkeypatch, raw, expected):
@@ -303,3 +304,22 @@ async def test_sdk_query_marks_cache_control_on_prefix(monkeypatch):
     assert content[0]["cache_control"] == {"type": "ephemeral"}
     assert content[1]["text"] == "VARIABLE SUFFIX"
     assert "cache_control" not in content[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", [None, "", "   "])
+async def test_a_finding_without_a_key_does_not_drop_the_report(monkeypatch, key):
+    """The prompt says the runtime replaces the key; a finding that leaves it
+    out gets a placeholder of its own, never one shared with another."""
+    from cluster_agent import llm
+    payload = json.loads(_report_json())
+    if key is None:
+        del payload["findings"][0]["dedup_key"]
+    else:
+        payload["findings"][0]["dedup_key"] = key
+
+    async def fake_query(prompt, options):
+        return json.dumps(payload)
+    monkeypatch.setattr(llm, "_sdk_query", fake_query)
+    (finding,) = (await _digest()).findings
+    assert finding.dedup_key == f"llm:unkeyed:{finding.id}:dev"

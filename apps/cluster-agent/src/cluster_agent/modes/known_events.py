@@ -14,13 +14,18 @@ digest-summary:
   helm_upgrade       HelmRelease `status.history` revisions deployed in the
                      window (Flux keeps the last few, newest first)
   restore_drill      Jobs of a `*-restore-drill` CronJob that started in the
-                     window, scheduled or created by hand (Jobs live 24 h:
-                     `ttlSecondsAfterFinished: 86400`)
+                     window, scheduled or created by hand; and the CronJob's
+                     own `lastScheduleTime` when its Job is already gone (a
+                     Job lives 24 h, `ttlSecondsAfterFinished: 86400`, and in
+                     winter the 04:00Z digest starts as Monday's 04:00Z drill
+                     Job is reaped)
 
 The window starts `lead` (1 h) before the digest window: a boot at 02:55
 makes noise after the 03:00 window start. Each source fails on its own,
 recorded in `failures` like the log-mining queries: a missing source is
-a coverage gap, never "nothing happened".
+a coverage gap, never "nothing happened". So is an EMPTY answer where a
+healthy cluster always has one (a node's boot time, kube-apiserver's
+start, its HelmReleases).
 """
 from __future__ import annotations
 import datetime as dt
@@ -34,10 +39,13 @@ from ..schema import KnownEvent
 log = logging.getLogger(__name__)
 
 # Same series twice after a node-exporter or kube-state-metrics restart:
-# `max by` folds the old and the new pod's copies.
+# `max by` folds the old and the new pod's copies. The node name comes from
+# `node_uname_info`; `or on(instance)` keeps the boot time when that join
+# finds nothing, so a missing info series costs the name, not the event.
 _BOOT_QUERY = (
     "max by (instance, nodename) (node_boot_time_seconds"
     " * on(instance) group_left(nodename) max by (instance, nodename) (node_uname_info))"
+    " or on(instance) max by (instance) (node_boot_time_seconds)"
 )
 _APISERVER_QUERY = 'max by (instance) (process_start_time_seconds{job="apiserver"})'
 
@@ -97,11 +105,17 @@ def _distinct_starts(resp: dict[str, Any], start: dt.datetime, end: dt.datetime
 
 def _range(prometheus_range_fn: Callable[..., dict[str, Any]], cluster: str, query: str,
            start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
-    return prometheus_range_fn(
+    """The query's answer; no series at all raises (LookupError): both
+    series exist on any cluster whose node-exporter and apiserver Prometheus
+    scraped, so an empty answer is a blind spot, not a quiet day."""
+    resp = prometheus_range_fn(
         cluster, query,
         start=str(int(start.timestamp())), end=str(int(end.timestamp())),
         step=f"{_STEP_SECONDS}s",
     )
+    if not resp.get("data", {}).get("result"):
+        raise LookupError(f"no series for {query.split('(', 2)[-1][:60]}")
+    return resp
 
 
 def _node_boots(resp: dict[str, Any], start: dt.datetime, end: dt.datetime) -> list[KnownEvent]:
@@ -159,9 +173,10 @@ def _helm_upgrades(items: list[dict[str, Any]], start: dt.datetime, end: dt.date
     return events
 
 
-def _restore_drills(items: list[dict[str, Any]], start: dt.datetime, end: dt.datetime
-                    ) -> list[KnownEvent]:
+def _restore_drills(items: list[dict[str, Any]], cronjobs: list[dict[str, Any]],
+                    start: dt.datetime, end: dt.datetime) -> list[KnownEvent]:
     events = []
+    seen: dict[tuple[str, str], list[dt.datetime]] = {}   # (ns, cronjob) → Job start times
     for job in items:
         meta = job.get("metadata", {})
         owners = [o.get("name", "") for o in meta.get("ownerReferences") or []
@@ -181,9 +196,29 @@ def _restore_drills(items: list[dict[str, Any]], start: dt.datetime, end: dt.dat
         else:
             outcome = "still running"
         ns = meta.get("namespace")
+        seen.setdefault((ns, drill), []).append(t)
         events.append(KnownEvent(
             kind="restore_drill", at=t, namespace=ns,
             what=(f"restore drill {ns}/{drill} ({meta.get('name', '?')}), {outcome}: a "
+                  "temporary recovery Postgres starts, restores and is deleted"),
+        ))
+    # A scheduled run whose Job is already gone: the CronJob still says when.
+    for cj in cronjobs:
+        meta = cj.get("metadata", {})
+        name, ns = meta.get("name", ""), meta.get("namespace")
+        if not name.endswith("-restore-drill"):
+            continue
+        t = _parse_time(cj.get("status", {}).get("lastScheduleTime"))
+        if t is None or not (start <= t <= end):
+            continue
+        if any(abs(t - s) <= dt.timedelta(minutes=5) for s in seen.get((ns, name), [])):
+            continue
+        last_ok = _parse_time(cj.get("status", {}).get("lastSuccessfulTime"))
+        outcome = (f"last success {last_ok:%m-%d %H:%M}Z" if last_ok and last_ok >= t
+                   else "no success recorded since")
+        events.append(KnownEvent(
+            kind="restore_drill", at=t, namespace=ns,
+            what=(f"restore drill {ns}/{name} scheduled (its Job is gone; {outcome}): a "
                   "temporary recovery Postgres starts, restores and is deleted"),
         ))
     return events
@@ -203,8 +238,9 @@ def gather_known_events(
 
     `prometheus_range_fn` is tools.prometheus.prometheus_query_range and
     `kubectl_get_fn` tools.kubectl.kubectl_get (read-only; the agent's
-    ClusterRole reads HelmReleases and Jobs). A source that raises is
-    recorded in `failures` as "known events <source>: <ExceptionType>".
+    ClusterRole reads HelmReleases, Jobs and CronJobs). A source that raises,
+    or answers empty where a healthy cluster cannot, is recorded in
+    `failures` as "known events <source>: <ExceptionType>".
     """
     failures = failures if failures is not None else []
     since = start - lead
@@ -227,12 +263,16 @@ def gather_known_events(
     except Exception as e:
         _failed("apiserver restarts", e)
     try:
-        events += _helm_upgrades(kubectl_get_fn(cluster, "helmreleases").get("items", []),
-                                 since, end)
+        releases = kubectl_get_fn(cluster, "helmreleases").get("items", [])
+        if not releases:   # every cluster here runs Flux's HelmReleases
+            raise LookupError("no HelmRelease at all")
+        events += _helm_upgrades(releases, since, end)
     except Exception as e:
         _failed("helm upgrades", e)
     try:
-        events += _restore_drills(kubectl_get_fn(cluster, "jobs").get("items", []), since, end)
+        events += _restore_drills(kubectl_get_fn(cluster, "jobs").get("items", []),
+                                  kubectl_get_fn(cluster, "cronjobs").get("items", []),
+                                  since, end)
     except Exception as e:
         _failed("restore drills", e)
 

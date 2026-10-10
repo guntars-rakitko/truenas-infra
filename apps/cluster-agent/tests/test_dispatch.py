@@ -227,3 +227,15 @@ def test_dispatch_findings_min_severity_floor_suppresses_below(tmp_path, monkeyp
     row = sdb.fetchone("SELECT state FROM findings WHERE dedup_key=?",
                        (_make_finding().dedup_key,))
     assert row["state"] == "open"                 # state still recorded
+
+
+def test_issue_body_names_the_signals_and_the_key():
+    """The footer's signal ids point at rows of the same day's summary."""
+    from cluster_agent.dispatch import _issue_body
+    f = _make_finding()
+    f.signals = ["A3", "L1"]
+    body = _issue_body(f)
+    assert body.splitlines()[-1] == (
+        f"dedup_key: `{f.dedup_key}`  ·  signals: A3, L1  ·  finding_id: `{f.id}`")
+    f.signals = []
+    assert "signals: none" in _issue_body(f)

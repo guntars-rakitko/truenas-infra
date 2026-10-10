@@ -16,7 +16,8 @@ Per spec § 6.1: the App `cluster-agent` has per-repo fine-grained perms
 the table). It NEVER has admin/settings/org/secrets/packages/workflows.
 
 The daily digest uses the issue tools only: create, comment, close, list
-(the summary issue's predecessors) and get (the finding-state reconcile).
+(the summary issue's predecessors), get and the repo check (the
+finding-state reconcile).
 The PR and commit readers of the never-built Mode I went on 2026-10-10,
 unused.
 """
@@ -198,6 +199,18 @@ def gh_issue_get(repo: str, number: int) -> dict[str, Any] | None:
         return None
     r.raise_for_status()
     return r.json()
+
+
+@audit(tool="gh_repo_readable")
+def gh_repo_readable(repo: str) -> bool:
+    """Whether the App can read the repo: False on 403/404 (GitHub says
+    404 for a private repo the App was removed from), raises otherwise.
+    The reconcile asks before it treats an issue's 404 as "deleted"."""
+    r = httpx.get(f"{_GH_API}/repos/{repo}", headers=_gh_headers(), timeout=15)
+    if r.status_code in (403, 404):
+        return False
+    r.raise_for_status()
+    return True
 
 
 @audit(tool="gh_issue_list")

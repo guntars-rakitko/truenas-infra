@@ -68,7 +68,11 @@ def _issue_body(finding: Finding) -> str:
             lines.append(f"- **{ev.type}** `{ev.ref}` — `{ev.excerpt[:200]}`")
         else:
             lines.append(f"- **{ev.type}** `{ev.ref}`")
-    lines += ["", "---", f"dedup_key: `{finding.dedup_key}`  ·  finding_id: `{finding.id}`"]
+    # The signal ids name rows of the same day's digest-summary (A3 = its
+    # third alert group), so the issue can be traced back to them.
+    signals = ", ".join(finding.signals) or "none"
+    lines += ["", "---",
+              f"dedup_key: `{finding.dedup_key}`  ·  signals: {signals}  ·  finding_id: `{finding.id}`"]
     return "\n".join(lines)
 
 

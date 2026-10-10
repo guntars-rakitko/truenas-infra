@@ -763,7 +763,11 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    a signal that starts within ~30 min after an event into one summary
    line naming it, unless it outlasts the event by about an hour. A source
    that fails is a `known events <source>: <Exception>` coverage gap, like
-   a failed Loki query.
+   a failed Loki query, and so is an EMPTY answer where a healthy cluster
+   always has one (a boot time, an apiserver start, its HelmReleases): "no
+   events" would be a false clean. A drill also comes from its CronJob's
+   `lastScheduleTime` when its Job is gone (Jobs live 24 h, and in winter
+   the 04:00Z digest starts as Monday's 04:00Z drill Job is reaped).
 3c. **Numbers every signal** (`modes/signals.py`): alert groups A1, A2, …,
    log patterns L1, …, known events E1, …. A Finding cites the ids it
    covers in `signals`.
@@ -779,29 +783,51 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    Since 2026-10-10 it reads each open finding's issue on its own
    (`gh_issue_get`). ⚠ Until then it LISTED the repo's issues, one page of
    100 per state, and closed every open finding whose issue the page did
-   not reach: kube-infra holds thousands of issues and PRs. Then each alert
+   not reach: kube-infra holds thousands of issues and PRs. A 404 closes
+   the row only once the repo itself answers (`gh_repo_readable`): GitHub
+   also says 404 for a whole private repo the App can no longer read. Then each alert
    group and log pattern that an OPEN finding issue already tracks gets
    `tracked_by` = that issue, which the LLM sees (it then names the issue
    instead of re-filing) and the summary's `rolled into` column shows.
 5. ONE LLM call → Report (alerts + log patterns + known events + dedup
    context).
 6. **Each Finding's dedup key is built in code from its signals**
-   (`modes/signals.py`, 2026-10-10): `alert:<alertname>:<namespace>:<cluster>`,
+   (`modes/signals.py`, 2026-10-10):
+   `alert:<alertname>:<namespace>[:<workload>]:<cluster>`,
    `log:ratio:<namespace>:<cluster>`, `log:tripwire:<label>:<namespace>:<cluster>`.
    ⚠ Until then the LLM invented the key, and its scope changed daily
    (state.db on 2026-10-10: `…:prd-node-17h04:prd`,
-   `…:prd-node-20261006T1231:prd`), so a recurring condition filed a new
-   issue instead of commenting on the open one. A finding that cites
-   several signals takes the first key state.db already knows (an open
-   issue, or one closed less than 7 days ago), else the first in sorted
-   order; its other keys become **aliases** of its issue in state.db (a key
-   open on a different issue is never repointed), so tomorrow any one of
-   them lands there. A signal belongs to the first finding that cites it. A
-   finding citing no alert group or log pattern keeps the LLM's key, its
-   cluster suffix forced. ⚠ The switch has no migration: an old LLM key never
-   equals a code-built one, so a condition still firing under an issue filed
-   with an old key files once more under its new key; close the old issue
-   then. (Every finding issue filed before 2026-10-10 was closed that day.)
+   `…:prd-node-20261006T1231:prd`, a Job name with its run's timestamp),
+   so a recurring condition filed a new issue instead of commenting on the
+   open one.
+   - **The workload part** keeps two problems of one namespace apart (the
+     off-site dump's and the restore drill's `KubeJobFailed` in `giks-db`).
+     It is the first label naming the alert's object: `cronjob`, `job_name`,
+     `deployment`, `statefulset`, `daemonset`, `persistentvolumeclaim`,
+     `mountpoint`, a Flux object's `name`, then `pod`, then `route` /
+     `reason`. Never `job`, `service` or `instance`: on a kube-state-metrics
+     alert they name the scrape target. A generated name is reduced with
+     Kubernetes' own suffix alphabet (`adminapp-6d9f7c8b5-x2kq4` →
+     `adminapp`, a CronJob's `…-29330820` → the CronJob); a StatefulSet's
+     ordinal stays.
+   - **Several signals**: the first key with an OPEN issue wins, then one
+     closed less than 7 days ago, then the first in sorted order. The other
+     keys become **aliases** of the issue in state.db when the issue is new
+     or open (never a closed one, and never repointing a key open on
+     another issue), so tomorrow any one of them lands there.
+   - A signal belongs to the first finding that cites it, and a second
+     finding of the run on the same key links to the first's issue.
+   - **No usable signal**: a finding is matched by its alert evidence
+     (`Alertmanager/<alertname>@…` naming exactly one group), then keyed
+     `event:<kind>:<namespace>:<cluster>` by the known events it cites, and
+     only then keeps the LLM's key (cluster suffix forced; a missing one is
+     a per-finding placeholder, not a failed Report).
+   - **The switch needed no migration.** All 44 keys in state.db on
+     2026-10-10 were free-form LLM ones and none equals a code-built key; a
+     4-part key that ever did would name the same alert and namespace. A
+     condition still firing under an issue filed with an old key files once
+     more under its new key: close the old issue then. (Every finding issue
+     filed before 2026-10-10 was closed that day.)
    Then each Finding is dispatched to Grafana annotation + GH issue +
    state.db record. The annotation is best-effort: a failure is logged and
    counted, never fatal (`dispatch.py`). It goes to the cluster's
@@ -813,7 +839,9 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    (`increase(…[6h]) > 0`) sees. A series born at 1 has no earlier sample,
    and that first failure never fired. A new surface goes into that tuple
    (`tests/test_metrics.py` checks it). Every metric `emit/metrics.py`
-   declares is one the agent sets, and that test fails on one nothing sets:
+   declares is one the agent sets, and that test fails on one nothing
+   `.inc()`s, `.set()`s or `.observe()`s (an import or a docstring is not
+   enough):
    seven declared for never-built modes (findings, PR actions, the
    "anthropic" cost and tokens, backup verification, doctrine drift) went
    on 2026-10-10; a dashboard tile had read the always-0 cost counter

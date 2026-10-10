@@ -362,6 +362,11 @@ async def triage_digest(
         f["mode"] = "A"
         f["cluster"] = cluster
         f["id"] = base64.b32encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")[:26]
+        # The prompt says the runtime replaces the key, so a missing one must
+        # not fail the whole Report: a per-finding placeholder (a new issue
+        # if no signal replaces it, never a merge with another finding).
+        if not isinstance(f.get("dedup_key"), str) or not f["dedup_key"].strip():
+            f["dedup_key"] = f"llm:unkeyed:{f['id']}:{cluster}"
         # The LLM's own key is only the fallback (the digest runner builds
         # the key from the finding's `signals`: modes/signals.py), but its
         # cluster suffix is still forced to the real cluster.

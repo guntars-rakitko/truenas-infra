@@ -64,6 +64,16 @@ def test_gh_issue_get_answers_none_for_an_issue_that_does_not_exist(monkeypatch,
 
 
 @respx.mock
+@pytest.mark.parametrize("status,readable", [(200, True), (404, False), (403, False)])
+def test_gh_repo_readable(monkeypatch, status, readable):
+    from cluster_agent.tools.github import gh_repo_readable
+    _fake_auth(monkeypatch)
+    respx.get("https://api.github.com/repos/guntars-rakitko/kube-infra").mock(
+        return_value=httpx.Response(status, json={}))
+    assert gh_repo_readable("guntars-rakitko/kube-infra") is readable
+
+
+@respx.mock
 def test_gh_issue_get_raises_on_any_other_failure(monkeypatch):
     """A 502, or the 301 of a renamed repo: the reconcile decides by repo
     whether that means closed (a retired repo) or "cannot tell"."""

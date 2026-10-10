@@ -308,8 +308,7 @@ services:
     # matter materially. The cluster-agent has:
     #   - persistent state (SQLite at /data/state.db)
     #   - external API calls that can spike load (Anthropic LLM bursts)
-    #   - subprocess forks (kubectl, gh, mc) with their own resource
-    #     footprints
+    #   - subprocess forks (kubectl) with their own resource footprints
     #   - LLM-driven control flow that can in principle loop
     # mem_limit + cpus cap a runaway agent before it can starve the NAS
     # (Beelink ME Mini: 16GB RAM total, 4 weak N150 cores). cap_drop +

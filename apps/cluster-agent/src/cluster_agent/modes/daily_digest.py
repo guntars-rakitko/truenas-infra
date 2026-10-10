@@ -44,13 +44,13 @@ from ..emit.metrics import (
 )
 from ..llm import triage_digest, LLMBudgetExceeded
 from ..state.db import StateDB
-from ..state.dedup import lookup, mark_closed, record_aliases
+from ..state.dedup import _DedupActionKind, lookup, mark_closed, record_aliases
 from ..tools.alertmanager import alertmanager_alerts, alertmanager_history
 from ..tools.audit import set_run_id
 from ..tools.loki import loki_query, loki_metric_query_range
 from ..tools.prometheus import prometheus_query, prometheus_query_range
 from ..tools.kubectl import kubectl_describe, kubectl_get, ToolError
-from ..tools.github import gh_issue_get
+from ..tools.github import gh_issue_get, gh_repo_readable
 from ..dispatch import dispatch, _findings_repo
 from .digest_aggregator import (
     aggregate,
@@ -63,6 +63,8 @@ from .signals import (
     assign_signal_ids,
     candidate_keys,
     choose_dedup_key,
+    event_keys,
+    infer_alert_signals,
     mark_tracked,
     one_finding_per_signal,
 )
@@ -194,7 +196,10 @@ async def run_async(*, cluster: str) -> DigestResult:
     # 5b. Each alert group / log pattern an open issue already tracks names
     # it (`tracked_by`): the LLM then knows exactly what is tracked, and the
     # summary's `rolled into` column shows the issue.
-    mark_tracked(sdb, [*groups, *log_patterns], cluster)
+    try:
+        mark_tracked(sdb, [*groups, *log_patterns], cluster)
+    except Exception as e:  # bookkeeping, never a reason to skip the digest
+        log.warning("digest %s: marking tracked signals failed: %r", cluster, e)
 
     # ── 6. ONE LLM call → Report ────────────────────────────────────
     try:
@@ -234,26 +239,51 @@ async def run_async(*, cluster: str) -> DigestResult:
 
     # ── 7. Dispatch each Finding through the existing pipeline ──────
     # Its dedup key comes from the signals it cites (signals.py), so the
-    # same alert files under the same key every day; the LLM's own key is
-    # the fallback for a finding that cites no alert group or log pattern.
+    # same alert files under the same key every day. A finding citing no
+    # alert group or log pattern is matched by its alert evidence, then by
+    # the known events it cites; only then does it keep the LLM's own key.
     one_finding_per_signal(report.findings)
     emitted = 0
     dispatch_refs: dict[str, str] = {}    # finding.id → "owner/repo#NN"
+    dispatched: dict[str, str | None] = {}  # dedup_key → its ref, this run
     for finding in report.findings:
         try:
             candidates = candidate_keys(finding.signals, signals_by_id, cluster)
+            if not candidates:
+                inferred = infer_alert_signals(finding, groups)
+                if inferred:
+                    finding.signals = list(dict.fromkeys([*finding.signals, *inferred]))
+                    candidates = candidate_keys(inferred, signals_by_id, cluster)
+            if not candidates:
+                candidates = event_keys(finding.signals, signals_by_id, cluster)
             if candidates:
                 finding.dedup_key = choose_dedup_key(sdb, candidates)
+            else:
+                log.warning("digest %s: finding %r cites no signal; keeping the LLM's key %s",
+                            cluster, finding.title, finding.dedup_key)
+            if finding.dedup_key in dispatched:
+                # Two findings of one run on one key are one issue: link the
+                # second to it instead of commenting on an issue filed a
+                # second ago.
+                if dispatched[finding.dedup_key]:
+                    dispatch_refs[finding.id] = dispatched[finding.dedup_key]
+                log.info("digest %s: finding %r shares key %s with an earlier one",
+                         cluster, finding.title, finding.dedup_key)
+                continue
             action = lookup(sdb, finding.dedup_key)
             result = dispatch(finding, action, db=sdb)
             emitted += 1
-            if result is not None and result.gh_issue_ref:
-                dispatch_refs[finding.id] = result.gh_issue_ref
+            ref = result.gh_issue_ref if result is not None else None
+            dispatched[finding.dedup_key] = ref
+            if ref:
+                dispatch_refs[finding.id] = ref
                 aliases = [k for k in candidates if k != finding.dedup_key]
-                if aliases:
+                # Aliases onto a new or an open issue only: pointed at a
+                # closed one, a new signal would never get an open issue.
+                if aliases and action.kind != _DedupActionKind.REOPEN:
                     record_aliases(
                         sdb, aliases,
-                        gh_issue_ref=result.gh_issue_ref,
+                        gh_issue_ref=ref,
                         mode=finding.mode, cluster=finding.cluster,
                         severity=finding.severity,
                         payload_json=finding.model_dump_json(),
@@ -438,9 +468,10 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
     could be closed in state.db while still open on GitHub.
 
     The row is marked closed when the issue is closed on GitHub, when GitHub
-    says it does not exist (404/410: deleted), or when its repo cannot be
-    read and is not the active findings repo (e.g. the retired
-    `cluster-agent-sandbox`). closed_at = the GH close date when known, else
+    says it does not exist (404/410: deleted; on the ACTIVE findings repo
+    only once the repo itself answers, since GitHub also says 404 for a
+    private repo the App lost), or when its repo cannot be read and is not
+    the active findings repo (e.g. the retired `cluster-agent-sandbox`). closed_at = the GH close date when known, else
     the finding's last_seen_at (old → lands outside REOPEN_WINDOW → the next
     emit CREATEs a fresh issue in the active findings repo instead of
     commenting on a dead one). Any other error on the ACTIVE findings repo
@@ -456,6 +487,7 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
     ]
     # (repo, number) -> (state, closed_at), or None while it cannot be told.
     seen: dict[tuple[str, int], tuple[str, str | None] | None] = {}
+    readable: dict[str, bool] = {}
     closed = 0
     for r in rows:
         repo, sep, num = r["gh_issue_ref"].rpartition("#")
@@ -465,10 +497,14 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
         if issue_key not in seen:
             try:
                 issue = gh_issue_get(repo, int(num))
-                seen[issue_key] = (
-                    ("closed", None) if issue is None
-                    else (issue.get("state", "open"), issue.get("closed_at"))
-                )
+                if issue is not None:
+                    seen[issue_key] = (issue.get("state", "open"), issue.get("closed_at"))
+                elif repo != findings_repo or _repo_readable(repo, readable):
+                    seen[issue_key] = ("closed", None)      # the issue is gone
+                else:
+                    # GitHub answers 404 for a whole private repo the App can
+                    # no longer read: on the ACTIVE repo that is "cannot tell".
+                    seen[issue_key] = None
             except Exception as e:
                 log.warning("reconcile: gh_issue_get(%s#%s) failed: %r", repo, num, e)
                 # Active repo + error → cannot tell: do NOT false-close.
@@ -482,6 +518,18 @@ def _reconcile_finding_states(sdb: StateDB, findings_repo: str | None) -> int:
     if closed:
         log.info("reconcile: closed %d stale-open finding(s) vs live GH state", closed)
     return closed
+
+
+def _repo_readable(repo: str, cache: dict[str, bool]) -> bool:
+    """Whether the App can read `repo` at all (once per reconcile); an
+    error reads as "no", so a 404 then never closes a finding."""
+    if repo not in cache:
+        try:
+            cache[repo] = gh_repo_readable(repo)
+        except Exception as e:
+            log.warning("reconcile: gh_repo_readable(%s) failed: %r", repo, e)
+            cache[repo] = False
+    return cache[repo]
 
 
 def _load_open_dedup_keys(sdb: StateDB, cluster: str) -> list[str]:

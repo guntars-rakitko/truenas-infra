@@ -172,7 +172,10 @@ async def test_daily_digest_emits_findings_via_dispatch(tmp_path, monkeypatch):
     assert result.findings_emitted == 1
     assert result.quiet_period is False
     assert len(dispatch_calls) == 1
-    assert dispatch_calls[0].dedup_key == "alert:KubePodCrashLooping:pocket-id-0:dev"
+    # The finding cites no signal id, but its alert evidence names exactly one
+    # group, so the key is built in code: the LLM's `…:pocket-id-0:dev` is gone.
+    assert dispatch_calls[0].dedup_key == "alert:KubePodCrashLooping:pocket-id:pocket-id-0:dev"
+    assert dispatch_calls[0].signals == ["A1"]
 
 
 @pytest.mark.asyncio
@@ -569,3 +572,75 @@ async def test_a_known_events_crash_is_a_gap_not_an_abort(tmp_path, monkeypatch)
     assert result.error is None
     assert captured["known_events"] == []
     assert captured["known_event_failures"] == ["known events: RuntimeError"]
+
+
+@pytest.mark.asyncio
+async def test_two_findings_on_one_key_file_one_issue(tmp_path, monkeypatch):
+    """Two alert groups of one workload (two pods of one Deployment) give one
+    key: the second finding links to the first's issue, it does not comment
+    on an issue filed a second ago."""
+    from cluster_agent.modes import daily_digest, summary_issue
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+    calls: list[tuple[str, str, str]] = []
+    captured = {}
+    monkeypatch.setattr(summary_issue, "emit_summary", lambda **kw: captured.update(kw) or {})
+    now = dt.datetime.now(dt.timezone.utc)
+    samples = [[(now - dt.timedelta(minutes=i)).timestamp(), "1"] for i in range(120, 0, -1)]
+    history = {"data": {"result": [
+        {"metric": {"alertname": "PodRestartingFrequently", "namespace": "giks", "pod": p}, "values": samples}
+        for p in ("adminapp-6d9f7c8b5-x2kq4", "adminapp-6d9f7c8b5-b7v9z")]}}
+    monkeypatch.setattr(daily_digest, "alertmanager_history", lambda cluster, since_hours=24: history)
+    monkeypatch.setattr(daily_digest, "alertmanager_alerts", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_gather_context_for_chronic", lambda groups, cluster: "")
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns", lambda cluster, **kw: [])
+    monkeypatch.setattr(daily_digest, "_reconcile_finding_states", lambda sdb, repo: 0)
+    f1, f2 = _finding(["A1"], "k1"), _finding(["A2"], "k2")
+    f2.id = "2" * 26
+
+    async def fake_triage(**kw):
+        return _report([f1, f2])
+    monkeypatch.setattr(daily_digest, "triage_digest", fake_triage)
+    monkeypatch.setattr(daily_digest, "dispatch", _fake_dispatch(calls, [1700]))
+
+    result = await daily_digest.run_async(cluster="dev")
+    assert result.findings_emitted == 1
+    assert calls == [("alert:PodRestartingFrequently:giks:adminapp:dev", "create",
+                      "guntars-rakitko/kube-infra#1700")]
+    assert captured["dispatch_refs"] == {f1.id: "guntars-rakitko/kube-infra#1700",
+                                         f2.id: "guntars-rakitko/kube-infra#1700"}
+
+
+@pytest.mark.asyncio
+async def test_a_recurrence_on_a_closed_issue_records_no_aliases(tmp_path, monkeypatch):
+    """Pointed at a closed issue, a new signal's key would never get an open
+    issue of its own: aliases go only onto a new or an open issue."""
+    from cluster_agent.modes import daily_digest
+    from cluster_agent.state.db import StateDB
+    from cluster_agent.state.dedup import lookup, record, _DedupActionKind
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+    record(StateDB(tmp_path / "state.db"), "alert:CnpgBackupTooOld:giks-db:dev",
+           gh_issue_ref="guntars-rakitko/kube-infra#1650", state="closed",
+           closed_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2))
+    calls: list[tuple[str, str, str]] = []
+    await _run_day(daily_digest, monkeypatch,
+                   [("KubeJobFailed", "giks-db"), ("CnpgBackupTooOld", "giks-db")],
+                   lambda groups: [_finding([g.signal_id for g in groups], "x")], calls, [])
+    assert calls == [("alert:CnpgBackupTooOld:giks-db:dev", "reopen", "guntars-rakitko/kube-infra#1650")]
+    assert lookup(StateDB(tmp_path / "state.db"), "alert:KubeJobFailed:giks-db:dev").kind == _DedupActionKind.CREATE
+
+
+@pytest.mark.asyncio
+async def test_a_finding_on_events_alone_gets_a_stable_event_key(tmp_path, monkeypatch):
+    from cluster_agent.modes import daily_digest
+    from cluster_agent.schema import KnownEvent
+    monkeypatch.setenv("STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("DAILY_DIGEST_BUDGET_USD", "0.75")
+    event = KnownEvent(kind="helm_upgrade", at=dt.datetime.now(dt.timezone.utc), what="cilium failed",
+                       namespace="kube-system")
+    monkeypatch.setattr(daily_digest, "gather_known_events", lambda cluster, **kw: [event])
+    calls: list[tuple[str, str, str]] = []
+    await _run_day(daily_digest, monkeypatch, [("Watchdog", "monitoring")],
+                   lambda groups: [_finding(["E1"], "alert:Invented:scope-2026-10-10:dev")], calls, [1701])
+    assert calls == [("event:helm_upgrade:kube-system:dev", "create", "guntars-rakitko/kube-infra#1701")]

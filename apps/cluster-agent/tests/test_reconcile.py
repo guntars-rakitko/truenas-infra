@@ -12,6 +12,8 @@ whose issue was not on that page.
 """
 import datetime as dt
 
+import pytest
+
 from cluster_agent.modes import daily_digest
 from cluster_agent.state.db import StateDB
 from cluster_agent.state.dedup import record, lookup, DedupAction
@@ -122,15 +124,38 @@ def test_active_repo_transient_error_does_not_false_close(tmp_path, monkeypatch)
 
 
 def test_a_deleted_issue_is_closed(tmp_path, monkeypatch):
-    """GitHub says the issue does not exist (gh_issue_get → None on 404/410):
-    it is not an open tracker either way."""
+    """GitHub says the issue does not exist (gh_issue_get → None on 404/410)
+    while the repo itself answers: it is not an open tracker either way."""
     sdb = StateDB(tmp_path / "state.db")
     _seed(sdb, "alert:Old:x:dev", f"{_ACTIVE}#5", last_seen_days_ago=60)
-    fake, _ = _issues({(_ACTIVE, 5): None})
+    _seed(sdb, "alert:Old2:x:dev", f"{_ACTIVE}#6", last_seen_days_ago=60)
+    fake, _ = _issues({(_ACTIVE, 5): None, (_ACTIVE, 6): None})
+    monkeypatch.setattr(daily_digest, "gh_issue_get", fake)
+    probes: list[str] = []
+    monkeypatch.setattr(daily_digest, "gh_repo_readable", lambda repo: probes.append(repo) or True)
+
+    assert daily_digest._reconcile_finding_states(sdb, _ACTIVE) == 2
+    assert lookup(sdb, "alert:Old:x:dev") == DedupAction.create
+    assert probes == [_ACTIVE]          # asked once per run
+
+
+@pytest.mark.parametrize("probe", ["unreadable", "error"])
+def test_a_404_on_an_unreadable_active_repo_closes_nothing(tmp_path, monkeypatch, probe):
+    """GitHub answers 404 for a whole private repo the App can no longer
+    read. On the ACTIVE repo that must not close every live finding."""
+    sdb = StateDB(tmp_path / "state.db")
+    _seed(sdb, "alert:Live:x:dev", f"{_ACTIVE}#7")
+    fake, _ = _issues({(_ACTIVE, 7): None})
     monkeypatch.setattr(daily_digest, "gh_issue_get", fake)
 
-    assert daily_digest._reconcile_finding_states(sdb, _ACTIVE) == 1
-    assert lookup(sdb, "alert:Old:x:dev") == DedupAction.create
+    def readable(repo):
+        if probe == "error":
+            raise RuntimeError("502")
+        return False
+    monkeypatch.setattr(daily_digest, "gh_repo_readable", readable)
+
+    assert daily_digest._reconcile_finding_states(sdb, _ACTIVE) == 0
+    assert "alert:Live:x:dev" in daily_digest._load_open_dedup_keys(sdb, "dev")
 
 
 def test_alias_rows_of_one_issue_cost_one_read_and_close_together(tmp_path, monkeypatch):

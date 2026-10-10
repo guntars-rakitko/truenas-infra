@@ -75,7 +75,10 @@ class Finding(BaseModel):
     @classmethod
     def signals_lenient(cls, v: object) -> list[str]:
         """Signals are bookkeeping, never a reason to drop a whole Report:
-        a missing or malformed list reads as no signals."""
+        a missing or malformed list reads as no signals, and one string
+        ("A1, L2") is split."""
+        if isinstance(v, str):
+            v = v.replace(",", " ").split()
         if not isinstance(v, list):
             return []
         return [s.strip().upper() for s in v if isinstance(s, str) and s.strip()]

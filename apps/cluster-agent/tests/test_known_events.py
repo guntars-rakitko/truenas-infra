@@ -27,10 +27,17 @@ def _matrix(metric: dict, values: list[float]) -> dict:
                                  "values": [[t0 + i * 300, str(v)] for i, v in enumerate(values)]}]}}
 
 
+# A healthy cluster's answers with nothing new in the window: the node and
+# kube-apiserver have been up since 10-03 (an empty answer is a coverage gap).
+_UP_SINCE_BOOT = _matrix({"instance": "10.10.5.12:9100", "nodename": "msa2-dev-01"}, [_ts(11, 47, 10, day=3)])
+_UP_SINCE_API = _matrix({"instance": "10.10.5.12:6443"}, [_ts(11, 48, 0, day=3)])
+_EMPTY = {"data": {"result": []}}
+
+
 class _Prom:
     def __init__(self, boots=None, apiserver=None, raise_on=()):
-        self.answers = {"node_boot_time_seconds": boots or {"data": {"result": []}},
-                        "process_start_time_seconds": apiserver or {"data": {"result": []}}}
+        self.answers = {"node_boot_time_seconds": boots or _UP_SINCE_BOOT,
+                        "process_start_time_seconds": apiserver or _UP_SINCE_API}
         self.raise_on = set(raise_on)
         self.calls: list[tuple[str, str, str, str]] = []
 
@@ -45,8 +52,11 @@ class _Prom:
 
 
 class _Kube:
-    def __init__(self, helmreleases=(), jobs=(), raise_on=()):
-        self.items = {"helmreleases": list(helmreleases), "jobs": list(jobs)}
+    def __init__(self, helmreleases=None, jobs=(), cronjobs=(), raise_on=()):
+        # A cluster always has HelmReleases (an empty list is a gap): by
+        # default one whose last deploy is long before the window.
+        self.items = {"helmreleases": list(helmreleases) if helmreleases is not None else [_OLD_HR],
+                      "jobs": list(jobs), "cronjobs": list(cronjobs)}
         self.raise_on = set(raise_on)
         self.calls: list[str] = []
 
@@ -113,6 +123,9 @@ def _hr(name, target, history):
 def _snap(version, chart, deployed, status="deployed", action="upgrade", namespace=None):
     return {"version": version, "chartVersion": chart, "lastDeployed": deployed,
             "status": status, "action": action, "namespace": namespace}
+
+
+_OLD_HR = _hr("trust-manager", "cert-manager", [_snap(1, "v0.24.0", "2026-09-28T14:11:11Z", action="install")])
 
 
 def test_helm_upgrades_in_the_window_name_the_chart_change():
@@ -214,3 +227,73 @@ def test_garbage_in_an_answer_is_skipped_not_fatal():
     failures: list[str] = []
     assert _gather(_Prom(boots=boots), kube, failures) == []
     assert failures == []
+
+
+# ── An empty answer is a gap; the drill outlives its Job (review, 2026-10-10)
+
+@pytest.mark.parametrize("prom_kwargs,kube_kwargs,expected", [
+    ({"boots": _EMPTY}, {}, ["known events node boots: LookupError"]),
+    ({"apiserver": _EMPTY}, {}, ["known events apiserver restarts: LookupError"]),
+    ({}, {"helmreleases": []}, ["known events helm upgrades: LookupError"]),
+])
+def test_an_empty_answer_where_a_cluster_always_has_one_is_a_gap(prom_kwargs, kube_kwargs, expected):
+    """node-exporter or the apiserver scrape down, or Flux gone: "no events"
+    would be a false clean."""
+    failures: list[str] = []
+    assert _gather(_Prom(**prom_kwargs), _Kube(**kube_kwargs), failures) == []
+    assert failures == expected
+
+
+def test_no_jobs_at_all_is_a_quiet_answer_not_a_gap():
+    failures: list[str] = []
+    _gather(kube=_Kube(jobs=[], cronjobs=[]), failures=failures)
+    assert failures == []
+
+
+def test_a_boot_without_a_node_name_still_counts():
+    """The `or on(instance)` arm: node_uname_info missing costs the name only."""
+    boots = _matrix({"instance": "10.10.5.12:9100"}, [_ts(14, 21, 2)])
+    (event,) = _gather(_Prom(boots=boots))
+    assert "node 10.10.5.12:9100 booted" in event.what
+    prom = _Prom()
+    _gather(prom)
+    boot_query = next(c[0] for c in prom.calls if "node_boot_time_seconds" in c[0])
+    assert boot_query.endswith(" or on(instance) max by (instance) (node_boot_time_seconds)")
+
+
+def _cronjob(name, last_schedule, last_success=None, namespace="giks-db"):
+    status = {"lastScheduleTime": last_schedule}
+    if last_success:
+        status["lastSuccessfulTime"] = last_success
+    return {"metadata": {"name": name, "namespace": namespace}, "status": status}
+
+
+def test_a_drill_whose_job_is_already_reaped_comes_from_its_cronjob():
+    """In winter the digest runs at 04:00Z, when Monday's 04:00Z drill Job
+    (24 h TTL) is being reaped: the CronJob's status outlives it."""
+    kube = _Kube(jobs=[], cronjobs=[
+        _cronjob("giks-restore-drill", "2026-10-10T04:00:00Z", "2026-10-10T04:00:48Z"),
+        _cronjob("giks-db-offsite-dump", "2026-10-10T03:00:00Z", "2026-10-10T03:00:55Z"),
+        _cronjob("w1-restore-drill", "2026-10-05T05:00:00Z", namespace="w1-db"),     # before the window
+    ])
+    (event,) = _gather(kube=kube)
+    assert (event.kind, event.namespace) == ("restore_drill", "giks-db")
+    assert event.at == dt.datetime(2026, 10, 10, 4, 0, tzinfo=_UTC)
+    assert "its Job is gone; last success 10-10 04:00Z" in event.what
+
+
+def test_a_drill_with_its_job_present_is_listed_once():
+    kube = _Kube(
+        jobs=[_job("giks-restore-drill-29330880", "giks-restore-drill", "2026-10-10T04:00:03Z",
+                   "2026-10-10T04:00:48Z", succeeded=1)],
+        cronjobs=[_cronjob("giks-restore-drill", "2026-10-10T04:00:00Z", "2026-10-10T04:00:48Z")],
+    )
+    (event,) = _gather(kube=kube)
+    assert "succeeded at 04:00Z" in event.what
+
+
+def test_a_scheduled_drill_that_never_succeeded_says_so():
+    kube = _Kube(cronjobs=[_cronjob("giks-restore-drill", "2026-10-10T04:00:00Z",
+                                    last_success="2026-10-03T04:00:50Z")])
+    (event,) = _gather(kube=kube)
+    assert "no success recorded since" in event.what
