@@ -20,6 +20,12 @@
       "matchManagers": ["pip_requirements"],
       "matchFileNames": ["apps/cluster-agent/requirements.lock.txt"],
       "enabled": false
+    },
+    {
+      "description": "`requires-python` is set by hand, never by Renovate. In apps/cluster-agent/pyproject.toml it follows the image's Python minor (the compose `image:` tag), changed in the same PR as `uv lock` + the requirements.lock.txt re-export. At the root it is the laptop floor (`>=3.10`; manage.sh builds its venv with `uv venv --python 3.11`). With `rangeStrategy: bump` Renovate's pep621 manager raised both to `>=3.14.8` in #180, which made the root project unresolvable for that venv on a fresh clone.",
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["requires-python"],
+      "enabled": false
     }
   ]
 }

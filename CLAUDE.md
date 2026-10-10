@@ -755,10 +755,13 @@ pytest `__pycache__/*.pyc` on every deploy.
   `code/src/cluster_agent/**/__pycache__/` (cpython-311 and -314, including
   `modes/alert_triage` and `tools/mc`, deleted from git in May 2026).
   TrueNAS 25.10 has no file-delete API, so the phase cannot remove them. They
-  are inert: the image is python 3.13 (other cache tags are ignored), a
-  `__pycache__` file whose source is gone is never imported, and `/app` is
-  read-only. A 3.13 laptop venv writes the image's own `cpython-313` tag,
-  which is why they must not ship. Removing them is a manual operator step:
+  are inert: a `__pycache__` file whose source is gone is never imported,
+  Python checks every other one against its source's mtime and size (the
+  uploaded sources are newer), and `/app` is read-only. But since the image
+  moved to python 3.14 (2026-10-10) the `cpython-314` ones carry the image's
+  own tag, so remove them once rather than rely on that check. (A laptop venv
+  on the image's Python writes that same tag, which is why the phase ships
+  no `__pycache__`.) Removing them is a manual operator step:
   `ssh -t truenas_admin@10.10.5.10 'sudo find /mnt/tank/system/apps-config/cluster-agent/code -type d -name __pycache__ -prune -exec rm -rf {} +'`.
 
 **Runtime deps come from `uv.lock` (since 2026-09-29).** One chain, no
@@ -808,7 +811,8 @@ uvicorn.
   `sudo docker restart cluster-agent`.
   Verify with the stamp, not `/health`:
   `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent cat /venv/.requirements.stamp'`
-  must equal `shasum -a 256 apps/cluster-agent/requirements.lock.txt` + ` cp313`.
+  must equal `shasum -a 256 apps/cluster-agent/requirements.lock.txt` + ` cp314`
+  (` cp313` until the image moved to python 3.14, 2026-10-10).
 - **Forcing a rebuild** (suspected corrupt venv):
   `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent rm -f /venv/.requirements.stamp'`,
   then restart.

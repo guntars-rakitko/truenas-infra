@@ -27,10 +27,10 @@
 # cluster's node (clusters.py GRAFANA_URLS) with a Grafana service-account
 # token, GRAFANA_SA_TOKEN_{DEV,PRD} below. See tools/grafana.py.
 #
-# Image strategy: python:3.13-alpine base + persistent /venv built from
+# Image strategy: python:3.14-alpine base (3.13 until 2026-10-10) + persistent /venv built from
 # EXACTLY requirements.lock.txt (a hashed `uv export` of uv.lock, uploaded
 # with the code). The startup script stamps /venv with that file's sha256 +
-# the image's Python minor (e.g. "<sha256> cp313") and rebuilds only when the
+# the image's Python minor (e.g. "<sha256> cp314") and rebuilds only when the
 # stamp differs, or when /venv can no longer import the core packages
 # (uvicorn, fastapi, jinja2, jwt, yaml — catches site-packages damaged under
 # an intact stamp). Unchanged = one sha256sum + two `python -c` calls (~0.1 s
@@ -50,13 +50,15 @@
 # and reports the app `noop`. Restart the container to rebuild /venv — same
 # as a code-only change (truenas-infra CLAUDE.md § cluster-agent ops).
 #
-# WHY 3.13 (not 3.14): pydantic-core 2.10 doesn't yet publish
+# 3.14 since 2026-10-10 (truenas-infra#180, reworked): every locked runtime package now
+# has a cp314-musllinux x86_64, abi3 or pure-Python wheel, and the suite passes on 3.14.8.
+# The trap that kept us on 3.13, for the record: pydantic-core 2.10 didn't publish
 # `cpython-314-musllinux` wheels, so pip falls back to source-build on
 # alpine, which needs Rust, and alpine's musl can't satisfy the cargo
 # binary's glibc deps (libgcc_s.so.1 + _Unwind_* symbols). Bricked the
 # container in a crash loop 2026-05-25 until logs revealed the cause.
-# Python 3.13 has pre-built wheels — clean install, no Rust. Revisit when
-# pydantic-core publishes cp314-musllinux (probably ~3-6 months out).
+# Python 3.13 had pre-built wheels (clean install, no Rust), so the image stayed
+# on it until they existed for 3.14.
 # Since 2026-09-29 the install runs with --only-binary=:all:, so a missing
 # wheel fails fast with pip's "no matching distribution" instead of a source
 # build, and tests/test_requirements_lock.py checks — against the Python
@@ -83,7 +85,7 @@
 # scraping node → direct L2 → no masquerade question.
 services:
   cluster-agent:
-    image: python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+    image: python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
     container_name: cluster-agent
     restart: unless-stopped
     ports:
