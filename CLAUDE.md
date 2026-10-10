@@ -977,9 +977,11 @@ its own (`Finding.cluster` `nas` / `global`) is its own label.
   `grafana_annotation`). Both keys are in `_DOPPLER_KEYS_PER_APP`, so they
   MUST exist in Doppler or `manage.sh phase apps` fails loud.
   *(Until #1366 the annotations went through the apiserver proxy with an
-  `X-WEBAUTH-USER: cluster-agent` header. Grafana's auth.proxy trusts that
-  header from any pod-CIDR address, which the proxy arrives from, and it can
-  name any user: the read-only SA could act as Grafana `admin`. The older
+  `X-WEBAUTH-USER: cluster-agent` header. Grafana's auth.proxy trusted that
+  header from any pod-CIDR address, which the proxy arrives from, and it could
+  name any user: the read-only SA could act as Grafana `admin`. Header trust
+  itself ended with kube-infra#1399 step 2 (2026-10-10): Grafana logs in through
+  its own Pocket-ID client on both clusters. The older
   `GRAFANA_API_TOKEN_{DEV,PRD}` keys, listed here until 2026-09-28, were dead
   since 2026-05-26 (PR #42); delete them from Doppler if they are still
   there.)*
