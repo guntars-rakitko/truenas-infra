@@ -363,6 +363,22 @@ in `apps/minio-{prd,dev}/docker-compose.yaml`. ⚠ This said
 compose files actually run. Re-read the compose file before quoting a version
 here; this section is a mirror, not the source of truth.
 
+⚠ **Do not upgrade to RELEASE.2026-09-19 or later on the Free tier** (2026-10-10, #181 closed).
+Its release notes (#6509, #6331) end the Free tier's automatic encryption and refuse encryption
+requests. A throwaway local copy with OUR licence (the running 06-06 release wrote first, then 09-19
+started on the same data) showed what that means here:
+- a PUT into a bucket with SSE-S3 configured FAILS ("This feature is not available for Free tier
+  licenses"). That is every bucket `setup-minio-encryption.sh` covers, so CNPG WAL archiving, the
+  etcd snapshots, Litestream and the v1 box's MSSQL backups would all stop;
+- a PUT into a bucket without it succeeds and lands in PLAINTEXT on disk: `postgres-backups-w1`,
+  which holds the SMS gateway's data since 2026-10-03;
+- setting bucket encryption, or an explicit SSE request, is refused. Existing objects stay readable;
+- the server bumped its cluster API version (9 → 18) at start, so there is no downgrade.
+
+Renovate holds MinIO behind Dependency Dashboard approval (`renovate.json`). The way forward is a
+decision, not an upgrade: move encryption at rest to ZFS native encryption so that MinIO needs no
+KMS, buy a tier that keeps it, or change object store.
+
 **A license file is required — even for the Free tier.** The "runs
 license-free" claim was wrong: AIStor gates S3 *data-plane* operations
 (`mc ls`, GET/PUT, etc.) on a valid license; without one the server
@@ -525,11 +541,13 @@ rule deletes them first). All three buckets were deleted at the 2026-10-06 teard
 
 Enables **SSE-S3 default encryption** on the buckets in its own `BUCKETS`
 list, on both instances (GDPR at-rest encryption, kube-infra #520
-Workstream C). ⚠ **That list is NOT the bucket list above:** it has nine
-entries (`pvc-backups` joined 2026-09-26) and omits `postgres-backups-w1` and `sms-gateway-backups` (the
+Workstream C). ⚠ **That list is NOT the bucket list above:** it has six
+entries (`longhorn`, `velero` and `pvc-backups` left with #187) and omits `postgres-backups-w1` and `sms-gateway-backups` (the
 latter holds the SMS-gateway's member/billing dumps). So this script has
-never enabled default encryption on those two; whether they are encrypted
-live is unchecked (`mc encrypt info nas-<env>/<bucket>`).
+never enabled default encryption on those two. Their objects are encrypted
+anyway, by AIStor's automatic SSE-KMS (`aws:kms` on their newest objects,
+read 2026-10-10): the mode RELEASE.2026-09-19 removes on the Free tier
+(§ Object store).
 With SSE-S3 on, every object is encrypted server-side before it hits
 the ZFS pool — backups become ciphertext at rest, transparently.
 
