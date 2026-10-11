@@ -538,6 +538,12 @@ async def test_known_events_reach_the_llm_and_the_summary_with_their_gaps(tmp_pa
         failures.append("known events helm upgrades: ToolError")
         return [event]
     monkeypatch.setattr(daily_digest, "gather_known_events", fake_events)
+    seen_by_miner: list[str | None] = []
+
+    def fake_mining(cluster, *, known_events=(), **kw):
+        seen_by_miner.extend(e.signal_id for e in known_events)
+        return []
+    monkeypatch.setattr(daily_digest, "aggregate_log_patterns", fake_mining)
     captured_llm, captured_summary = {}, {}
 
     async def fake_triage(**kw):
@@ -550,6 +556,8 @@ async def test_known_events_reach_the_llm_and_the_summary_with_their_gaps(tmp_pa
     assert result.error is None
     assert seen_window["end"] - seen_window["start"] == dt.timedelta(hours=24)
     assert captured_llm["known_events"] == [event] and event.signal_id == "E1"
+    # Numbered before log mining, which names the events a pattern is the noise of.
+    assert seen_by_miner == ["E1"]
     assert captured_llm["known_event_failures"] == ["known events helm upgrades: ToolError"]
     assert captured_summary["known_events"] == [event]
     assert captured_summary["known_event_failures"] == ["known events helm upgrades: ToolError"]

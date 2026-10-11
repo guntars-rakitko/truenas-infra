@@ -21,9 +21,10 @@ import datetime as dt
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Sequence
 
-from ..schema import AlertGroup, Chronicity, LogPattern
+from ..schema import AlertGroup, Chronicity, KnownEvent, LogPattern
+from .known_events import RESTART_KINDS, noise_window, touches
 
 
 # The chronicity thresholds. The digest-summary's section headers are built
@@ -233,9 +234,10 @@ def enrich_with_annotations(
 #                    (_ERROR_LINE_FILTER / _POSTGRES_ERROR_FILTER below)
 #   - tripwire:      one of these regexes matches (one occurrence enough)
 #
-# Every count comes from an hourly-step range query over hour-aligned
-# windows (_hour_windows), summed in Python: see that function for why a
-# 24h step counted two days.
+# Every count comes from a range query over hour-aligned windows
+# (_hour_windows), summed in Python: see that function for why a 24h step
+# counted two days. The last `window_hours` are counted in 15-minute slots,
+# the baseline days in hours.
 
 # Tripwire regexes — always surface even if they only fire once. These
 # are patterns the operator definitely wants to see; deferring to the
@@ -325,6 +327,20 @@ _JSON_DOCUMENT_EXCLUDE = r' !~ `^\s+"`'
 # match.
 _LOKI_QUERY_LOG_EXCLUDE = r' !~ `org_id=.* query="`'
 
+# Part 5: a .NET client's PostgresException dump (GIKS, kube-infra #1574,
+# #1576). Npgsql prints the exception's properties one per line, indented:
+#   `      Npgsql.PostgresException (0x80004005): 57P03: the database system is shutting down`
+#   `    Severity: FATAL`   (`          Severity: FATAL` for an inner exception)
+# The Severity line restates what Postgres itself logged, as a record the
+# Postgres filters judge by its own SQLSTATE (_POSTGRES_RESTART_EXCLUDE,
+# _POSTGRES_ERROR_FILTER), and it carries no SQLSTATE: a planned restart's
+# 57P03 and an auth failure's 28P01 look the same on it. On 2026-10-10 the
+# reboots made GIKS's jobserver print 10 (prd) and 6 (dev), all 57P03, and
+# each run filed a `fatal` finding; sms-gateway printed 2 during the CNPG
+# upgrade (part of #1577). A real database failure still trips `fatal`
+# through the server's own record.
+_NPGSQL_SEVERITY_LINE_EXCLUDE = r' !~ `^\s+Severity: (?:PANIC|FATAL|ERROR)\s*$`'
+
 # Cheap substring filters first, regexes last. Loki evaluates the stages
 # left to right, so the regexes only see what is left.
 _RECORD_EXCLUDE = (
@@ -332,6 +348,7 @@ _RECORD_EXCLUDE = (
     + _RUNNER_JOB_MESSAGE_EXCLUDE
     + _JSON_DOCUMENT_EXCLUDE
     + _LOKI_QUERY_LOG_EXCLUDE
+    + _NPGSQL_SEVERITY_LINE_EXCLUDE
 )
 
 # Postgres records that every PLANNED restart writes, under any name:
@@ -478,16 +495,25 @@ def _redact(line: str, *, max_len: int = 200) -> str:
     return line[:max_len]
 
 
+_HOUR = dt.timedelta(hours=1)
+# The recent window's step. Its counts are matched against known events,
+# whose noise is under an hour long (known_events.noise_window): with hour
+# points, "45 min after" an event at 14:59 reached 15:59, and before it,
+# 14:00. Counts per slot keep that within 15 minutes.
+_SLOT = dt.timedelta(minutes=15)
+
+
 def _hour_windows(
     now: dt.datetime, *, window_hours: int, baseline_days: int,
 ) -> tuple[dt.datetime, dt.datetime, dt.datetime, dt.datetime]:
-    """(recent_start, end, baseline_start, baseline_end) for hourly-step
-    range queries of `count_over_time(…[1h])`.
+    """(recent_start, end, baseline_start, baseline_end) for the range
+    queries of `count_over_time(…[step])`: the recent window in `_SLOT`
+    steps, the baseline in hours.
 
-    A point at t counts the hour (t-1h, t], so N points from `start` to
-    `end` inclusive count exactly N hours. Both ends sit on the hour: the
-    recent window is the `window_hours` full hours before `now`, the
-    baseline the `(baseline_days - 1) * 24` hours before that.
+    A point at t counts the step before it, (t-step, t], so N points from
+    `start` to `end` inclusive count exactly N steps. Both ends sit on the
+    hour: the recent window is the `window_hours` full hours before `now`,
+    the baseline the `(baseline_days - 1) * 24` hours before that.
 
     ⚠ Why not one point with a 24h step, as until 2026-10-10: Loki runs
     with `align_queries_with_step: true` (kube-infra loki.yaml), which
@@ -499,15 +525,21 @@ def _hour_windows(
     unchanged by the rounding, and their hourly splits cache across runs.
     """
     end = now.replace(minute=0, second=0, microsecond=0)
-    recent_start = end - dt.timedelta(hours=window_hours - 1)
+    recent_start = end - dt.timedelta(hours=window_hours) + _SLOT
     baseline_end = end - dt.timedelta(hours=window_hours)
     baseline_start = baseline_end - dt.timedelta(hours=(baseline_days - 1) * 24 - 1)
     return recent_start, end, baseline_start, baseline_end
 
 
-def _count_by_namespace(selector: str, line_filter: str) -> str:
-    """Lines per namespace per hour, for the hour-aligned range queries."""
-    return f"sum by (namespace) (count_over_time({selector} {line_filter} [1h]))"
+def _count_by_namespace(selector: str, line_filter: str, step: dt.timedelta = _HOUR) -> str:
+    """Lines per namespace per step, for the hour-aligned range queries."""
+    minutes = int(step.total_seconds() // 60)
+    span = f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes}m"
+    return f"sum by (namespace) (count_over_time({selector} {line_filter} [{span}]))"
+
+
+def _utc(ts: float) -> dt.datetime:
+    return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc)
 
 
 def _sum_series(resp: dict) -> dict[str, float]:
@@ -521,19 +553,118 @@ def _sum_series(resp: dict) -> dict[str, float]:
     return out
 
 
-def _seen_span(resp: dict) -> dict[str, tuple[dt.datetime, dt.datetime]]:
-    """(first, last) hour with a matching line, per namespace. Hour
-    precision: the point at t counts (t-1h, t]."""
-    out: dict[str, tuple[dt.datetime, dt.datetime]] = {}
+def _points(resp: dict) -> dict[str, dict[float, float]]:
+    """Per namespace, the count at each point (t → lines in (t-step, t])."""
+    out: dict[str, dict[float, float]] = {}
     for series in resp.get("data", {}).get("result", []):
         ns = series.get("metric", {}).get("namespace")
-        hours = sorted(float(ts) for ts, v in series.get("values", []) if float(v) > 0)
-        if ns and hours:
-            out[ns] = (
-                dt.datetime.fromtimestamp(hours[0], tz=dt.timezone.utc) - dt.timedelta(hours=1),
-                dt.datetime.fromtimestamp(hours[-1], tz=dt.timezone.utc),
-            )
+        if not ns:
+            continue
+        points = out.setdefault(ns, {})
+        for ts, v in series.get("values", []):
+            points[float(ts)] = points.get(float(ts), 0.0) + float(v)
     return out
+
+
+def _shape(points: dict[float, float], step: dt.timedelta
+           ) -> tuple[dt.datetime, dt.datetime, dt.datetime, float] | None:
+    """(first step's start, last step's end, peak hour, peak share) of one
+    namespace's counts per step, or None when it has no line. The peak is
+    an hour, the earliest of equal ones: a reboot's noise spans its slots."""
+    lines = sorted(t for t, v in points.items() if v > 0)
+    total = sum(points.values())
+    if not lines or total <= 0:
+        return None
+    by_hour: dict[dt.datetime, float] = {}
+    for t in lines:
+        hour = (_utc(t) - step).replace(minute=0, second=0, microsecond=0)
+        by_hour[hour] = by_hour.get(hour, 0.0) + points[t]
+    peak = min(by_hour, key=lambda hour: (-by_hour[hour], hour))
+    return _utc(lines[0]) - step, _utc(lines[-1]), peak, round(by_hour[peak] / total, 2)
+
+
+# Tripwires no planned change explains: a restart does not expire a
+# certificate, OOM-kill a pod or lose an image.
+_NEVER_EVENT_NOISE = frozenset({"OOMKilled", "ImagePullBackOff",
+                                "certificate_expired", "x509_expired"})
+# A process dying. After a restart of the same code that is noise; after
+# an upgrade, a rollout or a drill the new code or config may be at fault,
+# so only a restart (known_events.RESTART_KINDS) explains these.
+_RESTART_ONLY_NOISE = frozenset({"panic", "fatal", "CrashLoopBackOff"})
+
+
+def _mark_event_noise(
+    pattern: LogPattern,
+    points: dict[float, float],
+    events: Sequence[KnownEvent],
+    *,
+    window_start: dt.datetime,
+    window_hours: int,
+    step: dt.timedelta,
+    ratio_threshold: float,
+    min_count_floor: int,
+) -> None:
+    """Mark a log pattern that is a known event's noise (2026-10-11).
+
+    A step of the window is an event step of the pattern when a known
+    event that touches its namespace (known_events.touches) makes noise in
+    it (known_events.noise_window: a restart from 15 min before it,
+    anything else from its start, until 45 min after). The pattern is that
+    noise, `explained_by` the events of the event steps its lines fell in,
+    when
+      - a tripwire: every line fell in an event step. Never one of
+        _NEVER_EVENT_NOISE, and one of _RESTART_ONLY_NOISE only in a
+        restart's steps;
+      - a ratio outlier: most of its lines fell in event steps, and the
+        rest would not make it one (fewer than `min_count_floor`, or under
+        `ratio_threshold` × its baseline for those steps). "Most" keeps a
+        borderline outlier whose lines are spread over the day from being
+        put on an event that added a few (msa2-dev's trivy-system, 3.4×
+        with 22% in the reboot hour: 2.9× without it).
+    Any other ratio outlier with lines in event steps gets
+    `ratio_outside_events` and `count_outside_events`, its ratio and count
+    over the other steps, which is what the LLM judges it on.
+
+    Measured on 2026-10-11's digests: five of the six ratio outliers had
+    63-98% of their lines in the hour of a reboot, three of them filed as
+    findings (kube-infra #1575, #1577, #1578), and the tripwire hits
+    outside it fell in the hours of rollouts and Helm upgrades in their
+    namespaces. #1577 read sms-gateway's connection_refused hits in the
+    hours of its 07:31 and 14:41 rollouts as "failing since 07:00".
+    """
+    label = pattern.matched_tripwire
+    if label in _NEVER_EVENT_NOISE:
+        return
+    windows = [(e.signal_id, *noise_window(e)) for e in events
+               if e.signal_id and touches(e, pattern.namespace)
+               and (label not in _RESTART_ONLY_NOISE or e.kind in RESTART_KINDS)]
+    steps = int(dt.timedelta(hours=window_hours) / step)
+    noisy: dict[dt.datetime, list[str]] = {}
+    for k in range(steps):
+        begins = window_start + k * step
+        ids = [sid for sid, first, last in windows if first < begins + step and last > begins]
+        if ids:
+            noisy[begins] = ids
+    counts = {_utc(t) - step: n for t, n in points.items() if n > 0}
+    inside = [begins for begins in counts if begins in noisy]
+    if not inside:
+        return
+    order = {e.signal_id: i for i, e in enumerate(events)}
+    explained_by = sorted({sid for begins in inside for sid in noisy[begins]},
+                          key=order.__getitem__)
+    outside = sum(n for begins, n in counts.items() if begins not in noisy)
+    if pattern.chronicity == "tripwire":
+        if outside == 0:
+            pattern.explained_by = explained_by
+        return
+    expected = (pattern.baseline_mean_24h or 0.0) * (steps - len(noisy)) / steps
+    ratio = outside / max(expected, 1.0)
+    mostly_inside = outside <= sum(counts.values()) / 2
+    if mostly_inside and (outside < min_count_floor or ratio < ratio_threshold):
+        pattern.explained_by = explained_by
+    else:
+        pattern.ratio_outside_events = round(ratio, 2)
+        pattern.count_outside_events = int(outside)
 
 
 def aggregate_log_patterns(
@@ -552,12 +683,15 @@ def aggregate_log_patterns(
     sample_lines_per_pattern: int = 3,
     now: dt.datetime | None = None,
     failures: list[str] | None = None,
+    known_events: Sequence[KnownEvent] = (),
 ) -> list[LogPattern]:
     """Surface notable log patterns from Loki history.
 
     Returns up to `max_patterns` `LogPattern` objects: tripwires first
     (in `_TRIPWIRE_PATTERNS` order, then by count), then ratio outliers
     by ratio descending, with up to `ratio_slots` places kept for them.
+    A pattern that is the noise of one of the `known_events` (numbered
+    already: _mark_event_noise) only gets the places left after those.
 
       1. Ratio outliers: error-level lines per namespace (_ERROR_LINE_FILTER,
          plus Postgres records by their own severity, _POSTGRES_ERROR_FILTER)
@@ -602,6 +736,17 @@ def aggregate_log_patterns(
     )
     window_start = end - dt.timedelta(hours=window_hours)
 
+    def _mark(p: LogPattern, points: dict[float, float]) -> None:
+        """Mark p if it is a known event's noise. A failure leaves it
+        unmarked and recorded: the pattern itself is never lost."""
+        try:
+            _mark_event_noise(p, points, known_events, window_start=window_start,
+                              window_hours=window_hours, step=_SLOT,
+                              ratio_threshold=ratio_threshold, min_count_floor=min_count_floor)
+        except Exception as e:
+            p.explained_by, p.ratio_outside_events, p.count_outside_events = [], None, None
+            _failed(f"event noise {p.matched_tripwire or 'ratio_outlier'} {p.namespace}", e)
+
     def _failed(what: str, e: Exception) -> None:
         log.warning("digest log-pattern query %s failed: %r", what, e)
         if failures is not None:
@@ -634,19 +779,23 @@ def aggregate_log_patterns(
     # Ratio outliers: four sequential queries (recent + baseline, each for
     # the non-Postgres lines and the Postgres records), summed per namespace.
     try:
-        recent: dict[str, float] = {}
+        recent: dict[str, dict[float, float]] = {}
         baseline: dict[str, float] = {}
         for selector, line_filter in ((_ALL_NAMESPACES, _ERROR_LINE_FILTER),
                                       (_POSTGRES_CONTAINERS, _POSTGRES_ERROR_FILTER)):
-            query = _count_by_namespace(selector, line_filter)
+            for ns, points in _points(loki_metric_query_fn(
+                    cluster, _count_by_namespace(selector, line_filter, _SLOT),
+                    start=recent_start, end=end, step_seconds=int(_SLOT.total_seconds()))).items():
+                merged = recent.setdefault(ns, {})
+                for t, n in points.items():
+                    merged[t] = merged.get(t, 0.0) + n
             for ns, n in _sum_series(loki_metric_query_fn(
-                    cluster, query, start=recent_start, end=end, step_seconds=3600)).items():
-                recent[ns] = recent.get(ns, 0.0) + n
-            for ns, n in _sum_series(loki_metric_query_fn(
-                    cluster, query, start=baseline_start, end=baseline_end, step_seconds=3600)).items():
+                    cluster, _count_by_namespace(selector, line_filter),
+                    start=baseline_start, end=baseline_end, step_seconds=3600)).items():
                 baseline[ns] = baseline.get(ns, 0.0) + n
         outliers = _build_ratio_outliers(
             recent=recent,
+            step=_SLOT,
             baseline_totals=baseline,
             baseline_days=baseline_days - 1,
             baseline_until=window_start,
@@ -657,6 +806,8 @@ def aggregate_log_patterns(
             window_start=window_start,
             now=now,
         )
+        for p in outliers:
+            _mark(p, recent.get(p.namespace, {}))
     except Exception as e:
         _failed("ratio_outlier", e)
 
@@ -668,18 +819,19 @@ def aggregate_log_patterns(
     for label, logql_filter in _TRIPWIRE_PATTERNS:
         try:
             resp = loki_metric_query_fn(
-                cluster, _count_by_namespace(_ALL_NAMESPACES, logql_filter),
-                start=recent_start, end=end, step_seconds=3600,
+                cluster, _count_by_namespace(_ALL_NAMESPACES, logql_filter, _SLOT),
+                start=recent_start, end=end, step_seconds=int(_SLOT.total_seconds()),
             )
             # Parsed inside the try: a malformed response loses this
             # tripwire, recorded, not every pattern of the run.
-            spans = _seen_span(resp)
+            per_ns = _points(resp)
             found: list[tuple[LogPattern, str]] = []
             for ns, count in sorted(_sum_series(resp).items(), key=lambda kv: (-kv[1], kv[0])):
                 if count <= 0:
                     continue
-                first, last = spans.get(ns, (window_start, now))
-                found.append((LogPattern(
+                shape = _shape(per_ns.get(ns, {}), _SLOT)
+                first, last, peak, share = shape or (window_start, now, None, None)
+                pattern = LogPattern(
                     namespace=ns,
                     level="panic" if label == "panic" else ("fatal" if label == "fatal" else "error"),
                     chronicity="tripwire",
@@ -690,7 +842,11 @@ def aggregate_log_patterns(
                     sample_lines=[],
                     first_seen_at=first,
                     last_seen_at=min(last, now),
-                ), logql_filter))
+                    peak_hour=peak,
+                    peak_share=share,
+                )
+                _mark(pattern, per_ns.get(ns, {}))
+                found.append((pattern, logql_filter))
         except Exception as e:
             _failed(f"tripwire {label}", e)
             continue
@@ -699,10 +855,18 @@ def aggregate_log_patterns(
     # ── Merge: tripwires first, then ratio outliers, cap at max_patterns.
     # Up to `ratio_slots` places are kept for ratio outliers: on a restart
     # day the readiness-probe `connection_refused` hits alone filled all
-    # ten (msa2-dev, 2026-10-10), and no outlier could reach the LLM.
-    outliers = sorted(outliers, key=lambda p: (-(p.ratio_vs_baseline or 0.0), -p.count_24h))
-    trip_kept = [p for p, _f in tripwires][:max(0, max_patterns - min(len(outliers), ratio_slots))]
-    kept = trip_kept + outliers[:max(0, max_patterns - len(trip_kept))]
+    # ten (msa2-dev, 2026-10-10), and no outlier could reach the LLM. A
+    # known event's noise gets only the places left over. An outlier is
+    # ranked by its ratio outside the event hours when it has one.
+    outliers = sorted(outliers, key=lambda p: (
+        -(p.ratio_outside_events if p.ratio_outside_events is not None
+          else p.ratio_vs_baseline or 0.0), -p.count_24h))
+    patterns = [p for p, _f in tripwires] + outliers
+    real_trips = [p for p, _f in tripwires if not p.explained_by]
+    real_outliers = [p for p in outliers if not p.explained_by]
+    trip_kept = real_trips[:max(0, max_patterns - min(len(real_outliers), ratio_slots))]
+    kept = trip_kept + real_outliers[:max(0, max_patterns - len(trip_kept))]
+    kept += [p for p in patterns if p.explained_by][:max(0, max_patterns - len(kept))]
 
     # Sample lines, only for the tripwire patterns that made the cut: one
     # narrow query each (one namespace, `limit` lines, newest first).
@@ -726,7 +890,8 @@ def aggregate_log_patterns(
 
 def _build_ratio_outliers(
     *,
-    recent: dict[str, float],
+    recent: dict[str, dict[float, float]],
+    step: dt.timedelta,
     baseline_totals: dict[str, float],
     baseline_days: int,
     baseline_until: dt.datetime,
@@ -737,11 +902,13 @@ def _build_ratio_outliers(
     window_start: dt.datetime,
     now: dt.datetime,
 ) -> list[LogPattern]:
-    """Ratio outliers from per-namespace totals: the recent window's count
-    against the daily mean of the baseline days the namespace existed."""
+    """Ratio outliers from per-namespace counts: the recent window's counts
+    per `step`, summed, against the daily mean of the baseline days the
+    namespace existed."""
     created = namespace_created or {}
     patterns: list[LogPattern] = []
-    for ns, count in recent.items():
+    for ns, points in recent.items():
+        count = sum(points.values())
         if count < min_count_floor:
             continue
         days = float(baseline_days)
@@ -757,6 +924,8 @@ def _build_ratio_outliers(
         ratio = count / max(base, 1.0)
         if ratio < ratio_threshold:
             continue
+        shape = _shape(points, step)
+        first, last, peak, share = shape or (window_start, now, None, None)
         patterns.append(LogPattern(
             namespace=ns,
             level="error",
@@ -766,7 +935,9 @@ def _build_ratio_outliers(
             ratio_vs_baseline=round(ratio, 2),
             matched_tripwire=None,
             sample_lines=[],   # the LLM can ask for samples separately if needed
-            first_seen_at=window_start,
-            last_seen_at=now,
+            first_seen_at=first,
+            last_seen_at=min(last, now),
+            peak_hour=peak,
+            peak_share=share,
         ))
     return patterns

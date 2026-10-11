@@ -3,7 +3,8 @@
 LLM-driven SRE assistant for the homelab. One mode runs: **Mode A, the
 daily digest**. Once a day per cluster (06:00 / 06:01 Europe/Riga) it reads
 24 h of alerts, Loki log patterns and the cluster's known events (boots,
-apiserver restarts, Helm upgrades, restore drills), makes ONE LLM call, files
+apiserver restarts, Helm upgrades, Deployment rollouts, restore drills),
+marks the log patterns that are a known event's noise, makes ONE LLM call, files
 0-N findings as issues in `kube-infra` and a full summary in
 `cluster-agent-digest`. The other modes of the design (Renovate PR triage,
 backup verification, doctrine scans) were never built.

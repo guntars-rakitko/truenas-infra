@@ -95,17 +95,32 @@ def _workload(labels: dict[str, str]) -> str | None:
     return None
 
 
+def number_events(events: Iterable[KnownEvent]) -> None:
+    """E1, E2, ... in the given order (oldest first). The digest numbers
+    them before mining logs: a log pattern names the events it is the
+    noise of (digest_aggregator._mark_event_noise)."""
+    for n, event in enumerate(events, start=1):
+        event.signal_id = f"E{n}"
+
+
 def assign_signal_ids(
     groups: Iterable[AlertGroup],
     patterns: Iterable[LogPattern],
     events: Iterable[KnownEvent],
 ) -> dict[str, Signal]:
-    """Number the signals in their given order and return id → signal."""
+    """Number the alert groups and log patterns in their given order, and
+    the known events unless number_events did; return id → signal."""
+    events = list(events)
+    if any(e.signal_id is None for e in events):
+        number_events(events)
     by_id: dict[str, Signal] = {}
-    for prefix, items in (("A", groups), ("L", patterns), ("E", events)):
+    for prefix, items in (("A", groups), ("L", patterns)):
         for n, item in enumerate(items, start=1):
             item.signal_id = f"{prefix}{n}"
             by_id[item.signal_id] = item
+    for event in events:
+        if event.signal_id:
+            by_id[event.signal_id] = event
     return by_id
 
 
