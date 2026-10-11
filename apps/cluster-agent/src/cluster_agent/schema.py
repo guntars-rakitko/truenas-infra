@@ -227,10 +227,11 @@ class LogPattern(BaseModel):
     peak_hour: dt.datetime | None = None
     peak_share: float | None = None
     # The known events this pattern is the noise of ("E1", ...), and for a
-    # ratio outlier that stays one, its ratio over the hours no known
-    # event touched (digest_aggregator._mark_event_noise).
+    # ratio outlier that stays one, its ratio and count over the time no
+    # known event made noise in (digest_aggregator._mark_event_noise).
     explained_by: list[str] = Field(default_factory=list)
     ratio_outside_events: float | None = None
+    count_outside_events: int | None = None
     signal_id: str | None = None    # "L1", "L2", ... (modes/signals.py)
     tracked_by: str | None = None   # "owner/repo#NN": an open finding issue already on it
 

@@ -698,16 +698,24 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    CronJobs (both `kubectl get` with the agent's read-only kubeconfig).
    **Deployment rollouts** (2026-10-11) are the ReplicaSets created in the
    window: kube-state-metrics' `kube_replicaset_created` joined with
-   `kube_replicaset_owner{owner_kind="Deployment"}`, one event per
-   namespace for the Deployments rolled out within 5 min of each other,
-   and none for a Helm upgrade's own (within 10 min after an upgrade into
-   the same namespace; measured 1-8 s). ⚠ Not the live ReplicaSet list: a
-   Deployment deletes its old ReplicaSets past `revisionHistoryLimit`
-   (GIKS keeps 3), and msa2-dev rolled GIKS out 8 times on 2026-10-10, so
-   by the 03:00Z digest the list had lost 4. The live list, read only when
-   there is a rollout, adds what changed (`giks-adminapp v0.35.0 →
-   v0.36.0`, or `same image, pod template changed`); when it fails the
-   events stand and the gap reads `known events rollout detail: …`.
+   `kube_replicaset_owner{owner_kind="Deployment"}`. One event per
+   namespace covers the Deployments rolled out within 5 min of each other,
+   and there is none for a Helm upgrade's own (within 10 min after an
+   upgrade into the same namespace; measured 1-8 s). ⚠ Not the live
+   ReplicaSet list: a Deployment deletes its old ReplicaSets past
+   `revisionHistoryLimit` (GIKS keeps 3), and msa2-dev rolled GIKS out 8
+   times on 2026-10-10, so by the 03:00Z digest the list had lost 4. A
+   rollback to a template a kept ReplicaSet has creates no ReplicaSet, so
+   an older ReplicaSet scaled up from 0 in the window
+   (`kube_replicaset_spec_replicas`) is an event too, "a rollback or a
+   scale-up". No new ReplicaSet showed a 0 before its first replica in 7
+   days on either cluster, so the two never overlap; when that query fails
+   the gap reads `known events rollbacks: …` and the rollouts stand. The
+   live list, read only when there is a rollout, adds what changed
+   (`giks-adminapp v0.35.0 → v0.36.0`, init containers included, or
+   `same image, pod template changed`). When it fails, the events stand
+   and each says that what changed is unknown: no coverage gap, since the
+   events are known.
    A planned change makes noise, and without these the LLM filed it as
    findings: kube-infra #1437 (a Talos config apply's apiserver restart),
    #1509 (a drill's Postgres "starting up"), #1535 (three upgrades), the
@@ -733,8 +741,11 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    `permission_denied`, `evicted`). Sample lines are scrubbed of
    probable secrets before reaching the LLM.
    **How it counts (since 2026-10-10, kube-infra #1534/#1537/#1487):**
-   - **Every count is an hourly-step range query over hour-aligned
-     windows**, summed per namespace (`_hour_windows`). ⚠ Until then the
+   - **Every count is a range query over hour-aligned windows**, summed
+     per namespace (`_hour_windows`): the last 24 h in 15-minute slots
+     (since 2026-10-11, to place each line against the known events), the
+     baseline days in hours. Uncached on msa2-dev, the slot queries took
+     29 s against 20 s hourly, 4.3 s at most each. ⚠ Until 2026-10-10 the
      24h window was one 24h-step point, which Loki
      (`align_queries_with_step: true`) rounded to two UTC midnights: it
      counted two days, so every ratio was ~2× too high and the 3×
@@ -767,30 +778,48 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
      57P03, as a record's own field or quoted by CNPG's metrics exporter
      (`_POSTGRES_RESTART_EXCLUDE`, on the ratio and the `fatal`
      tripwire).
-   - **Each pattern carries its hourly shape** (2026-10-11): the first and
-     last hour with a line, and `peak_hour` / `peak_share` (the hour with
-     the most lines and its share of them). ⚠ Until then a ratio
+   - **Each pattern carries its shape** (2026-10-11): the first and last
+     15-minute slot with a line, and `peak_hour` / `peak_share` (the hour
+     with the most lines and its share of them). ⚠ Until then a ratio
      outlier's first and last seen were the window's edges.
    - **A known event's noise is marked in code** (`_mark_event_noise`,
-     2026-10-11). An event makes noise in the namespaces it touches (a
-     boot or an apiserver restart: all; an upgrade, a rollout or a drill:
-     its own) from 15 min before it (a node drains before it reboots) to
-     45 min after. A tripwire whose every hit fell in those hours, or a
-     ratio outlier with most of its lines there and no outlier without
-     them, gets `explained_by: [E…]`: the LLM folds it into the event's
-     summary line and files nothing. OOMKilled, ImagePullBackOff and the
-     certificate-expiry tripwires are never an event's noise. Any other
-     ratio outlier with lines in those hours gets `ratio_outside_events`,
-     its ratio over the other hours, which the LLM judges it on (a finding
-     needs ≥ 5× and ≥ 500 lines). The noise takes only the places of the
-     10 that nothing else needs. All five findings of the 2026-10-11
+     2026-10-11).
+     - *Where:* an event makes noise in the namespaces it touches. A boot
+       or an apiserver restart touches all of them; an upgrade, a rollout
+       or a drill touches only its own. Its clients elsewhere (a
+       database's apps, Traefik in front of a rollout) are not touched,
+       so their noise stays unexplained.
+     - *When* (`known_events.noise_window`): a restart from 15 min before
+       it (a node drains first: prd's GIKS logged its shutdown 4 min
+       before the 10-10 boot), anything else from its start, until 45 min
+       after. This is matched per 15-minute slot. ⚠ With hour points it
+       reached up to 104 min after an event (review of this change).
+     - *What gets marked:* a tripwire whose every hit fell in those slots,
+       or a ratio outlier with most of its lines there and no outlier
+       without them, gets `explained_by: [E…]`. The LLM folds it into the
+       event's summary line and files nothing.
+     - *Exceptions:* OOMKilled, ImagePullBackOff and the certificate-expiry
+       tripwires are never an event's noise. panic, fatal and
+       CrashLoopBackOff are noise only of a boot or an apiserver restart,
+       which run the same code; after an upgrade, a rollout or a drill
+       the new code may be at fault, and the LLM judges them by their
+       sample lines.
+     - *Partly in event time:* any other ratio outlier with lines in those
+       slots gets `ratio_outside_events` and `count_outside_events`, its
+       ratio and count over the rest. The LLM judges it on those (a
+       finding needs ≥ 5× and ≥ 500 lines).
+     - The noise takes only the places of the 10 that nothing else needs,
+       and a failure while marking leaves the pattern unmarked and
+       recorded (`event noise <signal> <namespace>: …`). All five findings of the 2026-10-11
      digests were planned-change noise. #1575, #1577 and #1578 rested on
      ratio outliers with 63-98% of their lines in the reboot's hour, and
      #1577 also read sms-gateway's connection_refused hits in the hours of
      its 07:31 and 14:41 rollouts as "failing since 07:00". Replayed with
      this code, every prd pattern was marked, and dev kept kube-system
-     (3.3× outside events) and trivy-system (2.9×), neither of them a
-     finding. #1574 and #1576 are the Npgsql lines below.
+     (3.2× outside events, on 386 lines; mostly kube-controller-manager's
+     `jobs.batch "scan-vulnerabilityreport-…" not found`, a race with
+     trivy-operator deleting its scan Jobs) and trivy-system (2.8×),
+     neither of them a finding. #1574 and #1576 are the Npgsql lines below.
    **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26,
    kube-infra #1263/#1268/#1287). These negative filters drop lines that *record* a
    keyword instead of reporting an event:
@@ -810,6 +839,10 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
      57P03 tripped `fatal`: 10 lines on prd and 6 on dev from GIKS's
      jobserver during the reboots, and 2 from sms-gateway during the CNPG
      upgrade. A real FATAL still trips it through Postgres's own record.
+     The ratio count drops the line too (`_ERROR_LINE_FILTER` carries
+     `_RECORD_EXCLUDE`), at any level: one restated line fewer per
+     exception in the client's namespace, while Postgres's record counts in
+     its own.
 
    Real failures keep matching. `digest_aggregator.py` documents the
    measured evidence per filter, and the tests evaluate each tripwire

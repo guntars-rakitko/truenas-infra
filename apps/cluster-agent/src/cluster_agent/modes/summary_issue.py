@@ -263,7 +263,8 @@ def _render_log_patterns_table(
             if p.ratio_vs_baseline is not None:
                 baseline = f"{p.baseline_mean_24h:.0f} avg, {p.ratio_vs_baseline:.1f}×"
                 if p.ratio_outside_events is not None:
-                    baseline += f" ({p.ratio_outside_events:.1f}× outside events)"
+                    baseline += (f" ({p.ratio_outside_events:.1f}× outside events, "
+                                 f"{p.count_outside_events} lines)")
             else:
                 baseline = "—"
         peak = (f"{_fmt_time(p.peak_hour)}, {p.peak_share:.0%}"
@@ -395,8 +396,8 @@ def render_summary_body(
     sections.append(
         f"## Known events ({len(known_events)})\n\n"
         "Changes the cluster went through (boots, apiserver restarts, Helm "
-        "upgrades, restore drills). Alerts and log lines that followed one "
-        "are its noise unless they outlasted it.\n\n"
+        "upgrades, Deployment rollouts, restore drills). Alerts and log lines "
+        "that followed one are its noise unless they outlasted it.\n\n"
         + _render_known_events(known_events)
     )
     if known_event_failures:

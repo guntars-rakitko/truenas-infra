@@ -9,7 +9,9 @@ import datetime as dt
 
 import pytest
 
-from cluster_agent.modes.known_events import _short_image, gather_known_events, touches
+from cluster_agent.modes.known_events import (
+    _ROLLOUT_QUERY, _SCALE_QUERY, _short_image, gather_known_events, noise_window, touches,
+)
 from cluster_agent.schema import KnownEvent
 
 _UTC = dt.timezone.utc
@@ -48,11 +50,29 @@ def _replicasets(*rows: tuple[str, str, str, float]) -> dict:
 _UP_SINCE_RS = _replicasets(("giks", "adminapp", "adminapp-57644dcd4f", _ts(7, 31, 51, day=3)))
 
 
+_SCALE_T0 = _START - dt.timedelta(hours=2)
+
+
+def _scales(*rows: tuple[str, str, str, list[float]]) -> dict:
+    """kube_replicaset_spec_replicas with its Deployment: one series per
+    (namespace, Deployment, ReplicaSet, replicas at each 5-min step from
+    _SCALE_T0, an hour before the 1-hour lead)."""
+    t0 = _SCALE_T0.timestamp()
+    return {"data": {"result": [
+        {"metric": {"namespace": ns, "owner_name": deployment, "replicaset": rs},
+         "values": [[t0 + i * 300, str(v)] for i, v in enumerate(values)]}
+        for ns, deployment, rs, values in rows]}}
+
+
+_STEADY = _scales(("giks", "adminapp", "adminapp-57644dcd4f", [1.0] * 300))
+
+
 class _Prom:
-    def __init__(self, boots=None, apiserver=None, replicasets=None, raise_on=()):
+    def __init__(self, boots=None, apiserver=None, replicasets=None, scales=None, raise_on=()):
         self.answers = {"node_boot_time_seconds": boots or _UP_SINCE_BOOT,
                         "process_start_time_seconds": apiserver or _UP_SINCE_API,
-                        "kube_replicaset_created": replicasets or _UP_SINCE_RS}
+                        "kube_replicaset_created": replicasets or _UP_SINCE_RS,
+                        "kube_replicaset_spec_replicas": scales or _STEADY}
         self.raise_on = set(raise_on)
         self.calls: list[tuple[str, str, str, str]] = []
 
@@ -122,7 +142,7 @@ def test_the_apiserver_start_of_a_boot_is_folded_into_the_boot():
 def test_the_queries_cover_the_lead_and_step_five_minutes():
     prom = _Prom()
     _gather(prom)
-    assert len(prom.calls) == 3   # boots, apiserver starts, ReplicaSets
+    assert len(prom.calls) == 4   # boots, apiserver starts, ReplicaSets created, scaled
     for _q, start, end, step in prom.calls:
         assert int(start) == int((_START - dt.timedelta(hours=1)).timestamp())
         assert int(end) == int(_END.timestamp())
@@ -224,6 +244,8 @@ def test_events_come_oldest_first_across_sources():
      ["helm_upgrade", "node_boot"]),
     ({"kube_replicaset_created"}, set(), ["known events deployment rollouts: TimeoutError"],
      ["restore_drill", "helm_upgrade", "node_boot"]),
+    ({"kube_replicaset_spec_replicas"}, set(), ["known events rollbacks: TimeoutError"],
+     ["restore_drill", "helm_upgrade", "node_boot"]),
 ])
 def test_each_source_fails_on_its_own_and_is_recorded(prom_fail, kube_fail, expected, kinds):
     boots = _matrix({"nodename": "msa2-dev-01"}, [_ts(14, 21, 2)])
@@ -321,12 +343,14 @@ def test_a_scheduled_drill_that_never_succeeded_says_so():
 # ── Deployment rollouts (2026-10-11: kube-infra#1577 was one readiness
 # failure during an sms-gateway rollout) ─────────────────────────────────
 
-def _rs(ns, deployment, name, revision, *images):
+def _rs(ns, deployment, name, revision, *images, init=()):
+    pod = {"containers": [{"name": f"c{i}", "image": image} for i, image in enumerate(images)]}
+    if init:
+        pod["initContainers"] = [{"name": f"init{i}", "image": image} for i, image in enumerate(init)]
     return {"metadata": {"name": name, "namespace": ns,
                          "annotations": {"deployment.kubernetes.io/revision": str(revision)},
                          "ownerReferences": [{"kind": "Deployment", "name": deployment}]},
-            "spec": {"template": {"spec": {"containers": [
-                {"name": f"c{i}", "image": image} for i, image in enumerate(images)]}}}}
+            "spec": {"template": {"spec": pod}}}
 
 
 _GHCR = "ghcr.io/guntars-rakitko/"
@@ -385,12 +409,14 @@ def test_a_rollout_says_what_changed_when_its_replicasets_are_still_there():
 
 
 def test_the_live_replicasets_failing_costs_the_detail_not_the_events():
+    """The events are known, so no coverage gap ("events unknown"): each
+    says what it cannot."""
     failures: list[str] = []
     events = [e for e in _gather(_Prom(replicasets=_PRD_ROLLOUTS),
                                  _Kube(helmreleases=[_CNPG_HR], raise_on={"replicasets"}), failures)
               if e.kind == "deployment_rollout"]
-    assert len(events) == 3
-    assert failures == ["known events rollout detail: RuntimeError"]
+    assert len(events) == 3 and failures == []
+    assert all(e.what.endswith("what changed is unknown, the ReplicaSet read failed") for e in events)
 
 
 def test_no_rollout_in_the_window_reads_no_replicasets():
@@ -418,3 +444,75 @@ def test_a_boot_touches_every_namespace_a_rollout_only_its_own():
     rollout = KnownEvent(kind="deployment_rollout", at=at, what="rollout", namespace="giks")
     assert touches(boot, "giks") and touches(boot, "kube-system")
     assert touches(rollout, "giks") and not touches(rollout, "giks-db")
+
+
+def test_a_rollback_is_an_older_replicaset_scaled_up_from_zero():
+    """A revert to a template a kept ReplicaSet has creates no ReplicaSet.
+    One created in the window is its creation's event, not a second one."""
+    old, new = "adminapp-5f975cc9f8", "adminapp-6c8d7f5b9"
+    at_zero = [0.0] * 300
+    scales = _scales(
+        ("giks", "adminapp", old, at_zero[:200] + [1.0] * 100),           # 0 → 1 at step 200
+        ("giks", "adminapp", new, [1.0] * 150 + [0.0] * 150),             # the one it replaced
+        ("giks", "jobserver", "jobserver-7cf85dd5db", at_zero[:5] + [1.0] * 295),  # before the lead
+        ("sms-gateway", "app", "app-69fd5dc86b", at_zero[:250] + [1.0] * 50),      # created in the window
+    )
+    created = _replicasets(("giks", "adminapp", new, _ts(14, 0, day=9)),
+                           ("sms-gateway", "app", "app-69fd5dc86b", _ts(22, 50)))
+    kube_rs = [_rs("giks", "adminapp", old, 45, _GHCR + "giks-adminapp:v0.37.0-dev.2334"),
+               _rs("giks", "adminapp", new, 44, _GHCR + "giks-adminapp:v0.37.0-dev.2336")]
+    events = [e for e in _gather(_Prom(replicasets=created, scales=scales), _Kube(replicasets=kube_rs))
+              if e.kind == "deployment_rollout"]
+    assert [(e.namespace, e.at) for e in events] == [
+        ("giks", _SCALE_T0 + 199 * dt.timedelta(minutes=5)),   # the last step at 0
+        ("sms-gateway", dt.datetime(2026, 10, 10, 22, 50, tzinfo=_UTC))]
+    assert events[0].what.startswith("rollout in giks: adminapp (scaled up from 0, a rollback or "
+                                     "a scale-up: now giks-adminapp:v0.37.0-dev.2334)")
+
+
+def test_the_rollout_queries_fold_duplicates_and_keep_deployments_only():
+    for query in (_ROLLOUT_QUERY, _SCALE_QUERY):
+        assert query.startswith("max by (namespace, replicaset, owner_name) (")
+        assert 'kube_replicaset_owner{owner_kind="Deployment"}' in query
+    assert "kube_replicaset_created" in _ROLLOUT_QUERY
+    assert "kube_replicaset_spec_replicas" in _SCALE_QUERY
+
+
+@pytest.mark.parametrize("gap,events", [(dt.timedelta(minutes=4, seconds=59), 1),
+                                        (dt.timedelta(minutes=5, seconds=1), 2)])
+def test_rollouts_within_five_minutes_in_a_namespace_are_one_event(gap, events):
+    t = _ts(7, 31, 51)
+    created = _replicasets(("giks", "adminapp", "adminapp-57644dcd4f", t),
+                           ("giks", "jobserver", "jobserver-fd577f65b", t + gap.total_seconds()))
+    found = [e for e in _gather(_Prom(replicasets=created)) if e.kind == "deployment_rollout"]
+    assert len(found) == events
+
+
+@pytest.mark.parametrize("after,kept", [(dt.timedelta(minutes=9, seconds=59), False),
+                                        (dt.timedelta(minutes=10, seconds=1), True),
+                                        (-dt.timedelta(seconds=30), True)])
+def test_a_helm_upgrades_own_rollout_is_the_ten_minutes_after_it(after, kept):
+    upgraded = dt.datetime(2026, 10, 10, 13, 49, 33, tzinfo=_UTC)
+    created = _replicasets(("cnpg-system", "cloudnative-pg", "cloudnative-pg-66fd48f8c7",
+                            (upgraded + after).timestamp()))
+    events = _gather(_Prom(replicasets=created), _Kube(helmreleases=[_CNPG_HR]))
+    assert any(e.kind == "deployment_rollout" for e in events) is kept
+
+
+def test_an_init_container_image_change_is_a_new_image():
+    kube_rs = [_rs("giks", "adminapp", "adminapp-57644dcd4f", 5, _GHCR + "giks-adminapp:v0.36.0",
+                   init=[_GHCR + "giks-migrator:v0.36.0"]),
+               _rs("giks", "adminapp", "adminapp-5f8d9c7b6d", 4, _GHCR + "giks-adminapp:v0.36.0",
+                   init=[_GHCR + "giks-migrator:v0.35.0"])]
+    created = _replicasets(("giks", "adminapp", "adminapp-57644dcd4f", _ts(7, 31, 51)))
+    (event,) = [e for e in _gather(_Prom(replicasets=created), _Kube(replicasets=kube_rs))
+                if e.kind == "deployment_rollout"]
+    assert "adminapp (giks-migrator v0.35.0 → v0.36.0)" in event.what
+
+
+def test_a_restart_makes_noise_from_before_it_a_change_from_its_start():
+    at = dt.datetime(2026, 10, 10, 14, 21, tzinfo=_UTC)
+    boot = KnownEvent(kind="node_boot", at=at, what="node booted")
+    rollout = KnownEvent(kind="deployment_rollout", at=at, what="rollout", namespace="giks")
+    assert noise_window(boot) == (at - dt.timedelta(minutes=15), at + dt.timedelta(minutes=45))
+    assert noise_window(rollout) == (at, at + dt.timedelta(minutes=45))

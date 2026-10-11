@@ -128,8 +128,8 @@ def test_a_known_events_noise_names_the_events_and_its_peak():
                        peak_hour=_T, peak_share=0.97, explained_by=["E11", "E14"], signal_id="L1")
     still = LogPattern(namespace="kube-system", level="error", chronicity="ratio_outlier", count_24h=1076,
                        baseline_mean_24h=126.7, ratio_vs_baseline=8.49, ratio_outside_events=3.26,
-                       first_seen_at=_T, last_seen_at=_T, signal_id="L2")
+                       count_outside_events=397, first_seen_at=_T, last_seen_at=_T, signal_id="L2")
     body = render_summary_body(cluster="dev", groups=[], log_patterns=[noise, still], findings=[],
                                dispatch_refs={}, window_hours=24, model="m", digest_summary="")
     assert _row(body, "| L1 |").endswith("| 14:00 UTC Oct-10, 97% | ratio_outlier | noise of E11, E14 |")
-    assert "| 127 avg, 8.5× (3.3× outside events) | — | ratio_outlier |   |" in _row(body, "| L2 |")
+    assert "| 127 avg, 8.5× (3.3× outside events, 397 lines) | — | ratio_outlier |   |" in _row(body, "| L2 |")

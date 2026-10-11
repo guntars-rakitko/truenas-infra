@@ -87,9 +87,15 @@ or reset connections. So:
   in a namespace the event touched (a node boot or an apiserver restart
   touches every namespace), is most likely that event's consequence.
 - A log pattern with `explained_by` set (e.g. `["E3", "E7"]`) IS the noise
-  of those events: the runtime checked that its lines fell in the hours
-  those events touched its namespace, and, for a ratio outlier, that the
-  rest would not make it one.
+  of those events: the runtime checked that its lines fell in the 15-minute
+  slots those events made noise in, in its namespace (a restart from 15
+  minutes before it, anything else from its start, until 45 minutes
+  after), and, for a ratio outlier, that the rest would not make it one.
+  A panic, fatal or CrashLoopBackOff tripwire is marked only for a node
+  boot or an apiserver restart: after an upgrade, a rollout or a drill it
+  is left for you. Judge it by its sample lines: a startup race that
+  stopped is noise, the new version crashing is a Finding that cites the
+  event.
 - Fold all of them into ONE line of the summary that names the event, e.g.
   "E1, the node rebooted at 14:21 UTC: 6 alert groups and 2 log patterns
   followed and resolved". Emit no Finding for them.
@@ -261,12 +267,14 @@ if you only watched Alertmanager. Two flavors:
   ratio is striking.
 
 Every pattern says when: `first_seen_at` and `last_seen_at` are the
-first and last hour with a line, `peak_hour` the hour with the most and
-`peak_share` its share of `count_24h` (0.97 = 97% in that one hour). A
+start and end of the first and last 15-minute slot with a line,
+`peak_hour` the hour with the most lines and `peak_share` its share of
+`count_24h` (0.97 = 97% in that one hour). A
 pattern with `explained_by` set is a known event's noise (see "Signals
 and known events" above). A ratio outlier with `ratio_outside_events`
-set also had lines in a known event's hours: that field is its ratio
-over the other hours, and it is the ratio to judge it on.
+set also had lines in a known event's slots: that field and
+`count_outside_events` are its ratio and count over the rest of the
+window, and they are what to judge it on.
 
 Selection guidance:
 - A tripwire match is almost always worth at least a Finding with
@@ -274,7 +282,8 @@ Selection guidance:
   `explained_by` set. Mention it in the digest summary either way.
 - A ratio outlier is worth a Finding ONLY if the ratio
   (`ratio_outside_events` when set, else `ratio_vs_baseline`) is high
-  (≥5×) AND the count is substantial (≥500). Otherwise summarize.
+  (≥5×) AND the count (`count_outside_events` when set, else
+  `count_24h`) is substantial (≥500). Otherwise summarize.
 - If a log pattern correlates with an alert in the section above
   (same namespace, plausible causal link), fold it into the
   alert-derived Finding's `evidence` rather than creating a

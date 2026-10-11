@@ -11,6 +11,7 @@ from cluster_agent.modes.signals import (
     event_keys,
     infer_alert_signals,
     mark_tracked,
+    number_events,
     one_finding_per_signal,
     signal_key,
     workload_of,
@@ -51,6 +52,18 @@ def test_ids_number_each_kind_in_order():
     assert patterns[0].signal_id == "L1"
     assert [e.signal_id for e in events] == ["E1", "E2"]
     assert by_id["A2"] is groups[1] and by_id["E2"] is events[1] and len(by_id) == 5
+
+
+def test_events_numbered_before_log_mining_keep_their_ids():
+    """The digest numbers the events before mining logs, whose patterns
+    name them in `explained_by`: assign_signal_ids must not renumber them,
+    whatever order it gets them in."""
+    events = [_event(), _event(), _event()]
+    number_events(events)
+    assert [e.signal_id for e in events] == ["E1", "E2", "E3"]
+    by_id = assign_signal_ids([_group()], [_pattern()], [events[2], events[0], events[1]])
+    assert [e.signal_id for e in events] == ["E1", "E2", "E3"]
+    assert by_id["E1"] is events[0] and by_id["E3"] is events[2]
 
 
 # Label sets as the clusters' ALERTS carried them (last 30 days, 2026-10-10):

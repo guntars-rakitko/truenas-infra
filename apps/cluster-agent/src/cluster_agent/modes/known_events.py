@@ -15,10 +15,12 @@ digest-summary:
   helm_upgrade        HelmRelease `status.history` revisions deployed in the
                       window (Flux keeps the last few, newest first)
   deployment_rollout  ReplicaSets created in the window (kube-state-metrics'
-                      `kube_replicaset_created`, Prometheus), one event per
-                      namespace for the Deployments rolled out together,
-                      except a Helm upgrade's own; what changed comes from
-                      the live ReplicaSets when they are still there
+                      `kube_replicaset_created`, Prometheus), and older ones
+                      scaled up from 0 in it (a rollback to a kept
+                      ReplicaSet creates none); one event per namespace for
+                      the Deployments rolled out together, except a Helm
+                      upgrade's own. What changed comes from the live
+                      ReplicaSets when they are still there
   restore_drill       Jobs of a `*-restore-drill` CronJob that started in the
                       window, scheduled or created by hand; and the CronJob's
                       own `lastScheduleTime` when its Job is already gone (a
@@ -33,9 +35,9 @@ a coverage gap, never "nothing happened". So is an EMPTY answer where a
 healthy cluster always has one (a node's boot time, kube-apiserver's
 start, its HelmReleases, its ReplicaSets).
 
-`touches` and the NOISE_* margins say where and when an event makes noise;
-the log-pattern miner (digest_aggregator.py) uses them to mark the
-patterns that are that noise.
+`touches` and `noise_window` say where and when an event makes noise; the
+log-pattern miner (digest_aggregator.py) uses them to mark the patterns
+that are that noise.
 """
 from __future__ import annotations
 import datetime as dt
@@ -64,11 +66,16 @@ _APISERVER_QUERY = 'max by (instance) (process_start_time_seconds{job="apiserver
 # revisionHistoryLimit: GIKS keeps 3, and msa2-dev rolled it out 8 times on
 # 2026-10-10, so by the 03:00Z digest the live list had lost 4 of them.
 # Prometheus still had all 8.
-_ROLLOUT_QUERY = (
-    "max by (namespace, replicaset, owner_name) (kube_replicaset_created"
+_OF_A_DEPLOYMENT = (
     " * on(namespace, replicaset) group_left(owner_name)"
     ' max by (namespace, replicaset, owner_name) (kube_replicaset_owner{owner_kind="Deployment"}))'
 )
+_ROLLOUT_QUERY = "max by (namespace, replicaset, owner_name) (kube_replicaset_created" + _OF_A_DEPLOYMENT
+# A rollback to a template a kept ReplicaSet still has creates no
+# ReplicaSet: the Deployment scales that one up from 0 again. A new
+# ReplicaSet never showed a 0 before its first replica (7 days on both
+# clusters, 2026-10-11), so the two sources do not overlap.
+_SCALE_QUERY = "max by (namespace, replicaset, owner_name) (kube_replicaset_spec_replicas" + _OF_A_DEPLOYMENT
 
 # A boot time read twice can differ by a second (btime is recomputed from
 # the clock); two real boots are minutes apart at least.
@@ -86,17 +93,32 @@ _REVISION = "deployment.kubernetes.io/revision"
 _HEX_TAG = re.compile(r"[0-9a-f]{13,}")
 _STEP_SECONDS = 300
 
-# Where and when a known event makes noise. A node drains before it
-# reboots, so the noise starts up to 15 min before the boot time; pods
-# restart, probes pass and operators reconcile within 45 min after.
+# The events that restart the code a cluster already runs. The others (an
+# upgrade, a rollout, a drill) bring new code or config, which can be at
+# fault when something dies after them.
+RESTART_KINDS = frozenset({"node_boot", "apiserver_restart"})
+
+# Where and when a known event makes noise. A restart stops the old
+# processes first (a node drains before it reboots, prd's GIKS logged its
+# shutdown errors 4 min before its 10-10 boot), so its noise starts up to
+# 15 min before its time; anything else starts at its time. Pods restart,
+# probes pass and operators reconcile within 45 min after.
 NOISE_BEFORE = dt.timedelta(minutes=15)
 NOISE_AFTER = dt.timedelta(minutes=45)
 
 
 def touches(event: KnownEvent, namespace: str) -> bool:
     """A node boot or an apiserver restart touches every namespace; a Helm
-    upgrade, a rollout or a drill the namespace it ran in."""
+    upgrade, a rollout or a drill the namespace it ran in. Its clients in
+    other namespaces (a database's apps, Traefik in front of a rollout)
+    are not touched: their noise stays unexplained."""
     return event.namespace is None or event.namespace == namespace
+
+
+def noise_window(event: KnownEvent) -> tuple[dt.datetime, dt.datetime]:
+    """From when to when the event makes noise."""
+    before = NOISE_BEFORE if event.kind in RESTART_KINDS else dt.timedelta(0)
+    return event.at - before, event.at + NOISE_AFTER
 
 
 def _utc(ts: float) -> dt.datetime:
@@ -225,16 +247,25 @@ def _short_image(ref: str) -> tuple[str, str]:
     return name, tag or digest.removeprefix("sha256:")[:12] or "?"
 
 
+def _images(rs: dict[str, Any]) -> dict[str, str]:
+    """Container name → image, init containers included (one pod's names
+    are unique across both)."""
+    spec = rs.get("spec", {}).get("template", {}).get("spec", {})
+    containers = (spec.get("initContainers") or []) + (spec.get("containers") or [])
+    return {c.get("name", "?"): c.get("image", "?") for c in containers}
+
+
+def _now_running(rs: dict[str, Any]) -> str:
+    return ", ".join(":".join(_short_image(ref)) for ref in _images(rs).values())
+
+
 def _template_change(new: dict[str, Any], old: dict[str, Any] | None) -> str:
     """What a rollout changed: each container image that changed, or that
     only the rest of the pod template did (config, env, a restart)."""
-    def images(rs: dict[str, Any]) -> dict[str, str]:
-        containers = rs.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []
-        return {c.get("name", "?"): c.get("image", "?") for c in containers}
-    now = images(new)
+    now = _images(new)
     if old is None:
-        return ", ".join(":".join(_short_image(ref)) for ref in now.values())
-    before = images(old)
+        return _now_running(new)
+    before = _images(old)
     changed = []
     for container, ref in now.items():
         prev = before.get(container)
@@ -246,9 +277,11 @@ def _template_change(new: dict[str, Any], old: dict[str, Any] | None) -> str:
     return "; ".join(changed) or "same image, pod template changed"
 
 
-def _rollout_details(replicasets: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
-    """(namespace, ReplicaSet) → what its rollout changed, against the
-    Deployment's previous revision when that ReplicaSet is still there."""
+def _rollout_details(replicasets: list[dict[str, Any]]
+                     ) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], str]]:
+    """Per (namespace, ReplicaSet): what its rollout changed, against the
+    Deployment's previous revision when that ReplicaSet is still there;
+    and the images it runs."""
     by_deployment: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = {}
     for rs in replicasets:
         meta = rs.get("metadata", {})
@@ -260,34 +293,60 @@ def _rollout_details(replicasets: list[dict[str, Any]]) -> dict[tuple[str, str],
             continue
         if owner:
             by_deployment.setdefault((meta.get("namespace", ""), owner), []).append((revision, rs))
-    details: dict[tuple[str, str], str] = {}
+    changes: dict[tuple[str, str], str] = {}
+    running: dict[tuple[str, str], str] = {}
     for (ns, _owner), revisions in by_deployment.items():
         revisions.sort(key=lambda r: r[0])
         for i, (_rev, rs) in enumerate(revisions):
-            prev = revisions[i - 1][1] if i else None
-            details[(ns, rs["metadata"].get("name", ""))] = _template_change(rs, prev)
-    return details
+            key = (ns, rs["metadata"].get("name", ""))
+            changes[key] = _template_change(rs, revisions[i - 1][1] if i else None)
+            running[key] = _now_running(rs)
+    return changes, running
 
 
-def _deployment_rollouts(resp: dict[str, Any], start: dt.datetime, end: dt.datetime,
-                         helm: list[KnownEvent],
-                         replicasets_fn: Callable[[], list[dict[str, Any]]],
-                         failed: Callable[[str, Exception], None]) -> list[KnownEvent]:
-    rollouts: list[tuple[dt.datetime, str, str, str]] = []   # (at, ns, deployment, ReplicaSet)
-    for metric, t in _distinct_starts(resp, start, end):
-        ns = metric.get("namespace", "")
-        if any(h.namespace == ns and dt.timedelta(0) <= t - h.at <= _ROLLOUT_AFTER_HELM
-               for h in helm):
+def _scale_ups(resp: dict[str, Any], start: dt.datetime, end: dt.datetime,
+               created: set[tuple[str, str]]) -> list[tuple[dt.datetime, str, str, str]]:
+    """(at, namespace, Deployment, ReplicaSet) for each ReplicaSet scaled up
+    from 0 in the window, except one created in it. `at` is the last sample
+    at 0: the scale-up came within one step after it."""
+    out = []
+    for series in resp.get("data", {}).get("result", []):
+        metric = series.get("metric", {})
+        key = (metric.get("namespace", ""), metric.get("replicaset", ""))
+        if key in created:
             continue
-        rollouts.append((t, ns, metric.get("owner_name", "?"), metric.get("replicaset", "")))
+        prev: tuple[float, float] | None = None
+        for ts, raw in series.get("values", []):
+            try:
+                t, v = float(ts), float(raw)
+            except (TypeError, ValueError):
+                continue
+            if prev is not None and prev[1] == 0 and v > 0 and start <= _utc(t) <= end:
+                out.append((_utc(prev[0]), key[0], metric.get("owner_name", "?"), key[1]))
+            prev = (t, v)
+    return out
+
+
+def _deployment_rollouts(created_resp: dict[str, Any], scale_resp: dict[str, Any] | None,
+                         start: dt.datetime, end: dt.datetime, helm: list[KnownEvent],
+                         replicasets_fn: Callable[[], list[dict[str, Any]]]) -> list[KnownEvent]:
+    created = [(t, m.get("namespace", ""), m.get("owner_name", "?"), m.get("replicaset", ""))
+               for m, t in _distinct_starts(created_resp, start, end)]
+    scaled = _scale_ups(scale_resp, start, end, {(ns, rs) for _t, ns, _d, rs in created}) \
+        if scale_resp is not None else []
+    rollouts = [(t, ns, deployment, rs, (t, ns, deployment, rs) in scaled)
+                for t, ns, deployment, rs in created + scaled
+                if not any(h.namespace == ns and dt.timedelta(0) <= t - h.at <= _ROLLOUT_AFTER_HELM
+                           for h in helm)]
     if not rollouts:
         return []
-    details: dict[tuple[str, str], str] = {}
+    changes: dict[tuple[str, str], str] | None = None
+    running: dict[tuple[str, str], str] = {}
     try:
-        details = _rollout_details(replicasets_fn())
-    except Exception as e:      # the events stand without the detail
-        failed("rollout detail", e)
-    together: list[list[tuple[dt.datetime, str, str, str]]] = []
+        changes, running = _rollout_details(replicasets_fn())
+    except Exception as e:      # the events stand without what changed
+        log.warning("known events: the ReplicaSets for rollout detail failed: %r", e)
+    together: list[list[tuple[dt.datetime, str, str, str, bool]]] = []
     for r in sorted(rollouts):
         group = next((g for g in together
                       if g[0][1] == r[1] and r[0] - g[0][0] <= _ROLLOUT_TOGETHER), None)
@@ -299,12 +358,18 @@ def _deployment_rollouts(resp: dict[str, Any], start: dt.datetime, end: dt.datet
     for group in together:
         at, ns = group[0][0], group[0][1]
         parts = []
-        for _t, _ns, deployment, rs in group:
-            change = details.get((ns, rs))
-            parts.append(f"{deployment} ({change})" if change else deployment)
+        for _t, _ns, deployment, rs, from_zero in group:
+            if from_zero:
+                now = running.get((ns, rs))
+                parts.append(f"{deployment} (scaled up from 0, a rollback or a scale-up"
+                             + (f": now {now})" if now else ")"))
+            else:
+                change = (changes or {}).get((ns, rs))
+                parts.append(f"{deployment} ({change})" if change else deployment)
+        unknown = "; what changed is unknown, the ReplicaSet read failed" if changes is None else ""
         events.append(KnownEvent(
             kind="deployment_rollout", at=at, namespace=ns,
-            what=f"rollout in {ns}: {'; '.join(parts)} (new pods replace the old)",
+            what=f"rollout in {ns}: {'; '.join(parts)} (new pods replace the old){unknown}",
         ))
     return events
 
@@ -408,9 +473,15 @@ def gather_known_events(
         _failed("helm upgrades", e)
     events += helm
     try:
+        created = _range(prometheus_range_fn, cluster, _ROLLOUT_QUERY, since, end)
+        scaled = None
+        try:
+            scaled = _range(prometheus_range_fn, cluster, _SCALE_QUERY, since, end)
+        except Exception as e:     # rollouts still stand: only rollbacks are unknown
+            _failed("rollbacks", e)
         events += _deployment_rollouts(
-            _range(prometheus_range_fn, cluster, _ROLLOUT_QUERY, since, end), since, end, helm,
-            lambda: kubectl_get_fn(cluster, "replicasets").get("items", []), _failed)
+            created, scaled, since, end, helm,
+            lambda: kubectl_get_fn(cluster, "replicasets").get("items", []))
     except Exception as e:
         _failed("deployment rollouts", e)
     try:
