@@ -370,6 +370,109 @@ def test_ratio_outliers_keep_their_slots_on_a_noisy_tripwire_day():
     assert [p.namespace for p in patterns if p.chronicity == "ratio_outlier"] == ["cnpg-system", "monitoring"]
 
 
+# ── A known event's noise (2026-10-11: kube-infra #1575, #1577, #1578) ──
+# msa2-dev booted 10-10 14:21:02Z: its noise runs 14:06..15:06, the hours
+# ending 15:00 and 16:00 (`_hours_back(12)` and `_hours_back(11)`).
+
+def _event(kind, at, sid, namespace=None):
+    from cluster_agent.schema import KnownEvent
+    return KnownEvent(kind=kind, at=at, what=kind, namespace=namespace, signal_id=sid)
+
+
+_BOOT_AT = dt.datetime(2026, 10, 10, 14, 21, 2, tzinfo=dt.timezone.utc)
+_BOOT = _event("node_boot", _BOOT_AT, "E2")
+
+
+def test_a_ratio_outlier_that_is_a_reboots_noise_is_marked():
+    """cnpg-system, 10-11: 94 lines against 12.8 a day, 91 of them in the
+    reboot's hour (#1578 for prd's 98%)."""
+    sim = _SimLoki({"errors": {"cnpg-system": {
+        _hours_back(12): 91, _hours_back(20): 1, _hours_back(1): 2, **_spread(77, 24, 167)}}})
+    (p,) = _run(sim, known_events=[_event("helm_upgrade", _BOOT_AT, "E1", "monitoring"), _BOOT])
+    assert (p.count_24h, p.ratio_vs_baseline) == (94, 7.32)
+    assert p.explained_by == ["E2"]                     # the boot touches it, monitoring's upgrade does not
+    assert p.ratio_outside_events is None
+    assert (p.peak_hour, p.peak_share) == (_hours_back(13), 0.97)
+    assert (p.first_seen_at, p.last_seen_at) == (_hours_back(21), _hours_back(1))
+
+
+def test_a_ratio_outlier_still_one_without_the_event_hours_says_by_how_much():
+    """kube-system, 10-11: 63% in the reboot's hour, 3.3× without it, which
+    the LLM judges on (≥ 5× for a finding)."""
+    sim = _SimLoki({"errors": {"kube-system": {
+        **_spread(397, 13, 23), _hours_back(12): 679, **_spread(760, 24, 167)}}})
+    (p,) = _run(sim, known_events=[_BOOT])
+    assert p.ratio_vs_baseline == 8.49
+    assert p.explained_by == []
+    assert p.ratio_outside_events == round(397 / (126.7 * 22 / 24), 2)
+
+
+def test_a_ratio_outlier_mostly_outside_the_event_hours_is_not_put_on_the_event():
+    """trivy-system, 10-11: 3.4×, 18 of 83 lines in the reboot's hour. 2.9×
+    without them, but the event did not make it an outlier."""
+    sim = _SimLoki({"errors": {"trivy-system": {
+        _hours_back(12): 18, **_spread(65, 13, 22), **_spread(145, 24, 167)}}})
+    (p,) = _run(sim, known_events=[_BOOT])
+    assert p.explained_by == []
+    assert p.ratio_outside_events == round(65 / (24.2 * 22 / 24), 2)
+
+
+def test_a_tripwire_is_an_events_noise_only_when_every_hit_is():
+    """connection_refused during the reboot, a rollout or a Helm upgrade into
+    its own namespace; never one a restart cannot cause."""
+    rollout = _event("deployment_rollout", dt.datetime(2026, 10, 10, 6, 50, 28, tzinfo=dt.timezone.utc),
+                     "E1", "sms-gateway")
+    sim = _SimLoki({
+        "connection_refused": {
+            "sms-gateway": {_hours_back(20): 3, _hours_back(12): 5},   # the rollout's hour and the boot's
+            "giks": {_hours_back(12): 2, _hours_back(5): 1},           # one hit at 22:00, after both
+        },
+        "OOMKilled": {"giks-db": {_hours_back(12): 1}},
+        "certificate_expired": {"pocket-id": {_hours_back(11): 1}},
+    })
+    got = {(p.matched_tripwire, p.namespace): p for p in _run(sim, known_events=[rollout, _BOOT])}
+    assert got[("connection_refused", "sms-gateway")].explained_by == ["E1", "E2"]
+    assert got[("connection_refused", "giks")].explained_by == []
+    assert got[("OOMKilled", "giks-db")].explained_by == []
+    assert got[("certificate_expired", "pocket-id")].explained_by == []
+    assert all(p.ratio_outside_events is None for p in got.values())
+
+
+def test_an_events_noise_window_starts_before_it_and_ends_after():
+    """A node drains before it boots: a hit in the hour before a 14:05 boot
+    is its noise; one two hours after is not."""
+    boot = _event("node_boot", dt.datetime(2026, 10, 10, 14, 5, tzinfo=dt.timezone.utc), "E1")
+    sim = _SimLoki({"connection_refused": {
+        "flux-system": {_hours_back(13): 4},      # 13:00..14:00, within 15 min before the boot
+        "health": {_hours_back(10): 1},           # 16:00..17:00
+    }})
+    got = {p.namespace: p.explained_by for p in _run(sim, known_events=[boot])}
+    assert got == {"flux-system": ["E1"], "health": []}
+
+
+def test_an_events_noise_gets_only_the_places_left():
+    """A real tripwire or outlier is never pushed out by a known event's
+    noise, whatever its count."""
+    sim = _SimLoki({
+        "connection_refused": {**{f"ns-{i:02d}": {_hours_back(12): 50 + i} for i in range(10)},
+                               "giks": {_hours_back(5): 1}},
+        "errors": {"pocket-id": _spread(600, 0, 23), "w1-db": _spread(500, 0, 23),
+                   "cnpg-system": {_hours_back(12): 900}},
+    })
+    patterns = _run(sim, max_patterns=10, ratio_slots=3, known_events=[_BOOT])
+    assert [(p.namespace, bool(p.explained_by)) for p in patterns[:3]] == [
+        ("giks", False), ("pocket-id", False), ("w1-db", False)]
+    assert len(patterns) == 10 and all(p.explained_by for p in patterns[3:])
+    assert "cnpg-system" not in {p.namespace for p in patterns}    # noise, and no place left
+
+
+def test_without_known_events_nothing_is_marked():
+    sim = _SimLoki({"errors": {"cnpg-system": {_hours_back(12): 91, **_spread(77, 24, 167)}},
+                    "connection_refused": {"giks": {_hours_back(12): 2}}})
+    for p in _run(sim):
+        assert (p.explained_by, p.ratio_outside_events) == ([], None)
+
+
 def test_a_quiet_cluster_returns_nothing_and_records_nothing():
     sim = _SimLoki({"errors": {"flux-system": _spread(10, 0, 23)}})
     failures: list[str] = []
@@ -774,6 +877,11 @@ _RECORD_LINES = [
     pytest.param("fatal", _pg_record("FATAL", "57P01", "terminating connection due to administrator command"),
                  id="postgres-admin-shutdown-57P01"),
     pytest.param("fatal", _CNPG_EXPORTER_DURING_SHUTDOWN, id="cnpg-exporter-quoting-57P03"),
+    # GIKS's jobserver dumping a PostgresException during the 10-10 reboot,
+    # one property per line; its 57P03 is on the header line only
+    # (kube-infra #1574, #1576). Read from prd Loki, 2026-10-10T14:42:59Z.
+    pytest.param("fatal", "    Severity: FATAL\n", id="npgsql-exception-severity-line"),
+    pytest.param("fatal", "          Severity: FATAL\n", id="npgsql-inner-exception-severity-line"),
 ]
 
 # (tripwire label, log line) pairs that are real EVENTS and must still
@@ -817,6 +925,9 @@ _EVENT_LINES = [
     # A Postgres FATAL that is no planned restart must still match.
     pytest.param("fatal", _pg_record("FATAL", "28P01", 'password authentication failed for user "giks"'),
                  id="postgres-auth-failure-28P01"),
+    # Only the bare property line is dropped: a message that says FATAL is kept.
+    pytest.param("fatal", "fail: GIKS.Jobs.Runner[0] Job aborted. Severity: FATAL, SqlState: 28P01",
+                 id="severity-fatal-inside-a-message"),
     pytest.param("evicted", (
         '{"count":1,"eventRV":"8424999","kind":"Pod","msg":"The node was low on resource: memory.",'
         '"name":"jobserver-6d9f","reason":"Evicted","type":"Warning"}'

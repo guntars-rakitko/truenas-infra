@@ -9,11 +9,13 @@ cluster at DAILY_DIGEST_HOUR:MINUTE in DAILY_DIGEST_TZ. Each run:
   3. Enrich currently-firing groups with annotations from AM /api/v2/alerts
   4. Pull context excerpts (Loki + kubectl describe) for chronic +
      flapping groups only — transient/self_healed get no context
-  4b. Mine Loki for log patterns (digest_aggregator.py)
-  4c. Read the known events: node boots, apiserver restarts, Helm
-     upgrades, restore drills (known_events.py)
-  4d. Number every alert group, log pattern and known event (A1, L1, E1:
-     signals.py), the ids a Finding cites in `signals`
+  4b. Read the known events: node boots, apiserver restarts, Helm
+     upgrades, Deployment rollouts, restore drills (known_events.py),
+     numbered E1.. (signals.py)
+  4c. Mine Loki for log patterns (digest_aggregator.py), marking the
+     ones that are a known event's noise (`explained_by`)
+  4d. Number every alert group and log pattern (A1, L1: signals.py);
+     these and the E ids are what a Finding cites in `signals`
   5. Look up open finding dedup_keys for this cluster from state.db
      (so LLM can avoid re-creating issues for things already tracked),
      and mark each signal an open issue already tracks (`tracked_by`)
@@ -31,11 +33,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime as dt
-import json
 import logging
 import os
 import re
-from typing import Any
 
 from ..emit.metrics import (
     cluster_agent_run_total,
@@ -66,6 +66,7 @@ from .signals import (
     event_keys,
     infer_alert_signals,
     mark_tracked,
+    number_events,
     one_finding_per_signal,
 )
 
@@ -130,7 +131,28 @@ async def run_async(*, cluster: str) -> DigestResult:
     # ── 4. Pull context excerpts for chronic + flapping groups only ─
     context_excerpts = _gather_context_for_chronic(groups, cluster)
 
-    # ── 4b. P3: Log-pattern mining (statistical outliers + tripwires) ─
+    # ── 4b. Known events (boots, apiserver restarts, Helm upgrades,
+    # rollouts, restore drills), so the LLM can tell a change's noise from
+    # a fault. Each source fails on its own, recorded like a failed Loki
+    # query. Numbered now: the log-pattern miner names the events a
+    # pattern is the noise of.
+    known_event_failures: list[str] = []
+    try:
+        known_events = gather_known_events(
+            cluster,
+            start=start - dt.timedelta(hours=window_hours),
+            end=start,
+            prometheus_range_fn=prometheus_query_range,
+            kubectl_get_fn=kubectl_get,
+            failures=known_event_failures,
+        )
+    except Exception as e:
+        log.warning("digest %s: known events failed: %r", cluster, e)
+        known_events = []
+        known_event_failures.append(f"known events: {type(e).__name__}")
+    number_events(known_events)
+
+    # ── 4c. P3: Log-pattern mining (statistical outliers + tripwires) ─
     # Failures here don't abort the digest — log patterns are
     # supplementary signal, not the primary input. If Loki is down or
     # the metric query fails, we still produce a useful alert digest.
@@ -154,31 +176,14 @@ async def run_async(*, cluster: str) -> DigestResult:
             window_hours=window_hours,
             namespace_created=namespace_created,
             failures=log_mining_failures,
+            known_events=known_events,
         )
     except Exception as e:
         log.warning("digest %s: log-pattern mining failed: %r", cluster, e)
         log_patterns = []
         log_mining_failures.append(f"log-pattern mining: {type(e).__name__}")
 
-    # ── 4c. Known events (boots, apiserver restarts, Helm upgrades,
-    # restore drills), so the LLM can tell a change's noise from a fault.
-    # Each source fails on its own, recorded like a failed Loki query.
-    known_event_failures: list[str] = []
-    try:
-        known_events = gather_known_events(
-            cluster,
-            start=start - dt.timedelta(hours=window_hours),
-            end=start,
-            prometheus_range_fn=prometheus_query_range,
-            kubectl_get_fn=kubectl_get,
-            failures=known_event_failures,
-        )
-    except Exception as e:
-        log.warning("digest %s: known events failed: %r", cluster, e)
-        known_events = []
-        known_event_failures.append(f"known events: {type(e).__name__}")
-
-    # ── 4d. Signal ids: A1.. alert groups, L1.. log patterns, E1.. events.
+    # ── 4d. Signal ids: A1.. alert groups, L1.. log patterns (E1.. above).
     signals_by_id = assign_signal_ids(groups, log_patterns, known_events)
 
     # ── 5. Open issue dedup keys ────────────────────────────────────

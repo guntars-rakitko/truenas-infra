@@ -9,7 +9,8 @@ import datetime as dt
 
 import pytest
 
-from cluster_agent.modes.known_events import gather_known_events
+from cluster_agent.modes.known_events import _short_image, gather_known_events, touches
+from cluster_agent.schema import KnownEvent
 
 _UTC = dt.timezone.utc
 _END = dt.datetime(2026, 10, 11, 3, 0, tzinfo=_UTC)
@@ -34,10 +35,24 @@ _UP_SINCE_API = _matrix({"instance": "10.10.5.12:6443"}, [_ts(11, 48, 0, day=3)]
 _EMPTY = {"data": {"result": []}}
 
 
+def _replicasets(*rows: tuple[str, str, str, float]) -> dict:
+    """kube_replicaset_created joined with its Deployment: one series per
+    (namespace, Deployment, ReplicaSet, creation time)."""
+    t0 = _START.timestamp()
+    return {"data": {"result": [
+        {"metric": {"namespace": ns, "owner_name": deployment, "replicaset": rs},
+         "values": [[t0 + i * 300, str(created)] for i in range(3)]}
+        for ns, deployment, rs, created in rows]}}
+
+
+_UP_SINCE_RS = _replicasets(("giks", "adminapp", "adminapp-57644dcd4f", _ts(7, 31, 51, day=3)))
+
+
 class _Prom:
-    def __init__(self, boots=None, apiserver=None, raise_on=()):
+    def __init__(self, boots=None, apiserver=None, replicasets=None, raise_on=()):
         self.answers = {"node_boot_time_seconds": boots or _UP_SINCE_BOOT,
-                        "process_start_time_seconds": apiserver or _UP_SINCE_API}
+                        "process_start_time_seconds": apiserver or _UP_SINCE_API,
+                        "kube_replicaset_created": replicasets or _UP_SINCE_RS}
         self.raise_on = set(raise_on)
         self.calls: list[tuple[str, str, str, str]] = []
 
@@ -52,11 +67,12 @@ class _Prom:
 
 
 class _Kube:
-    def __init__(self, helmreleases=None, jobs=(), cronjobs=(), raise_on=()):
+    def __init__(self, helmreleases=None, jobs=(), cronjobs=(), replicasets=(), raise_on=()):
         # A cluster always has HelmReleases (an empty list is a gap): by
         # default one whose last deploy is long before the window.
         self.items = {"helmreleases": list(helmreleases) if helmreleases is not None else [_OLD_HR],
-                      "jobs": list(jobs), "cronjobs": list(cronjobs)}
+                      "jobs": list(jobs), "cronjobs": list(cronjobs),
+                      "replicasets": list(replicasets)}
         self.raise_on = set(raise_on)
         self.calls: list[str] = []
 
@@ -106,7 +122,7 @@ def test_the_apiserver_start_of_a_boot_is_folded_into_the_boot():
 def test_the_queries_cover_the_lead_and_step_five_minutes():
     prom = _Prom()
     _gather(prom)
-    assert len(prom.calls) == 2   # boots, then apiserver starts
+    assert len(prom.calls) == 3   # boots, apiserver starts, ReplicaSets
     for _q, start, end, step in prom.calls:
         assert int(start) == int((_START - dt.timedelta(hours=1)).timestamp())
         assert int(end) == int(_END.timestamp())
@@ -206,6 +222,8 @@ def test_events_come_oldest_first_across_sources():
      ["restore_drill", "node_boot"]),
     (set(), {"jobs"}, ["known events restore drills: RuntimeError"],
      ["helm_upgrade", "node_boot"]),
+    ({"kube_replicaset_created"}, set(), ["known events deployment rollouts: TimeoutError"],
+     ["restore_drill", "helm_upgrade", "node_boot"]),
 ])
 def test_each_source_fails_on_its_own_and_is_recorded(prom_fail, kube_fail, expected, kinds):
     boots = _matrix({"nodename": "msa2-dev-01"}, [_ts(14, 21, 2)])
@@ -235,10 +253,11 @@ def test_garbage_in_an_answer_is_skipped_not_fatal():
     ({"boots": _EMPTY}, {}, ["known events node boots: LookupError"]),
     ({"apiserver": _EMPTY}, {}, ["known events apiserver restarts: LookupError"]),
     ({}, {"helmreleases": []}, ["known events helm upgrades: LookupError"]),
+    ({"replicasets": _EMPTY}, {}, ["known events deployment rollouts: LookupError"]),
 ])
 def test_an_empty_answer_where_a_cluster_always_has_one_is_a_gap(prom_kwargs, kube_kwargs, expected):
-    """node-exporter or the apiserver scrape down, or Flux gone: "no events"
-    would be a false clean."""
+    """node-exporter, the apiserver scrape or kube-state-metrics down, or
+    Flux gone: "no events" would be a false clean."""
     failures: list[str] = []
     assert _gather(_Prom(**prom_kwargs), _Kube(**kube_kwargs), failures) == []
     assert failures == expected
@@ -297,3 +316,105 @@ def test_a_scheduled_drill_that_never_succeeded_says_so():
                                     last_success="2026-10-03T04:00:50Z")])
     (event,) = _gather(kube=kube)
     assert "no success recorded since" in event.what
+
+
+# ── Deployment rollouts (2026-10-11: kube-infra#1577 was one readiness
+# failure during an sms-gateway rollout) ─────────────────────────────────
+
+def _rs(ns, deployment, name, revision, *images):
+    return {"metadata": {"name": name, "namespace": ns,
+                         "annotations": {"deployment.kubernetes.io/revision": str(revision)},
+                         "ownerReferences": [{"kind": "Deployment", "name": deployment}]},
+            "spec": {"template": {"spec": {"containers": [
+                {"name": f"c{i}", "image": image} for i, image in enumerate(images)]}}}}
+
+
+_GHCR = "ghcr.io/guntars-rakitko/"
+# prd on 2026-10-10: the v0.36.0 promotion and the sms-gateway image bump
+# came together at 07:31; cloudnative-pg's upgrade at 13:49:33 rolled its
+# own Deployment (seconds later) and, through the new operator, giks-db's
+# pgbouncer Pooler, which is not the release's.
+_PRD_ROLLOUTS = _replicasets(
+    ("sms-gateway", "app", "app-744557c454", _ts(7, 31, 50)),
+    ("giks", "adminapp", "adminapp-57644dcd4f", _ts(7, 31, 51)),
+    ("giks", "jobserver", "jobserver-fd577f65b", _ts(7, 31, 51)),
+    ("cnpg-system", "cloudnative-pg", "cloudnative-pg-66fd48f8c7", _ts(13, 49, 34)),
+    ("giks-db", "giks-rw-pooler", "giks-rw-pooler-77ff66dc", _ts(13, 49, 56)),
+    ("giks", "adminapp", "adminapp-6b4d8c9f7", _ts(14, 0, 0, day=9)),        # before the window
+)
+_CNPG_HR = _hr("cloudnative-pg", "cnpg-system", [
+    _snap(2, "0.29.1", "2026-10-10T13:49:33Z", namespace="cnpg-system"),
+    _snap(1, "0.29.0", "2026-09-28T14:10:03Z", status="superseded", namespace="cnpg-system")])
+
+
+def _rollouts(**kube_kwargs):
+    events = _gather(_Prom(replicasets=_PRD_ROLLOUTS), _Kube(helmreleases=[_CNPG_HR], **kube_kwargs))
+    return [e for e in events if e.kind == "deployment_rollout"]
+
+
+def test_rollouts_come_from_prometheus_one_event_per_namespace_and_moment():
+    events = _rollouts()
+    assert [(e.at.strftime("%H:%M:%S"), e.namespace) for e in events] == [
+        ("07:31:50", "sms-gateway"), ("07:31:51", "giks"), ("13:49:56", "giks-db")]
+    assert events[1].what.startswith("rollout in giks: adminapp; jobserver")
+
+
+def test_a_helm_upgrades_own_rollout_is_not_a_second_event_but_one_elsewhere_is():
+    """cloudnative-pg's Deployment rolled out 1 s after its upgrade (the
+    upgrade's event says it); giks-db's Pooler is a separate change."""
+    namespaces = [e.namespace for e in _rollouts()]
+    assert "cnpg-system" not in namespaces and "giks-db" in namespaces
+
+
+def test_a_rollout_says_what_changed_when_its_replicasets_are_still_there():
+    kube_rs = [
+        _rs("giks", "adminapp", "adminapp-57644dcd4f", 5, _GHCR + "giks-adminapp:v0.36.0@sha256:fecb04"),
+        _rs("giks", "adminapp", "adminapp-5f8d9c7b6d", 4, _GHCR + "giks-adminapp:v0.35.0@sha256:980aad"),
+        _rs("giks", "jobserver", "jobserver-fd577f65b", 5, _GHCR + "giks-jobserver:v0.36.0"),
+        _rs("giks", "jobserver", "jobserver-7c9b5d8f4", 4, _GHCR + "giks-jobserver:v0.36.0"),
+        _rs("giks-db", "giks-rw-pooler", "giks-rw-pooler-77ff66dc", 2,
+            "ghcr.io/cloudnative-pg/pgbouncer:1.25.2"),
+    ]
+    events = {e.namespace: e.what for e in _rollouts(replicasets=kube_rs)}
+    assert events["giks"].startswith(
+        "rollout in giks: adminapp (giks-adminapp v0.35.0 → v0.36.0); "
+        "jobserver (same image, pod template changed)")
+    # revision 1 is gone: the new image alone; sms-gateway's ReplicaSet is gone too
+    assert events["giks-db"].startswith("rollout in giks-db: giks-rw-pooler (pgbouncer:1.25.2)")
+    assert events["sms-gateway"].startswith("rollout in sms-gateway: app (new pods")
+
+
+def test_the_live_replicasets_failing_costs_the_detail_not_the_events():
+    failures: list[str] = []
+    events = [e for e in _gather(_Prom(replicasets=_PRD_ROLLOUTS),
+                                 _Kube(helmreleases=[_CNPG_HR], raise_on={"replicasets"}), failures)
+              if e.kind == "deployment_rollout"]
+    assert len(events) == 3
+    assert failures == ["known events rollout detail: RuntimeError"]
+
+
+def test_no_rollout_in_the_window_reads_no_replicasets():
+    kube = _Kube()
+    _gather(kube=kube)
+    assert "replicasets" not in kube.calls
+
+
+@pytest.mark.parametrize("ref,expected", [
+    ("ghcr.io/guntars-rakitko/giks-adminapp:v0.36.0@sha256:fecb045281", ("giks-adminapp", "v0.36.0")),
+    ("registry.local:5000/team/app:1.2", ("app", "1.2")),
+    ("dopplerhq/kubernetes-operator:1.7.2", ("kubernetes-operator", "1.7.2")),
+    ("ghcr.io/x/app@sha256:3aaa7d9948f2fa85551b", ("app", "3aaa7d9948f2")),
+    ("ghcr.io/o/sms-gateway-app:a9b6a524d8b8a10015c0a99d1449ba8b9cf0e9d5@sha256:3aaa7d",
+     ("sms-gateway-app", "a9b6a524d8b8")),
+    ("nginx", ("nginx", "?")),
+])
+def test_short_image(ref, expected):
+    assert _short_image(ref) == expected
+
+
+def test_a_boot_touches_every_namespace_a_rollout_only_its_own():
+    at = dt.datetime(2026, 10, 10, 14, 21, tzinfo=_UTC)
+    boot = KnownEvent(kind="node_boot", at=at, what="node booted")
+    rollout = KnownEvent(kind="deployment_rollout", at=at, what="rollout", namespace="giks")
+    assert touches(boot, "giks") and touches(boot, "kube-system")
+    assert touches(rollout, "giks") and not touches(rollout, "giks-db")

@@ -218,8 +218,19 @@ class LogPattern(BaseModel):
     ratio_vs_baseline: float | None = None       # None for tripwires
     matched_tripwire: str | None = None          # short label, e.g. "panic" / "OOMKilled"
     sample_lines: list[str] = Field(default_factory=list)
-    first_seen_at: dt.datetime
-    last_seen_at: dt.datetime
+    first_seen_at: dt.datetime      # start of the first hour with a counted line
+    last_seen_at: dt.datetime       # end of the last such hour
+    # The hour with the most lines (its start) and its share of count_24h:
+    # a known event's noise sits in that event's hour (2026-10-11: four of
+    # the day's ratio outliers had 63-98% of their lines in the reboot hour,
+    # which "first/last seen = the whole window" could not show).
+    peak_hour: dt.datetime | None = None
+    peak_share: float | None = None
+    # The known events this pattern is the noise of ("E1", ...), and for a
+    # ratio outlier that stays one, its ratio over the hours no known
+    # event touched (digest_aggregator._mark_event_noise).
+    explained_by: list[str] = Field(default_factory=list)
+    ratio_outside_events: float | None = None
     signal_id: str | None = None    # "L1", "L2", ... (modes/signals.py)
     tracked_by: str | None = None   # "owner/repo#NN": an open finding issue already on it
 
@@ -228,13 +239,15 @@ class LogPattern(BaseModel):
 #
 # Changes the cluster went through in the window, read from the cluster
 # itself (modes/known_events.py): node boots, kube-apiserver restarts,
-# HelmRelease upgrades and restore drills. A planned change makes noise
-# (pods restart, probes fail, Postgres says "starting up"), and without
-# these the LLM filed that noise as findings. Among the 12 filed
-# 2026-10-02..07: reboots, an apiserver restart (kube-infra#1437, a
-# Talos config apply), three Helm upgrades (#1535) and a drill (#1509).
+# HelmRelease upgrades, Deployment rollouts and restore drills. A planned
+# change makes noise (pods restart, probes fail, Postgres says "starting
+# up"), and without these the LLM filed that noise as findings. Among the
+# 12 filed 2026-10-02..07: reboots, an apiserver restart (kube-infra#1437,
+# a Talos config apply), three Helm upgrades (#1535) and a drill (#1509);
+# on 2026-10-11, readiness failures during two rollouts (#1577).
 
-KnownEventKind = Literal["node_boot", "apiserver_restart", "helm_upgrade", "restore_drill"]
+KnownEventKind = Literal["node_boot", "apiserver_restart", "helm_upgrade",
+                         "deployment_rollout", "restore_drill"]
 
 
 class KnownEvent(BaseModel):

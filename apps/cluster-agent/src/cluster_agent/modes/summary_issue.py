@@ -176,8 +176,9 @@ def _rolled_into(
 
     An alert group no finding cites by id falls back to a finding whose
     alert evidence names its alertname (findings from an LLM that cited no
-    signals). Last, a signal an OPEN issue already tracks (`tracked_by`)
-    shows that issue, marked as such.
+    signals). Then a signal an OPEN issue already tracks (`tracked_by`)
+    shows that issue, marked as such. Last, a log pattern that is a known
+    event's noise (`explained_by`) names the events.
 
     ⚠ Until 2026-10-10 this read `ev.source`, which Evidence never had, so
     the column was empty on every summary since 2026-05-27.
@@ -196,6 +197,8 @@ def _rolled_into(
                 return ref
     if signal.tracked_by:
         return f"{signal.tracked_by} (already open)"
+    if isinstance(signal, LogPattern) and signal.explained_by:
+        return f"noise of {', '.join(signal.explained_by)}"
     return ""
 
 
@@ -239,15 +242,17 @@ def _render_log_patterns_table(
     """One-row-per-pattern table for the log-mining tail of the digest.
 
     `signal` is either the tripwire label (e.g. "OOMKilled") or the
-    ratio descriptor ("3.4× baseline") for ratio-outlier patterns.
+    ratio descriptor ("3.4× baseline") for ratio-outlier patterns, with
+    its ratio outside the known events' hours when it had lines in them.
+    `peak` is the hour with the most lines and its share of them.
     """
     if not patterns:
         return "_(none)_\n"
     findings = findings or []
     dispatch_refs = dispatch_refs or {}
     rows = [
-        "| id | signal | namespace | level | count_24h | baseline | chronicity | rolled into |",
-        "|---|---|---|---|---:|---|---|---|",
+        "| id | signal | namespace | level | count_24h | baseline | peak | chronicity | rolled into |",
+        "|---|---|---|---|---:|---|---|---|---|",
     ]
     for p in patterns:
         if p.matched_tripwire:
@@ -257,16 +262,21 @@ def _render_log_patterns_table(
             signal = "ratio outlier"
             if p.ratio_vs_baseline is not None:
                 baseline = f"{p.baseline_mean_24h:.0f} avg, {p.ratio_vs_baseline:.1f}×"
+                if p.ratio_outside_events is not None:
+                    baseline += f" ({p.ratio_outside_events:.1f}× outside events)"
             else:
                 baseline = "—"
+        peak = (f"{_fmt_time(p.peak_hour)}, {p.peak_share:.0%}"
+                if p.peak_hour is not None and p.peak_share is not None else "—")
         rows.append(
-            "| {} | `{}` | `{}` | {} | {} | {} | {} | {} |".format(
+            "| {} | `{}` | `{}` | {} | {} | {} | {} | {} | {} |".format(
                 p.signal_id or " ",
                 signal,
                 p.namespace,
                 p.level,
                 p.count_24h,
                 baseline,
+                peak,
                 p.chronicity,
                 _rolled_into(p, findings, dispatch_refs) or " ",
             )

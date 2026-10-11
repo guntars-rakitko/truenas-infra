@@ -77,18 +77,27 @@ and the runtime comments on the open issue.
 
 **Known events** are changes the cluster went through, read from the
 cluster itself: node boots and kube-apiserver restarts (Prometheus),
-HelmRelease upgrades (Flux's release history) and restore drills (their
-Jobs). A planned change makes noise: pods restart, probes fail, operators
-reconnect, Postgres says "starting up". So:
-- An alert group or log pattern that STARTS within about 30 minutes after
-  a known event, in a namespace the event touched (a node boot or an
-  apiserver restart touches every namespace), is most likely that event's
-  consequence. Fold all of them into ONE line of the summary that names
-  the event, e.g. "E1, the node rebooted at 14:21 UTC: 6 alert groups and
-  2 log patterns followed and resolved". Emit no Finding for them.
+HelmRelease upgrades (Flux's release history), Deployment rollouts (their
+ReplicaSets) and restore drills (their Jobs). A planned change makes
+noise: pods restart, probes fail, operators reconnect, Postgres says
+"starting up". A rollout replaces a Deployment's pods: the new pod fails
+its readiness probe until it is up, and the old pod's clients see refused
+or reset connections. So:
+- An alert group that STARTS within about 30 minutes after a known event,
+  in a namespace the event touched (a node boot or an apiserver restart
+  touches every namespace), is most likely that event's consequence.
+- A log pattern with `explained_by` set (e.g. `["E3", "E7"]`) IS the noise
+  of those events: the runtime checked that its lines fell in the hours
+  those events touched its namespace, and, for a ratio outlier, that the
+  rest would not make it one.
+- Fold all of them into ONE line of the summary that names the event, e.g.
+  "E1, the node rebooted at 14:21 UTC: 6 alert groups and 2 log patterns
+  followed and resolved". Emit no Finding for them.
 - It is NOT noise if it is still firing more than about an hour after the
   event, or never resolved: then it is a Finding, with the event in its
-  `signals` and evidence as the likely cause.
+  `signals` and evidence as the likely cause. Errors that go on after a
+  rollout that brought a new image are likely that version's fault: a
+  Finding that cites the rollout.
 - A known event is never a Finding by itself.
 
 ### Alert categories — pre-classification guidance
@@ -251,11 +260,20 @@ if you only watched Alertmanager. Two flavors:
   statistical signal); the LLM can elevate to a Finding if the
   ratio is striking.
 
+Every pattern says when: `first_seen_at` and `last_seen_at` are the
+first and last hour with a line, `peak_hour` the hour with the most and
+`peak_share` its share of `count_24h` (0.97 = 97% in that one hour). A
+pattern with `explained_by` set is a known event's noise (see "Signals
+and known events" above). A ratio outlier with `ratio_outside_events`
+set also had lines in a known event's hours: that field is its ratio
+over the other hours, and it is the ratio to judge it on.
+
 Selection guidance:
 - A tripwire match is almost always worth at least a Finding with
-  severity `info` (or higher if the pattern is severe). Mention in
-  the digest summary even if you choose not to elevate.
-- A ratio outlier is worth a Finding ONLY if the ratio is high
+  severity `info` (or higher if the pattern is severe), unless it has
+  `explained_by` set. Mention it in the digest summary either way.
+- A ratio outlier is worth a Finding ONLY if the ratio
+  (`ratio_outside_events` when set, else `ratio_vs_baseline`) is high
   (≥5×) AND the count is substantial (≥500). Otherwise summarize.
 - If a log pattern correlates with an alert in the section above
   (same namespace, plausible causal link), fold it into the

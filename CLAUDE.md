@@ -687,7 +687,44 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
    total), `FLAPPING_THRESHOLD_CYCLES` (3) and `TRANSIENT_THRESHOLD_SECONDS`
    (5 min); the summary's section headers are built from them (until
    2026-10-10 they said "> 6h" and "> 3 cycles").
-3. **P3: Mines Loki for notable log patterns** — namespaces whose 24h
+3. **Reads the known events** (2026-10-10, `modes/known_events.py`):
+   what the cluster went through from an hour before the window to its
+   end, numbered E1, E2, … (oldest first) before the logs are mined. Node
+   boots and kube-apiserver restarts are the distinct values of
+   `node_boot_time_seconds` and `process_start_time_seconds{job="apiserver"}`
+   (Prometheus, 5-min steps; an apiserver start within 15 min after a boot
+   is part of the boot). HelmRelease upgrades come from each release's
+   `status.history`, restore drills from the Jobs of the `*-restore-drill`
+   CronJobs (both `kubectl get` with the agent's read-only kubeconfig).
+   **Deployment rollouts** (2026-10-11) are the ReplicaSets created in the
+   window: kube-state-metrics' `kube_replicaset_created` joined with
+   `kube_replicaset_owner{owner_kind="Deployment"}`, one event per
+   namespace for the Deployments rolled out within 5 min of each other,
+   and none for a Helm upgrade's own (within 10 min after an upgrade into
+   the same namespace; measured 1-8 s). ⚠ Not the live ReplicaSet list: a
+   Deployment deletes its old ReplicaSets past `revisionHistoryLimit`
+   (GIKS keeps 3), and msa2-dev rolled GIKS out 8 times on 2026-10-10, so
+   by the 03:00Z digest the list had lost 4. The live list, read only when
+   there is a rollout, adds what changed (`giks-adminapp v0.35.0 →
+   v0.36.0`, or `same image, pod template changed`); when it fails the
+   events stand and the gap reads `known events rollout detail: …`.
+   A planned change makes noise, and without these the LLM filed it as
+   findings: kube-infra #1437 (a Talos config apply's apiserver restart),
+   #1509 (a drill's Postgres "starting up"), #1535 (three upgrades), the
+   reboot findings of 2026-10-02..07, and #1577 (readiness failures
+   during two sms-gateway rollouts, read as "failing since 07:00"). The
+   prompt tells the LLM to fold an
+   alert group that starts within ~30 min after an event into one summary
+   line naming it, unless it outlasts the event by about an hour; log
+   patterns are matched to the events in code (step 3b). A source that
+   fails is a `known events <source>: <Exception>` coverage gap, like a
+   failed Loki query, and so is an EMPTY answer where a healthy cluster
+   always has one (a boot time, an apiserver start, its HelmReleases, its
+   ReplicaSets): "no events" would be a false clean. A drill also comes
+   from its CronJob's `lastScheduleTime` when its Job is gone (Jobs live
+   24 h, and in winter the 04:00Z digest starts as Monday's 04:00Z drill
+   Job is reaped).
+3b. **P3: Mines Loki for notable log patterns** — namespaces whose 24h
    count of **error-level** lines is ≥ 3× their daily mean over the 6
    days before (`ratio_outlier`),
    PLUS 10 hard-coded tripwire regexes that surface on any occurrence
@@ -730,6 +767,30 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
      57P03, as a record's own field or quoted by CNPG's metrics exporter
      (`_POSTGRES_RESTART_EXCLUDE`, on the ratio and the `fatal`
      tripwire).
+   - **Each pattern carries its hourly shape** (2026-10-11): the first and
+     last hour with a line, and `peak_hour` / `peak_share` (the hour with
+     the most lines and its share of them). ⚠ Until then a ratio
+     outlier's first and last seen were the window's edges.
+   - **A known event's noise is marked in code** (`_mark_event_noise`,
+     2026-10-11). An event makes noise in the namespaces it touches (a
+     boot or an apiserver restart: all; an upgrade, a rollout or a drill:
+     its own) from 15 min before it (a node drains before it reboots) to
+     45 min after. A tripwire whose every hit fell in those hours, or a
+     ratio outlier with most of its lines there and no outlier without
+     them, gets `explained_by: [E…]`: the LLM folds it into the event's
+     summary line and files nothing. OOMKilled, ImagePullBackOff and the
+     certificate-expiry tripwires are never an event's noise. Any other
+     ratio outlier with lines in those hours gets `ratio_outside_events`,
+     its ratio over the other hours, which the LLM judges it on (a finding
+     needs ≥ 5× and ≥ 500 lines). The noise takes only the places of the
+     10 that nothing else needs. All five findings of the 2026-10-11
+     digests were planned-change noise. #1575, #1577 and #1578 rested on
+     ratio outliers with 63-98% of their lines in the reboot's hour, and
+     #1577 also read sms-gateway's connection_refused hits in the hours of
+     its 07:31 and 14:41 rollouts as "failing since 07:00". Replayed with
+     this code, every prd pattern was marked, and dev kept kube-system
+     (3.3× outside events) and trivy-system (2.9×), neither of them a
+     finding. #1574 and #1576 are the Npgsql lines below.
    **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26,
    kube-infra #1263/#1268/#1287). These negative filters drop lines that *record* a
    keyword instead of reporting an event:
@@ -742,35 +803,21 @@ Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
      description that says "can panic" used to trip `panic`;
    - Loki's own query log (`org_id=… query="…"`). Any Loki search for a
      keyword, including this digest's own ratio query, used to plant that
-     keyword in `monitoring/loki-0` and trip the next digest.
+     keyword in `monitoring/loki-0` and trip the next digest;
+   - a .NET client's PostgresException dump (2026-10-11, kube-infra
+     #1574/#1576). Npgsql prints `    Severity: FATAL` on its own line,
+     and the SQLSTATE only on the header line, so a planned restart's
+     57P03 tripped `fatal`: 10 lines on prd and 6 on dev from GIKS's
+     jobserver during the reboots, and 2 from sms-gateway during the CNPG
+     upgrade. A real FATAL still trips it through Postgres's own record.
 
    Real failures keep matching. `digest_aggregator.py` documents the
    measured evidence per filter, and the tests evaluate each tripwire
    against captured record lines and real event lines (e.g. trivy's
    `FATAL … image scan error`, the #1312 signal).
-3b. **Reads the known events** (2026-10-10, `modes/known_events.py`):
-   what the cluster went through from an hour before the window to its
-   end. Node boots and kube-apiserver restarts are the distinct values of
-   `node_boot_time_seconds` and `process_start_time_seconds{job="apiserver"}`
-   (Prometheus, 5-min steps; an apiserver start within 15 min after a boot
-   is part of the boot). HelmRelease upgrades come from each release's
-   `status.history`, restore drills from the Jobs of the `*-restore-drill`
-   CronJobs (both `kubectl get` with the agent's read-only kubeconfig). A
-   planned change makes noise, and without these the LLM filed it as
-   findings: kube-infra #1437 (a Talos config apply's apiserver restart),
-   #1509 (a drill's Postgres "starting up"), #1535 (three upgrades) and
-   the reboot findings of 2026-10-02..07. The prompt tells the LLM to fold
-   a signal that starts within ~30 min after an event into one summary
-   line naming it, unless it outlasts the event by about an hour. A source
-   that fails is a `known events <source>: <Exception>` coverage gap, like
-   a failed Loki query, and so is an EMPTY answer where a healthy cluster
-   always has one (a boot time, an apiserver start, its HelmReleases): "no
-   events" would be a false clean. A drill also comes from its CronJob's
-   `lastScheduleTime` when its Job is gone (Jobs live 24 h, and in winter
-   the 04:00Z digest starts as Monday's 04:00Z drill Job is reaped).
-3c. **Numbers every signal** (`modes/signals.py`): alert groups A1, A2, …,
-   log patterns L1, …, known events E1, …. A Finding cites the ids it
-   covers in `signals`.
+3c. **Numbers the other signals** (`modes/signals.py`): alert groups A1,
+   A2, …, log patterns L1, … (the known events got E1, … in step 3). A
+   Finding cites the ids it covers in `signals`.
 4. **Reconciles state.db against live GH issue state** (2026-07-16,
    `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
    remaining open dedup_keys from state.db (LLM avoids semantic
@@ -1062,9 +1109,11 @@ Finding issues (a finding of the run that cites the row's signal id;
 else, for an alert group, one whose alert evidence names it; else the open
 issue in `tracked_by`, marked `(already open)`). ⚠ Until 2026-10-10 the
 column read `ev.source`, which Evidence never had, so it was empty on every
-summary. The log-pattern table has the same column, and a `Known events`
-section lists the run's events with their ids (a `⚠ Known-events coverage
-gaps` section names a source that failed). Watchdog is silently excluded
+summary. The log-pattern table has the same column (`noise of E3, E7` for
+a known event's noise) and a `peak` column (the hour with the most lines,
+and its share), and a `Known events` section lists the run's events with
+their ids (a `⚠ Known-events coverage gaps` section names a source that
+failed). Watchdog is silently excluded
 from the rendering.
 **Since 2026-09-26 the body also names every Loki query that failed**
 in a `⚠ Log-mining coverage gaps` section, for example
