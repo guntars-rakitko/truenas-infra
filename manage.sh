@@ -7,7 +7,8 @@
 #
 # Usage:
 #     ./manage.sh                         # interactive menu
-#     ./manage.sh phase preflight         # run a single phase (dry-run by default)
+#     ./manage.sh preflight               # API reachable, key works (read-only)
+#     ./manage.sh phase users             # run a single phase (dry-run by default)
 #     ./manage.sh phase network --apply   # actually change state
 #     ./manage.sh list                    # list all phases
 #
