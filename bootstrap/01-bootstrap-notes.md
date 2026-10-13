@@ -132,13 +132,15 @@ From your laptop:
 # Doppler is reachable
 doppler whoami
 
-# API key works
-curl -sk -H "Authorization: Bearer $(doppler secrets get TRUENAS_API_KEY \
-    --plain --project infrastructure --config ops)" \
-  https://10.10.5.10/api/v2.0/system/info | jq .version
+# API key works: system.info over the JSON-RPC WebSocket API, read-only
+./manage.sh preflight
 ```
 
-Expected: version string like `"25.10.3"`.
+Expected, last line: `truenas_info  hostname=nas version=25.10.7` (the
+running version); exit 0. It reads the key from Doppler in-process, so the
+key is on no command line. *(Until 2026-10-13 this was a `curl` to
+`/api/v2.0/system/info`: the deprecated REST API, which TrueNAS 26.0
+removes, with the key on curl's command line. truenas-infra#10.)*
 
 If that works, you're ready for phase 1 (`./manage.sh`).
 
