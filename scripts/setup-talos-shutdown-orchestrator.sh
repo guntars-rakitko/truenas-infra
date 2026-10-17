@@ -41,16 +41,14 @@
 # The credentials actually deployed never matched it (read from Doppler on
 # 2026-09-22: valid about ten years), so the line sat here waiting for the next
 # person who would follow it. Why that mattered: nothing rotates this credential
-# (no scheduler, no job — unlike `render-cluster-agent-kubeconfigs.sh`, which
-# prints remaining lifetime) and nothing ALERTS on it (verified: no
+# (no scheduler, no job) and nothing ALERTS on it (verified: no
 # `prometheus-rules-*.yaml` in kube-infra references it). A 30-day credential
 # would have died silently after a month, and the failure surfaces ONLY during
 # a real power cut — the one moment it cannot be discovered safely.
 #
-# The long TTL is DELIBERATE, and the reasoning is the opposite of the cluster-agent's
-# (which moved to 1 year after 90 days lapsed unnoticed): this is a BREAK-GLASS
-# credential whose entire job is to work during an unattended power failure. An
-# expiring credential on that path converts a survivable outage into data loss.
+# The long TTL is DELIBERATE: this is a BREAK-GLASS credential whose entire job
+# is to work during an unattended power failure. An expiring credential on that
+# path converts a survivable outage into data loss.
 # The blast radius is bounded by the role, not by time — `os:operator` can
 # shutdown/reboot/etcd-snapshot/read-logs and CANNOT reset, wipe, upgrade, read
 # secrets/PKI/config, apply config or mint creds. Configs are 0600 root-owned and

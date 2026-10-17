@@ -31,8 +31,12 @@ apps:
   # for schematic daef782b… which carries intel-ucode on an AMD box, plus two
   # Longhorn-only extensions. See the plan's § Why PXE goes completely.
   #
-  # SURVIVORS: minio-prd, minio-dev, traefik, wiki, cluster-agent (+ plex and
-  # qbittorrent, both enabled:false with empty datasets).
+  # SURVIVORS: minio-prd, minio-dev, traefik, wiki (+ plex and qbittorrent,
+  # both enabled:false with empty datasets).
+  #
+  # cluster-agent left on 2026-10-17 for its own repo (guntars-rakitko/cluster-agent)
+  # and the clusters. Dropping an entry here deletes nothing on the NAS
+  # (ensure_custom_app never deletes): its app went with `midclt call app.delete`.
   - name: minio-prd
     enabled: true
     compose: apps/minio-prd/docker-compose.yaml
@@ -56,12 +60,6 @@ apps:
     compose: apps/wiki/docker-compose.yaml
     bind_ip: 10.10.5.10        # mgmt VLAN — Traefik proxies wiki.w1.lv here
     description: "Static internal wiki (MkDocs build served by nginx, pushed from wiki repo)"
-
-  - name: cluster-agent
-    enabled: true                              # Task 23: container live 2026-05-25
-    compose: apps/cluster-agent/docker-compose.yaml
-    bind_ip: 10.10.5.10                        # mgmt VLAN — K8s integration agent
-    description: "Cluster agent for Anthropic Claude integration (K8s, observability, backups, GH)"
 
   # --- Deferred (media tier, out of scope for initial bring-up) ---
   - name: plex

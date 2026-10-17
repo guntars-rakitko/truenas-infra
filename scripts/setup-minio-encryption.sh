@@ -43,7 +43,6 @@ ALIASES=(nas-dev nas-prd)
 # Adding them is a live change to two other consumers' buckets and is left to its
 # own change, not slipped in with an unrelated bucket.
 BUCKETS=(
-    cluster-agent
     etcd-snapshots
     loki-chunks
     mssql-backups

@@ -43,9 +43,10 @@ ALIASES = ("nas-dev", "nas-prd")
 # 2026-10-06 teardown this also held longhorn, velero and pvc-backups.
 NO_ILM_BUCKETS = frozenset({"loki-chunks", "pocket-id-litestream"})
 
-# Deleted at the Q170S1 teardown (2026-10-06, kube-infra#1443). A bootstrap that
-# recreated them would bring back empty buckets that nothing writes.
-RETIRED_BUCKETS = frozenset({"longhorn", "velero", "pvc-backups"})
+# Deleted at the Q170S1 teardown (2026-10-06, kube-infra#1443), and `cluster-agent`
+# (an orphan nothing ever wrote) when the agent left the NAS (2026-10-17). A bootstrap
+# that recreated them would bring back empty buckets that nothing writes.
+RETIRED_BUCKETS = frozenset({"longhorn", "velero", "pvc-backups", "cluster-agent"})
 
 # mc stub. Every call is logged as "mc <args>".
 #   STUB_UNREACHABLE    space-separated aliases whose `mc ls <alias>` fails

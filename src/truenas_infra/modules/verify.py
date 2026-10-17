@@ -345,7 +345,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         # hardcoded list with the comment "Order matches config/apps.yaml".
         # It did not. It had drifted to list six apps that no longer exist
         # (pxe, meshcentral, homepage, amtctl, stress-dashboard, iperf3) while
-        # OMITTING cluster-agent, which is actually deployed. So the matrix
+        # OMITTING cluster-agent, which was deployed then. So the matrix
         # reported six false "app not installed" failures and silently skipped
         # the one app it should have been watching.
         # Deriving it means the check cannot drift from the declaration again.

@@ -20,7 +20,8 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 |---|---|
 | [`guntars-rakitko/kube-infra`](https://github.com/guntars-rakitko/kube-infra) | Talos + Kubernetes clusters (prd/dev), Flux CD, workloads |
 | [`guntars-rakitko/mikrotik-infra`](https://github.com/guntars-rakitko/mikrotik-infra) | Router, switches, WiFi, LTE, VLANs, firewall, DHCP/DNS |
-| [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, SMB), MinIO, NUT server + UPS shutdown orchestrator, cluster-agent, wiki host (this repo). PXE retired 2026-09-23 |
+| [`guntars-rakitko/truenas-infra`](https://github.com/guntars-rakitko/truenas-infra) | NAS storage (ZFS, SMB), MinIO, NUT server + UPS shutdown orchestrator, wiki host (this repo). PXE retired 2026-09-23 |
+| [`guntars-rakitko/cluster-agent`](https://github.com/guntars-rakitko/cluster-agent) | The LLM SRE assistant: a daily digest of each cluster's alerts and logs. Runs in each cluster, deployed by kube-infra `flux-cd/apps/cluster-agent`. A NAS app from this repo until 2026-10-17 (§ cluster-agent below) |
 | [`guntars-rakitko/bios-config`](https://github.com/guntars-rakitko/bios-config) | **Archived 2026-10-06** (read-only): ASUS Q170S1 BIOS settings (AMT, PXE, power, security). The Q170S1 nodes were retired and wiped at the MS-A2 teardown (kube-infra#1443) |
 | [`guntars-rakitko/wiki`](https://github.com/guntars-rakitko/wiki) | Internal MkDocs wiki at [wiki.w1.lv](https://wiki.w1.lv/) — mirrors docs from all above |
 
@@ -31,7 +32,7 @@ This repo is part of a coordinated homelab stack. When making changes that affec
 - **Secrets** — Doppler `infrastructure/ops` (`TRUENAS_*` + `MINIO_ROOT_*` + `SHARED_CLOUDFLARE_API_TOKEN`). Migration tracked in kube-infra #92. (`AMT_*` was deleted 2026-10-06 (kube-infra#1443 § 3) with the rest of the Q170S1 estate's keys. It was unread here since amtctl's retirement, and read only by bios-config's AMT tools; bios-config was archived the same day.)
 - **Wiki mirror** — hand-written topic pages in the `wiki` repo reproduce data from this one; update both in the same commit set (see [Wiki maintenance](#wiki-maintenance) below)
 
-Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,wiki}`.
+Local clones live at `/Users/gunrak/github/{kube-infra,mikrotik-infra,truenas-infra,cluster-agent,wiki}`.
 
 ---
 
@@ -168,7 +169,7 @@ device-name comparison would have looked like a missing drive when nothing was w
 | NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (every backup bucket, :9000) |
 | NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (every backup bucket, :9000) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
-| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088). PXE/TFTP retired 2026-09-23. (cluster-agent's `:9595` metrics bind on the data-VLAN IPs above, not here — `apps/cluster-agent/docker-compose.yaml`) |
+| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088). PXE/TFTP retired 2026-09-23. |
 
 Connected to CRS310:
 - `ether7` — tagged trunk, VLANs 10/15/20 (data, NIC1)
@@ -185,9 +186,8 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | TrueNAS UI | NAS management | https://nas.w1.lv/ (10.10.5.10:443, direct) |
 | MinIO prd console | S3 admin (prd) | https://minio-prd.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
-| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)**. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443: § setup-minio-buckets.sh) | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
-| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, cluster-agent state, SMS-gateway dumps. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443: § setup-minio-buckets.sh) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
-| cluster-agent | LLM-driven SRE assistant. **P3 Mode A daily digest** live since 2026-05-26: one LLM call per cluster per day at 06:00 EEST examining 24h of alerts + Loki log patterns → 0-N curated Findings filed as issues in [`kube-infra`](https://github.com/guntars-rakitko/kube-infra) (labels `cluster-agent` + `needs-review`); the daily digest-summary goes to [`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest) (renamed from `-sandbox`; routing since the 2026-07-06 graduation — § cluster-agent ops). Runbook: `wiki/docs/runbooks/cluster-agent-runbook.md` | 10.10.10.10:9595/metrics (prd scrapes), 10.10.15.10:9595/metrics (dev scrapes) — data-VLAN per cluster, not mgmt |
+| MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, SMS-gateway dumps **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)**. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443, and the orphan `cluster-agent` on 2026-10-17: § setup-minio-buckets.sh) | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
+| MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, SMS-gateway dumps. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443, and the orphan `cluster-agent` on 2026-10-17: § setup-minio-buckets.sh) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
@@ -205,7 +205,8 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 > homelab was removed **2026-09-13**, so `traefik-nas.w1.lv` has not existed
 > since then. It sat here for ten days and caused a permanent false failure in
 > the verify matrix.
-> Surviving apps: **minio-prd, minio-dev, traefik, wiki, cluster-agent.**
+> Surviving apps: **minio-prd, minio-dev, traefik, wiki.** cluster-agent, the fifth until
+> 2026-10-17, left the NAS for the clusters (§ cluster-agent).
 
 All browser-facing services serve a valid Let's Encrypt `*.w1.lv` cert.
 See `docs/tls-runbook.md` for rotation + recovery.
@@ -372,8 +373,8 @@ directly using the same idiom.
 2. Python CLI reads those env vars via `RuntimeConfig.from_env()` (no dotenv)
 3. Each phase targets a specific domain (users, network, tls, pool, datasets, …)
 4. Phases are idempotent — safe to re-run; default is dry-run, `--apply` to write.
-   File uploads (`ensure_file_on_nas`: cluster-agent code, wiki `nginx.conf`,
-   Traefik `routes.yaml`, the tls scripts) compare **content** (sha256), not
+   File uploads (`ensure_file_on_nas`: wiki `nginx.conf`, Traefik
+   `routes.yaml`, the tls scripts) compare **content** (sha256), not
    size, since 2026-09-29, and each `*_ensured` line logs `content_verified`.
    Size alone missed equal-length edits (a port, an IP octet, `3.20`→`3.23`).
 
@@ -440,7 +441,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 8 buckets per instance (incl. the orphan loki-chunks)
+./scripts/setup-minio-buckets.sh      # 7 buckets per instance (incl. the orphan loki-chunks)
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -450,19 +451,18 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the backup buckets on each MinIO instance — **eight** today, one of
+Creates the backup buckets on each MinIO instance — **seven** today, one of
 them (`loki-chunks`) an orphan with no consumer (authoritative list = the
 `BUCKETS` array in the script; its header deliberately states no count: it said
 "nine" for two buckets after that stopped being true). `tests/test_minio_setup_scripts.py`
-runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if it creates one of
-the buckets deleted at the teardown (`longhorn`, `velero`, `pvc-backups`), if `postgres-backups`
-is not encrypted on both instances, if the encryption or lifecycle script names a bucket this
-one never creates (a live `SKIP` with exit 0), or if any ILM row targets a bucket whose client
-prunes it (`loki-chunks`, `pocket-id-litestream`):
+runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if it creates a
+deleted bucket (`longhorn`, `velero` and `pvc-backups` at the teardown, `cluster-agent` on
+2026-10-17), if `postgres-backups` is not encrypted on both instances, if the encryption or
+lifecycle script names a bucket this one never creates (a live `SKIP` with exit 0), or if any
+ILM row targets a bucket whose client prunes it (`loki-chunks`, `pocket-id-litestream`):
 
 | Bucket | Consumer |
 |---|---|
-| `cluster-agent` | ⚠ **ORPHAN — no consumer.** Meant for nightly `state.db` copies (cluster-agent design § 4.4), which were never built: empty on both instances (2026-10-10). This row said "`state.db` nightly backups" until then. `state.db` itself has no copy; losing it costs the dedup memory (the next run re-files what is still firing) and nothing else, since the finding issues live in GitHub. Removal is the `loki-chunks` procedure below. |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 | `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
@@ -472,6 +472,8 @@ prunes it (`loki-chunks`, `pocket-id-litestream`):
 | `sms-gateway-backups` | SMS-gateway appliance — nightly `pg_dump` of the box's `smsgw`+`gammu` DBs (`box-<env>/` prefix) |
 
 *Deleted at the Q170S1 teardown (2026-10-06, kube-infra#1443), on the operator's decision: `longhorn` (the old clusters' volume and system backups: 72.6 GB prd / 133.8 GB dev), `velero` (their manifest backups) and `pvc-backups` (restic repositories of the declined PVC-backup design; empty on prd, 4 objects on dev). None had object lock, and nothing on the MS-A2 clusters wrote to them. Their restic keys left Doppler the same day.*
+
+*Deleted 2026-10-17, when the agent left the NAS: `cluster-agent`, an orphan (empty on both instances: the nightly `state.db` copies it was meant for were never built).*
 
 #### setup-minio-users.sh
 
@@ -526,7 +528,6 @@ Current ILM rules:
 
 | Bucket | Expiration | Why |
 |---|---|---|
-| `cluster-agent` (both clusters) | 30 days | Inert: the bucket is an orphan, nothing writes it (§ setup-minio-buckets.sh). It goes with the bucket. |
 | `etcd-snapshots` (dev) | **7 days** | Hourly `talosctl etcd snapshot`. 168 snapshots. Dev cluster state is re-creatable, so a week of hourly granularity is generous. Added 2026-08-07 — see the warning below. |
 | `etcd-snapshots` (prd) | **14 days** | 336 snapshots. Production gets the longer window so a problem noticed a week late still has pre-incident snapshots. |
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
@@ -569,8 +570,8 @@ rule deletes them first). All three buckets were deleted at the 2026-10-06 teard
 
 Enables **SSE-S3 default encryption** on the buckets in its own `BUCKETS`
 list, on both instances (GDPR at-rest encryption, kube-infra #520
-Workstream C). ⚠ **That list is NOT the bucket list above:** it has six
-entries (`longhorn`, `velero` and `pvc-backups` left with #187) and omits `postgres-backups-w1` and `sms-gateway-backups` (the
+Workstream C). ⚠ **That list is NOT the bucket list above:** it has five
+entries (`longhorn`, `velero` and `pvc-backups` left with #187, `cluster-agent` on 2026-10-17) and omits `postgres-backups-w1` and `sms-gateway-backups` (the
 latter holds the SMS-gateway's member/billing dumps). So this script has
 never enabled default encryption on those two. Their objects are encrypted
 anyway, by AIStor's automatic SSE-KMS (`aws:kms` on their newest objects,
@@ -587,700 +588,18 @@ live and SKIPs cleanly if not — a premature run is harmless. Full
 setup steps are in the script's header comment. SSE-S3 encrypts NEW
 objects only; pre-existing objects stay plaintext and age out.
 
-### cluster-agent ops (P3 daily-digest + log mining, live since 2026-05-26)
+### cluster-agent: moved to its own repo (2026-10-17)
 
-The cluster-agent runs as a NAS-side Docker container
-(`apps/cluster-agent/docker-compose.yaml`). Mode A pivoted from 5-min
-polling to a daily 06:00-EEST digest on 2026-05-26 (P2), then extended
-same day to also mine Loki for notable log patterns that didn't trigger
-an alert (P3). One LLM call per cluster per day produces a curated
-`Report` with 0-N actionable Findings. **Routing by issue type (2026-07-06
-graduation, LIVE):** individual **Findings (all severities) file in
-[`kube-infra`](https://github.com/guntars-rakitko/kube-infra)** — the ops
-repo, human-close, labelled `cluster-agent` + `needs-review` (the review
-queue); the daily **digest-summary** goes to
-[`cluster-agent-digest`](https://github.com/guntars-rakitko/cluster-agent-digest)
-(renamed from `-sandbox`, auto-supersedes yesterday's). Controlled by Doppler
-`FINDINGS_REPO` / `DIGEST_REPO` (both fall back to `SANDBOX_REPO` in code);
-`FINDINGS_MIN_SEVERITY` is an inert severity floor (empty = every finding
-files). A finding created before the cutover keeps updating in its own repo
-(dispatch comments on the repo embedded in the stored `gh_issue_ref`). Spec
-+ rationale (why by-type, not wholesale-move or severity-bridge):
-[`docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md`](docs/superpowers/specs/2026-07-06-cluster-agent-digest-graduation.md).
-Full reference in `wiki/docs/runbooks/cluster-agent-runbook.md`.
+The cluster-agent, the LLM SRE assistant that writes a daily digest of each cluster's alerts and
+logs, lives in [`guntars-rakitko/cluster-agent`](https://github.com/guntars-rakitko/cluster-agent)
+since 2026-10-17, with its git history and design documents. Its `CLAUDE.md` is now the guide: the
+digest pipeline, the daily summary, the labels, the settings and secrets, and how a change is
+deployed. It runs in each cluster, deployed by kube-infra `flux-cd/apps/cluster-agent`.
 
-> #### ⚠ The agent's K8s tokens EXPIRE, and expiry is invisible from the outside
->
-> The `cluster-agent-readonly` SA tokens (one per cluster, in `flux-system`)
-> are TokenRequest tokens with a finite lifetime. The originals were minted
-> 2026-05-23 at `--duration=2160h` and **expired 2026-08-21 — the agent then
-> produced nothing for 14 days and nobody noticed.** Mode A's first step
-> (`alertmanager_history()`) reaches Prometheus/Alertmanager through the
-> apiserver `services/proxy` endpoint with that token, so an expired token
-> fails every run at step 1, before any LLM call.
->
-> Nothing about the failure is visible from outside the process: the
-> container stays up, `/health` returns `status: ok` with the scheduler
-> arming the next run, and Prometheus keeps scraping successfully. The only
-> evidence is `cluster_agent_run_total{status="error"}` climbing while no
-> `status="success"` series exists at all.
->
-> **Rotate with [`scripts/render-cluster-agent-kubeconfigs.sh`](scripts/render-cluster-agent-kubeconfigs.sh)**
-> — it mints, verifies the *actually granted* expiry (never assume the
-> requested duration was honoured), proves both the plain API read and the
-> `services/proxy` path work, and with `--apply` writes Doppler and
-> redeploys. Run it without `--apply` first.
->
-> **Which clusters.** The two keys are minted from `--dev-kubeconfig` /
-> `--prd-kubeconfig`, defaulting to `kube-infra/talos-os/kubeconfig-msa2-{dev,prd}`
-> since the Q170S1 teardown (kube-infra#1443). Before minting anything the
-> script prints each key's server and nodes, and **refuses** a missing
-> kubeconfig, a cluster whose nodes it cannot list, and dev == prd. Talos
-> makes the endpoint the token issuer, so a token dies when its cluster's
-> endpoint address changes: the script prints each minted token's issuer, and
-> it must be the box's final address (`.11` prd, `.12` dev). *(Until the
-> teardown the defaults were the Q170S1 clusters' `kubeconfig-{dev,prd}`, and
-> a guard refused the MS-A2 BUILD addresses `.17` / `.18`; the cutover moved
-> both keys with one two-flag run, 2026-09-28. git history has the procedure.)*
->
-> **The key's issue label moves in the same cycle** (row 16, D1): the
-> key's entry in `apps/cluster-agent/src/cluster_agent/clusters.py`
-> (`CLUSTER_NAMES`, old name into `PREVIOUS_NAMES`), deployed by the same
-> `manage.sh phase apps --only cluster-agent --apply` that the re-mint's
-> `--apply` runs, so merge it and pull `main` BEFORE that re-mint.
-> `PREVIOUS_NAMES` is empty since the Q170S1 teardown (#185; the agent runs that
-> code since 2026-10-06, container restarted 04:43:28Z): the `kub-*` names closed
-> their last digest-summary issues at the first runs after the cutover.
->
-> **So does its Grafana (kube-infra#1366).** `GRAFANA_URLS` in the same file
-> names the node the key's annotations go to, and `GRAFANA_SA_TOKEN_<KEY>` is
-> a service account in that cluster's Grafana: a key that moves needs both,
-> the token minted in the NEW cluster's Grafana (kube-infra `CLAUDE.md`
-> § Post-bootstrap operator tasks).
->
-> Since 2026-09-04 the silence is covered by `ClusterAgentNoSuccessfulRun`
-> / `ClusterAgentRunsFailing` in kube-infra
-> `flux-cd/infrastructure/configs/base/prometheus-rules-cluster-agent.yaml`.
-> ⚠ Those rules are deliberately built on the run **counter**, not on
-> `cluster_agent_last_success_timestamp` — that gauge has no samples in
-> exactly this failure mode, so the obvious expression evaluates to an empty
-> vector and never fires.
->
-> #### ⚠ A Doppler change does NOT reach the container via `app.redeploy`
->
-> Doppler is not read at container start. `manage.sh` **renders** the compose
-> with secret values substituted and stores that rendered config in TrueNAS
-> under `/mnt/.ix-apps/app_configs/cluster-agent/`. `midclt call app.redeploy`
-> recreates the container from that **stored** config — so after a Doppler
-> write it faithfully redeploys the *old* value.
->
-> Measured 2026-09-05, and it cost a wasted rotation cycle: after writing new
-> kubeconfigs to Doppler and running `app.redeploy`, a dry-run still reported
-> `app_ensured action=update changed=True`. Only after
->
-> ```sh
-> ./manage.sh phase apps --only cluster-agent --apply
-> ```
->
-> did it report `changed=False`. Use that for any Doppler-sourced change;
-> `app.redeploy` is fine only for a plain restart (e.g. picking up edited
-> Python in the code bind-mount).
->
-> ⚠ Also do not confirm a restart with `/health` alone — the old container
-> keeps serving 200 while the redeploy is queued, so a poll returns "healthy"
-> against the process you were trying to replace (observed: `/health` reported
-> ok with `uptime_seconds=1061654`, the 12-day-old process, immediately after
-> an apply). Wait for `process_start_time_seconds` in `/metrics` to change.
->
-> It is a TrueNAS ix-app: there is no `/mnt/tank/cluster-agent` compose dir,
-> and `truenas_admin` has no passwordless docker-socket access.
-
-**Daily-digest architecture (short version).** Each 06:00 fire:
-
-1. Pulls 24h of `ALERTS{alertstate="firing", alertname!="InfoInhibitor"}`
-   from Prometheus, aggregates per `(alertname, fingerprint)` with
-   chronicity classification (chronic / flapping / active / self_healed /
-   transient). **`InfoInhibitor` is dropped in the query** (2026-09-26,
-   kube-infra #1286). It is a severity=none meta-alert that restates "an
-   info alert exists in this namespace", and it also fires for info alerts
-   that are only *pending*. So it flapped with every CPUThrottlingHigh and
-   was filed as findings. **Watchdog is kept in the pull on purpose** and
-   skipped later (summary tables + the prompt). It keeps the history
-   non-empty, and `run_async` returns *before* log mining and the summary
-   when the history is empty. Excluding it would silently drop the tripwire
-   scan on every alert-quiet day.
-2. Pre-fetches kubectl describe + Loki excerpts for chronic+flapping
-   alerts (not for self_healed/transient — presumed noise). The chronicity
-   thresholds are `digest_aggregator.CHRONIC_THRESHOLD_SECONDS` (1 h in
-   total), `FLAPPING_THRESHOLD_CYCLES` (3) and `TRANSIENT_THRESHOLD_SECONDS`
-   (5 min); the summary's section headers are built from them (until
-   2026-10-10 they said "> 6h" and "> 3 cycles").
-3. **Reads the known events** (2026-10-10, `modes/known_events.py`):
-   what the cluster went through from an hour before the window to its
-   end, numbered E1, E2, … (oldest first) before the logs are mined. Node
-   boots and kube-apiserver restarts are the distinct values of
-   `node_boot_time_seconds` and `process_start_time_seconds{job="apiserver"}`
-   (Prometheus, 5-min steps; an apiserver start within 15 min after a boot
-   is part of the boot). HelmRelease upgrades come from each release's
-   `status.history`, restore drills from the Jobs of the `*-restore-drill`
-   CronJobs (both `kubectl get` with the agent's read-only kubeconfig).
-   **Deployment rollouts** (2026-10-11) are the ReplicaSets created in the
-   window: kube-state-metrics' `kube_replicaset_created` joined with
-   `kube_replicaset_owner{owner_kind="Deployment"}`. One event per
-   namespace covers the Deployments rolled out within 5 min of each other,
-   and there is none for a Helm upgrade's own (within 10 min after an
-   upgrade into the same namespace; measured 1-8 s). ⚠ Not the live
-   ReplicaSet list: a Deployment deletes its old ReplicaSets past
-   `revisionHistoryLimit` (GIKS keeps 3), and msa2-dev rolled GIKS out 8
-   times on 2026-10-10, so by the 03:00Z digest the list had lost 4. A
-   rollback to a template a kept ReplicaSet has creates no ReplicaSet, so
-   an older ReplicaSet scaled up from 0 in the window
-   (`kube_replicaset_spec_replicas`) is an event too, "a rollback or a
-   scale-up". No new ReplicaSet showed a 0 before its first replica in 7
-   days on either cluster, so the two never overlap; when that query fails
-   the gap reads `known events rollbacks: …` and the rollouts stand. The
-   live list, read only when there is a rollout, adds what changed
-   (`giks-adminapp v0.35.0 → v0.36.0`, init containers included, or
-   `same image, pod template changed`). When it fails, the events stand
-   and each says that what changed is unknown: no coverage gap, since the
-   events are known.
-   A planned change makes noise, and without these the LLM filed it as
-   findings: kube-infra #1437 (a Talos config apply's apiserver restart),
-   #1509 (a drill's Postgres "starting up"), #1535 (three upgrades), the
-   reboot findings of 2026-10-02..07, and #1577 (readiness failures
-   during two sms-gateway rollouts, read as "failing since 07:00"). The
-   prompt tells the LLM to fold an
-   alert group that starts within ~30 min after an event into one summary
-   line naming it, unless it outlasts the event by about an hour; log
-   patterns are matched to the events in code (step 3b). A source that
-   fails is a `known events <source>: <Exception>` coverage gap, like a
-   failed Loki query, and so is an EMPTY answer where a healthy cluster
-   always has one (a boot time, an apiserver start, its HelmReleases, its
-   ReplicaSets): "no events" would be a false clean. A drill also comes
-   from its CronJob's `lastScheduleTime` when its Job is gone (Jobs live
-   24 h, and in winter the 04:00Z digest starts as Monday's 04:00Z drill
-   Job is reaped).
-3b. **P3: Mines Loki for notable log patterns** — namespaces whose 24h
-   count of **error-level** lines is ≥ 3× their daily mean over the 6
-   days before (`ratio_outlier`),
-   PLUS 10 hard-coded tripwire regexes that surface on any occurrence
-   (`panic`, `fatal`, `OOMKilled`, `CrashLoopBackOff`, `ImagePullBackOff`,
-   `certificate_expired`, `x509_expired`, `connection_refused`,
-   `permission_denied`, `evicted`). Sample lines are scrubbed of
-   probable secrets before reaching the LLM.
-   **How it counts (since 2026-10-10, kube-infra #1534/#1537/#1487):**
-   - **Every count is a range query over hour-aligned windows**, summed
-     per namespace (`_hour_windows`): the last 24 h in 15-minute slots
-     (since 2026-10-11, to place each line against the known events), the
-     baseline days in hours. Uncached on msa2-dev, the slot queries took
-     29 s against 20 s hourly, 4.3 s at most each. ⚠ Until 2026-10-10 the
-     24h window was one 24h-step point, which Loki
-     (`align_queries_with_step: true`) rounded to two UTC midnights: it
-     counted two days, so every ratio was ~2× too high and the 3×
-     threshold acted like 1.5×.
-   - **The ratio counts error/panic/fatal lines, not warn**, and drops a
-     line whose own level is below error in each format the clusters
-     emit: zerolog console, klog, logfmt, JSON, zap console, the Actions
-     runner and Serilog (`_BELOW_ERROR_LEVEL_EXCLUDE`). The tripwires'
-     record exclusions apply too. ⚠ The keyword is a gate: a line counts
-     only if it says error, panic or fatal, or carries Serilog's `ERR]` /
-     `FTL]` (GIKS logs Hangfire and Polly failures without the word: 38 a
-     day on msa2-dev, 12 on msa2-prd). klog `E…` and zerolog `ERR` lines
-     without the word do not count (5 a day per cluster, all Talos's
-     kubelet "manifest file is empty"). A Postgres record counts by its own
-     `error_severity` (ERROR, FATAL, PANIC), in a second query over the
-     `postgres` containers: every record's wrapper says `"level":"info"`
-     and carries the key `error_severity`, so all of them used to count.
-     On msa2-prd (2026-10-10) the daily count fell from 49,367 lines to
-     5,238, and Kyverno's from 15,293 to 1.
-   - **A namespace is judged on the baseline days it existed**
-     (`kube_namespace_created`) and is no ratio outlier before 3 of
-     them. A failed age read is a coverage gap, and then every
-     namespace is judged on the full window.
-   - **A tripwire's count is the namespace's true count** (a metric
-     query); its sample lines come from one narrow query per pattern
-     that makes the cut. ⚠ Until then a 15-line streams query across all
-     namespaces capped every count at 15 and could crowd a hit out.
-     Up to 3 of the 10 places are kept for ratio outliers.
-   - **Planned-restart Postgres noise never counts:** SQLSTATE 57P01 and
-     57P03, as a record's own field or quoted by CNPG's metrics exporter
-     (`_POSTGRES_RESTART_EXCLUDE`, on the ratio and the `fatal`
-     tripwire).
-   - **Each pattern carries its shape** (2026-10-11): the first and last
-     15-minute slot with a line, and `peak_hour` / `peak_share` (the hour
-     with the most lines and its share of them). ⚠ Until then a ratio
-     outlier's first and last seen were the window's edges.
-   - **A known event's noise is marked in code** (`_mark_event_noise`,
-     2026-10-11).
-     - *Where:* an event makes noise in the namespaces it touches. A boot
-       or an apiserver restart touches all of them; an upgrade, a rollout
-       or a drill touches only its own. Its clients elsewhere (a
-       database's apps, Traefik in front of a rollout) are not touched,
-       so their noise stays unexplained.
-     - *When* (`known_events.noise_window`): a restart from 15 min before
-       it (a node drains first: prd's GIKS logged its shutdown 4 min
-       before the 10-10 boot), anything else from its start, until 45 min
-       after. This is matched per 15-minute slot. ⚠ With hour points it
-       reached up to 104 min after an event (review of this change).
-     - *What gets marked:* a tripwire whose every hit fell in those slots,
-       or a ratio outlier with most of its lines there and no outlier
-       without them, gets `explained_by: [E…]`. The LLM folds it into the
-       event's summary line and files nothing.
-     - *Exceptions:* OOMKilled, ImagePullBackOff and the certificate-expiry
-       tripwires are never an event's noise. panic, fatal and
-       CrashLoopBackOff are noise only of a boot or an apiserver restart,
-       which run the same code; after an upgrade, a rollout or a drill
-       the new code may be at fault, and the LLM judges them by their
-       sample lines.
-     - *Partly in event time:* any other ratio outlier with lines in those
-       slots gets `ratio_outside_events` and `count_outside_events`, its
-       ratio and count over the rest. The LLM judges it on those (a
-       finding needs ≥ 5× and ≥ 500 lines).
-     - The noise takes only the places of the 10 that nothing else needs,
-       and a failure while marking leaves the pattern unmarked and
-       recorded (`event noise <signal> <namespace>: …`). All five findings of the 2026-10-11
-     digests were planned-change noise. #1575, #1577 and #1578 rested on
-     ratio outliers with 63-98% of their lines in the reboot's hour, and
-     #1577 also read sms-gateway's connection_refused hits in the hours of
-     its 07:31 and 14:41 rollouts as "failing since 07:00". Replayed with
-     this code, every prd pattern was marked, and dev kept kube-system
-     (3.2× outside events, on 386 lines; mostly kube-controller-manager's
-     `jobs.batch "scan-vulnerabilityreport-…" not found`, a race with
-     trivy-operator deleting its scan Jobs) and trivy-system (2.8×),
-     neither of them a finding. #1574 and #1576 are the Npgsql lines below.
-   **Every tripwire carries `_RECORD_EXCLUDE`** (2026-09-26,
-   kube-infra #1263/#1268/#1287). These negative filters drop lines that *record* a
-   keyword instead of reporting an event:
-   - apiserver `audit.k8s.io` records;
-   - the ARC runner's `INFO Worker]` job-message dump (PR bodies and
-     commit messages);
-   - indented lines that start with a quote. These are pretty-printed JSON
-     documents, in practice Trivy scan reports: kube-infra prints them
-     uncompressed (`scanJob.compressLogs: "false"`, #820), so every CVE
-     description that says "can panic" used to trip `panic`;
-   - Loki's own query log (`org_id=… query="…"`). Any Loki search for a
-     keyword, including this digest's own ratio query, used to plant that
-     keyword in `monitoring/loki-0` and trip the next digest;
-   - a .NET client's PostgresException dump (2026-10-11, kube-infra
-     #1574/#1576). Npgsql prints `    Severity: FATAL` on its own line,
-     and the SQLSTATE only on the header line, so a planned restart's
-     57P03 tripped `fatal`: 10 lines on prd and 6 on dev from GIKS's
-     jobserver during the reboots, and 2 from sms-gateway during the CNPG
-     upgrade. A real FATAL still trips it through Postgres's own record.
-     The ratio count drops the line too (`_ERROR_LINE_FILTER` carries
-     `_RECORD_EXCLUDE`), at any level: one restated line fewer per
-     exception in the client's namespace, while Postgres's record counts in
-     its own.
-
-   Real failures keep matching. `digest_aggregator.py` documents the
-   measured evidence per filter, and the tests evaluate each tripwire
-   against captured record lines and real event lines (e.g. trivy's
-   `FATAL … image scan error`, the #1312 signal).
-3c. **Numbers the other signals** (`modes/signals.py`): alert groups A1,
-   A2, …, log patterns L1, … (the known events got E1, … in step 3). A
-   Finding cites the ids it covers in `signals`.
-4. **Reconciles state.db against live GH issue state** (2026-07-16,
-   `modes/daily_digest.py::_reconcile_finding_states`), THEN looks up the
-   remaining open dedup_keys from state.db (LLM avoids semantic
-   duplicates). The reconcile is load-bearing: finding issues are
-   human-close-only, and nothing else teaches state.db that the operator
-   closed one — without it, closed findings stay `state='open'` forever
-   and the LLM keeps skipping the chronic condition as "already tracked"
-   against a dead issue (the 2026-07 "digest cites closed issues as open"
-   gap). Spec: `docs/superpowers/specs/2026-07-16-finding-state-reconcile.md`.
-   Since 2026-10-10 it reads each open finding's issue on its own
-   (`gh_issue_get`). ⚠ Until then it LISTED the repo's issues, one page of
-   100 per state, and closed every open finding whose issue the page did
-   not reach: kube-infra holds thousands of issues and PRs. A 404 closes
-   the row only once the repo itself answers (`gh_repo_readable`): GitHub
-   also says 404 for a whole private repo the App can no longer read. Then each alert
-   group and log pattern that an OPEN finding issue already tracks gets
-   `tracked_by` = that issue, which the LLM sees (it then names the issue
-   instead of re-filing) and the summary's `rolled into` column shows.
-5. ONE LLM call → Report (alerts + log patterns + known events + dedup
-   context).
-6. **Each Finding's dedup key is built in code from its signals**
-   (`modes/signals.py`, 2026-10-10):
-   `alert:<alertname>:<namespace>[:<workload>]:<cluster>`,
-   `log:ratio:<namespace>:<cluster>`, `log:tripwire:<label>:<namespace>:<cluster>`.
-   ⚠ Until then the LLM invented the key, and its scope changed daily
-   (state.db on 2026-10-10: `…:prd-node-17h04:prd`,
-   `…:prd-node-20261006T1231:prd`, a Job name with its run's timestamp),
-   so a recurring condition filed a new issue instead of commenting on the
-   open one.
-   - **The workload part** keeps two problems of one namespace apart (the
-     off-site dump's and the restore drill's `KubeJobFailed` in `giks-db`).
-     It is the first label naming the alert's object: `cronjob`, `job_name`,
-     `deployment`, `statefulset`, `daemonset`, `persistentvolumeclaim`,
-     `mountpoint`, a Flux object's `name`, then `pod`, then `route` /
-     `reason`. Never `job`, `service` or `instance`: on a kube-state-metrics
-     alert they name the scrape target. A generated name is reduced with
-     Kubernetes' own suffix alphabet (`adminapp-6d9f7c8b5-x2kq4` →
-     `adminapp`, a CronJob's `…-29330820` → the CronJob); a StatefulSet's
-     ordinal stays.
-   - **Several signals**: the first key with an OPEN issue wins, then one
-     closed less than 7 days ago, then the first in sorted order. The other
-     keys become **aliases** of the issue in state.db when the issue is new
-     or open (never a closed one, and never repointing a key open on
-     another issue), so tomorrow any one of them lands there.
-   - A signal belongs to the first finding that cites it, and a second
-     finding of the run on the same key links to the first's issue.
-   - **No usable signal**: a finding is matched by its alert evidence
-     (`Alertmanager/<alertname>@…` naming exactly one group), then keyed
-     `event:<kind>:<namespace>:<cluster>` by the known events it cites, and
-     only then keeps the LLM's key (cluster suffix forced; a missing one is
-     a per-finding placeholder, not a failed Report).
-   - **The switch needed no migration.** All 44 keys in state.db on
-     2026-10-10 were free-form LLM ones and none equals a code-built key; a
-     4-part key that ever did would name the same alert and namespace. A
-     condition still firing under an issue filed with an old key files once
-     more under its new key: close the old issue then. (Every finding issue
-     filed before 2026-10-10 was closed that day.)
-   Then each Finding is dispatched to Grafana annotation + GH issue +
-   state.db record. The annotation is best-effort: a failure is logged and
-   counted, never fatal (`dispatch.py`). It goes to the cluster's
-   `grafana-nas` NodePort with a service-account token (kube-infra#1366,
-   `tools/grafana.py`). Every surface's counter
-   (`cluster_agent_dispatch_errors_total{surface=…}`) starts at 0 when the
-   container starts (`emit/metrics.py` `DISPATCH_SURFACES`), so the first
-   failure after a restart is a rise that `ClusterAgentDispatchErrors`
-   (`increase(…[6h]) > 0`) sees. A series born at 1 has no earlier sample,
-   and that first failure never fired. A new surface goes into that tuple
-   (`tests/test_metrics.py` checks it). Every metric `emit/metrics.py`
-   declares is one the agent sets, and that test fails on one nothing
-   `.inc()`s, `.set()`s or `.observe()`s (an import or a docstring is not
-   enough):
-   seven declared for never-built modes (findings, PR actions, the
-   "anthropic" cost and tokens, backup verification, doctrine drift) went
-   on 2026-10-10; a dashboard tile had read the always-0 cost counter
-   (kube-infra MS-A2 plan Task D6c moved it to
-   `cluster_agent_llm_cost_usd_total`).
-
-Cost: ~$0.25-0.50/day on Sonnet 4.6 (cached prefix shared between
-dev + prd runs since they fire 60s apart).
-
-**Code change vs config change.** The compose bind-mounts
-`apps/cluster-agent/` → `/app`, so Python source edits land on disk
-immediately when `manage.sh phase apps --apply` runs. **But uvicorn
-caches the loaded module in memory.** Code-only edits don't take
-effect until the container restarts. `manage.sh` recreates only when
-the rendered env-var hash changes (e.g. a Doppler key was edited):
-
-```sh
-# After llm.py / dispatch.py / etc. source-only changes — AND after a
-# lock-only change (uv.lock + requirements.lock.txt, compose untouched):
-ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
-
-# After Doppler key change:
-cd ~/github/truenas-infra && ./manage.sh phase apps --apply
-# (will report action=update changed=True — env hash differs)
-```
-
-**What `phase apps` uploads, and how it knows (since 2026-09-29).**
-`main.py`, `requirements.lock.txt` and the **git-tracked** files of `src/`
-and `prompts/` (`git ls-files`, not a directory walk) go to
-`/mnt/tank/system/apps-config/cluster-agent/code/`. Every file is
-**content-verified**: when the sizes match, the NAS copy is pulled back and
-compared by sha256 (~37 small downloads per run, dry-run included); a size
-mismatch is "changed" with no download. Each file logs
-`cluster_agent_file_ensured … content_verified=True`, so a dry-run
-(`./manage.sh phase apps --only cluster-agent`) that is all
-`noop … content_verified=True` proves the NAS holds this checkout's tracked
-bytes. Until 2026-09-29 only the lock was content-checked: an equal-length
-edit to any `.py` or prompt reported `noop` and never deployed (the
-2026-09-13 PXE Dockerfile false clean), and the walk shipped the laptop's
-pytest `__pycache__/*.pyc` on every deploy.
-
-- Untracked-but-not-ignored files under `src/` or `prompts/` are **not**
-  uploaded; they log a `cluster_agent_untracked_not_uploaded` warning. Commit
-  them via a PR. Run outside a git work tree, the phase fails before the
-  first upload rather than falling back to the walk.
-- ⚠ **Files deleted from git stay on the NAS**, inert: the phase uploads,
-  and TrueNAS 25.10 has no file-delete API. Since 2026-10-10 that includes
-  `code/src/cluster_agent/modes/context.py`, `code/prompts/alert_triage.md`
-  and `code/prompts/_shared/output_schema.md` (nothing imports or renders
-  them). Remove them once, by hand:
-  `ssh -t truenas_admin@10.10.5.10 'sudo rm -f /mnt/tank/system/apps-config/cluster-agent/code/src/cluster_agent/modes/context.py /mnt/tank/system/apps-config/cluster-agent/code/prompts/alert_triage.md /mnt/tank/system/apps-config/cluster-agent/code/prompts/_shared/output_schema.md'`.
-- ⚠ **37 stale `.pyc` files remain on the NAS** under
-  `code/src/cluster_agent/**/__pycache__/` (cpython-311 and -314, including
-  `modes/alert_triage` and `tools/mc`, deleted from git in May 2026).
-  TrueNAS 25.10 has no file-delete API, so the phase cannot remove them. They
-  are inert: a `__pycache__` file whose source is gone is never imported,
-  Python checks every other one against its source's mtime and size (the
-  uploaded sources are newer), and `/app` is read-only. But since the image
-  moved to python 3.14 (2026-10-10) the `cpython-314` ones carry the image's
-  own tag, so remove them once rather than rely on that check. (A laptop venv
-  on the image's Python writes that same tag, which is why the phase ships
-  no `__pycache__`.) Removing them is a manual operator step:
-  `ssh -t truenas_admin@10.10.5.10 'sudo find /mnt/tank/system/apps-config/cluster-agent/code -type d -name __pycache__ -prune -exec rm -rf {} +'`.
-
-**Runtime deps come from `uv.lock` (since 2026-09-29).** One chain, no
-second list: `apps/cluster-agent/pyproject.toml` → `uv.lock` →
-`requirements.lock.txt` (a hashed `uv export` of the lock, committed) →
-`/venv` on the NAS. `manage.sh phase apps` uploads `requirements.lock.txt`
-with the code (content-verified, not size-only: a version bump with new
-fixed-width hashes is routinely the same byte length). The compose startup
-script `pip install --require-hashes --only-binary=:all: -r` that file into
-`/venv`, then stamps `/venv/.requirements.stamp` with `<file sha256> cpXY`.
-On every start it recomputes the stamp. It rebuilds `/venv` (`venv --clear`,
-~20-40 s) only when the stamp differs or `/venv` can no longer
-`import uvicorn, fastapi, jinja2, jwt, yaml` (site-packages damaged under an
-intact stamp — without the probe that would crash-loop at import instead of
-self-healing). Otherwise it logs `venv up to date (…)` and goes straight to
-uvicorn.
-
-- **Adding or bumping a dependency** (including a Renovate lock PR): edit
-  `pyproject.toml` if needed, then in `apps/cluster-agent/`:
-  `uv lock` (or `uv lock --upgrade-package X`), then
-  `uv export --frozen --no-dev --no-emit-project --format requirements-txt > requirements.lock.txt`.
-  `tests/test_requirements_lock.py` fails on a stale export, a lock that
-  does not satisfy pyproject, an unhashed line, inline pins in the compose,
-  or a runtime package with no `cpXY-musllinux x86_64`/pure-Python wheel
-  (XY is read from the compose `image:` tag). Run the suite with
-  `uv run --extra dev pytest`. Plain `uv run` re-locks a stale lock
-  silently, and then the export check is what fails.
-  ⚠ Renovate bumps `uv.lock` but cannot re-export, so its lock PRs fail
-  that test until you re-export on the branch. This repo has no CI, so run
-  the suite before merging any lock PR. `renovate.json` disables
-  Renovate's `pip_requirements` manager for the generated file, so it never
-  gets bumped on its own.
-  **Deploy-time backstop:** if a lock PR is merged without the re-export
-  anyway, `manage.sh phase apps` (cluster-agent) catches it. Before any
-  upload, dry-run included, `_verify_cluster_agent_requirements_export`
-  runs the same `uv export` in `apps/cluster-agent/` and REFUSES to deploy
-  when the committed file differs byte-for-byte. The error names the drifted
-  pins, and the phase stops before `ensure_custom_app` (a full `phase apps`
-  stops too; `--only <other-app>` is unaffected). It needs `uv`
-  (`$UV` or PATH; manage.sh adds `~/.local/bin` and `~/.cargo/bin`); no uv
-  is an error, never a skip. A clean check logs
-  `cluster_agent_requirements_export_verified … pins=N`. Fix a stale export
-  on a branch + PR, never by hand on the NAS.
-- **Deploying it:** `./manage.sh phase apps --only cluster-agent --apply`
-  verifies the export (above) and uploads the file, but the app itself
-  reports `noop` (the compose did not change), so nothing restarts. Then run
-  `sudo docker restart cluster-agent`.
-  Verify with the stamp, not `/health`:
-  `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent cat /venv/.requirements.stamp'`
-  must equal `shasum -a 256 apps/cluster-agent/requirements.lock.txt` + ` cp314`
-  (` cp313` until the image moved to python 3.14, 2026-10-10).
-- **Forcing a rebuild** (suspected corrupt venv):
-  `ssh truenas_admin@10.10.5.10 'sudo docker exec cluster-agent rm -f /venv/.requirements.stamp'`,
-  then restart.
-- **Why:** until 2026-09-29 the compose pip-installed its OWN hand-written
-  `==X.Y.*` pins (fastapi 0.118, uvicorn 0.35, pydantic 2.10, structlog
-  24.4, …). It rebuilt only when `import uvicorn, jinja2, cryptography`
-  failed. So the lock the tests ran against never reached production, and
-  neither did the Dependabot fixes to it (8 open alerts on 2026-09-29: anyio,
-  cryptography, starlette; kube-infra#1163). Moving to the lock was a
-  one-time jump: fastapi 0.118→0.141.1, starlette 0.4x→1.7.0, uvicorn
-  0.35→0.54.0, apscheduler 3.10→3.11.3, prometheus_client 0.21→0.25.0,
-  pydantic 2.10→2.13.5, pyjwt 2.10→2.13.0, cryptography →50.0.1,
-  anyio →4.14.2, tenacity 9.0→9.1.4, structlog 24.4→26.1.0. httpx, jinja2
-  and pyyaml stayed on the same series.
-
-**LLM auth toggle.** Compose passes BOTH `ANTHROPIC_API_KEY` and
-`CLAUDE_CODE_OAUTH_TOKEN` to the container; the Doppler key
-`LLM_AUTH_MODE` (`oauth` or `api_key`) decides which one `main.py` keeps
-in `os.environ` at startup. Operator flips billing modes with a single
-Doppler command — no compose edit:
-
-```sh
-doppler secrets set LLM_AUTH_MODE=api_key --project cluster-agent --config prd
-./manage.sh phase apps --apply       # env hash changed → container recreated
-```
-
-`main.py` falls back to `api_key` when the key is missing (since
-2026-10-10; it fell back to `oauth` before, the intent of 2026-05-26).
-
-**Current default: `api_key` — and OAuth is no longer a viable path
-for cluster-agent.** Flipped 2026-05-27 after discovering OAuth has
-effectively never worked for this use case. Two compounding
-Anthropic-side issues block it:
-
-1. **TOS restriction (Feb 2026):** Anthropic's Authentication and
-   Credential Use policy explicitly restricts OAuth tokens
-   (`sk-ant-oat01-*`) to Claude Code and claude.ai. Calling
-   `api.anthropic.com/v1/messages` directly with the bearer token —
-   which is exactly what `llm.py:_sdk_query` does — is a TOS
-   violation pattern and gets hard-blocked at the auth gate.
-2. **Billing-system bug ([anthropics/claude-code#45326](https://github.com/anthropics/claude-code/issues/45326)):** Max plan
-   subscribers without a "promotional credit claim flag" get
-   silently 429'd on Sonnet/Opus calls via OAuth even with balance
-   available. The error masquerades as a rate limit
-   (`{"type":"rate_limit_error","message":"Error"}`) but no usage
-   ever counts and the dashboard shows zero pressure — making it
-   indistinguishable from a genuine cap until you read the
-   upstream issue. (Haiku reportedly still works on the OAuth path,
-   confirming this is a billing-flag bug, not a real rate limit.)
-
-The combination meant cluster-agent's "successful" digests since
-2026-05-26 must have all billed against the API key fallback inside
-`llm.py:154` (`os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or
-os.environ.get("ANTHROPIC_API_KEY")`) — the OAuth branch never reached
-the LLM. Operator confirmed (2026-05-27) Max-subscription usage
-metrics on claude.ai were always near zero, consistent with
-cluster-agent never actually consuming from that pool.
-
-Verified working under `LLM_AUTH_MODE=api_key` 2026-05-27 04:47 UTC
-via manual in-process dev digest fire (14 alert groups, 2 findings
-emitted, real LLM call billed at ~$0.20 against the API account).
-
-Cost on `api_key`: ~$0.25-0.50/day on Sonnet 4.6 = ~$10/month.
-Max subscription does not offset this (it can't — OAuth is blocked).
-
-**Do NOT flip back to oauth** until either (a) Anthropic
-fixes #45326 AND amends the TOS to allow direct API use, or (b) the
-agent is refactored to invoke the `claude` CLI as a subprocess
-(claude-agent-sdk pattern) — which IS within the TOS-allowed
-Claude Code usage path. The bare-REST shortcut in `llm.py` is
-incompatible with OAuth going forward.
-
-**Cron timing.** dev fires at `DAILY_DIGEST_HOUR:DAILY_DIGEST_MINUTE`,
-prd at `+1 minute` so the second call hits the first's prompt cache
-(5-min TTL on Anthropic side). Schedule + window controlled by:
-
-- `DAILY_DIGEST_HOUR` (default `6`)
-- `DAILY_DIGEST_MINUTE` (default `0`)
-- `DAILY_DIGEST_WINDOW_HOURS` (default `24`)
-- `DAILY_DIGEST_BUDGET_USD` (default `0.50` — pre-call cost gate per run)
-
-**Daily summary delivery (P3+ extension, 2026-05-27).** In addition
-to the curated per-Finding GH issues the digest already files, each
-run can ALSO deliver a "full landscape" summary listing *every*
-alert group the LLM saw (including chronic-but-known noise it didn't
-escalate). Surfaces the recurring-but-self-healing patterns that
-otherwise vanish from operator view. Zero LLM cost — pure aggregation
-of `AlertGroup` data already in memory.
-
-Destinations are CSV-controlled via Doppler `DIGEST_SUMMARY`:
-
-| Value | Behavior |
-|---|---|
-| _(empty)_ | disabled — no summary delivery |
-| `issue` | GH issue only (label `digest-summary` + the key's cluster name + `mode-A`) |
-| `email` | email only (to `DIGEST_SUMMARY_EMAIL_TO`, From: `cluster-agent {cluster} <noreply@w1.lv>`) |
-| `email,issue` | both — current default |
-
-Per-day issue: title carries date + counts (e.g. `Daily digest — prd
-2026-05-27 (26 alerts · 3 actionable · 23 background)`) for inbox
-preview. Yesterday's auto-closes when today's is filed. Body groups
-alerts by chronicity (chronic / flapping / active / self-healed /
-transient), with a `rolled into` column linking back to the per-
-Finding issues (a finding of the run that cites the row's signal id;
-else, for an alert group, one whose alert evidence names it; else the open
-issue in `tracked_by`, marked `(already open)`). ⚠ Until 2026-10-10 the
-column read `ev.source`, which Evidence never had, so it was empty on every
-summary. The log-pattern table has the same column (`noise of E3, E7` for
-a known event's noise) and a `peak` column (the hour with the most lines,
-and its share), and a `Known events` section lists the run's events with
-their ids (a `⚠ Known-events coverage gaps` section names a source that
-failed). Watchdog is silently excluded
-from the rendering.
-**Since 2026-09-26 the body also names every Loki query that failed**
-in a `⚠ Log-mining coverage gaps` section, for example
-`tripwire OOMKilled: ReadTimeout`. A tripwire that timed out was never
-checked, and before this it looked exactly like one that found nothing.
-Measured the day it was added: 8 of kub-dev's 10 tripwire queries hit the
-60s timeout (dev Loki is swamped by trivy-system's ~8M lines/h of runner
-re-scans, a kube-infra issue). The only trace was a WARNING in the
-container log.
-
-Email body is the same markdown rendered as plain-text + HTML
-alternative (HTML wraps in `<pre>` so monospace tables stay aligned
-in Gmail / Outlook). SES SMTP credentials are mirrored from
-`infrastructure/shr` `SHARED_SES_W1_*` into `cluster-agent/prd` as
-`SES_SMTP_*` + `SES_FROM_DEFAULT` — rotate in lockstep with the
-canonical copy. Implementation: `modes/summary_issue.py` orchestrator
-+ `tools/email.py` stdlib smtplib wrapper.
-
-**Label naming convention.** All GH issues created by the agent (both
-per-Finding and per-digest-summary) carry a cluster label: the name of the
-cluster behind the key, as kube-infra names it (cluster-env
-`CLUSTER_NAME`, which Alloy stamps on every Loki stream as `cluster`). A
-GitHub inbox query `label:msa2-prd` lines up with LogQL
-`{cluster="msa2-prd"}` — same identifier, same vocabulary (issues filed
-before a key's cutover keep its old `kub-*` label). The key → cluster
-map is **one place**, `apps/cluster-agent/src/cluster_agent/clusters.py`
-(`CLUSTER_NAMES`); no label site builds a name itself. It changes with the
-key's kubeconfig and only with it (§ *MS-A2 cutover* under the token
-warning above), and the key's old name goes into
-`PREVIOUS_NAMES` so the first run under the new name closes the last
-digest-summary issue filed under the old one. A key with no kubeconfig of
-its own (`Finding.cluster` `nas` / `global`) is its own label.
-
-**Doppler keys** (`cluster-agent/prd`):
-
-- `LLM_AUTH_MODE` — `oauth` | `api_key`. Source-of-truth for which
-  auth path is active.
-- `ANTHROPIC_API_KEY` — sk-ant-api03-*. Always present; stripped from
-  env if LLM_AUTH_MODE=oauth.
-- `CLAUDE_CODE_OAUTH_TOKEN` — sk-ant-oat01-* (1y validity from
-  `claude setup-token`). Always present; stripped from env if
-  LLM_AUTH_MODE=api_key.
-- `DAILY_DIGEST_HOUR` (default `6`) / `_MINUTE` (default `0`) /
-  `_WINDOW_HOURS` (default `24`) / `_BUDGET_USD` (default `0.75` —
-  bumped from 0.50 with P3 to give log-mining the prompt headroom).
-- `GH_APP_ID` / `GH_APP_PRIVATE_KEY` / `GH_APP_INSTALLATION_ID` —
-  cluster-agent[bot] App credentials. Compose renames with
-  `CLUSTER_AGENT_` prefix on injection (the github tool reads
-  `CLUSTER_AGENT_GH_APP_*`).
-- `KUBECONFIG_DEV` / `KUBECONFIG_PRD` / `KUBECONFIG_TEST_RESTORE_DEV` —
-  base64-encoded kubeconfigs with SA tokens. These ALSO carry the auth
-  the agent uses to reach Loki / Prometheus / Alertmanager via
-  apiserver-proxy (kube-infra's `cluster-agent-services-proxy` Role: those
-  three, `get` only). NOT Grafana, since kube-infra#1366.
-- `GRAFANA_SA_TOKEN_DEV` / `_PRD` — for `grafana_post_annotation`
-  (kube-infra#1366, 2026-09-28). The token of the Grafana service account
-  `cluster-agent` (Editor, the narrowest built-in role that may create
-  annotations) in THAT cluster's Grafana, sent as `Authorization: Bearer` to
-  the key's `grafana-nas` NodePort (`clusters.py` `GRAFANA_URLS`: the node's
-  mgmt address, port 30030; a kube-infra CNP admits only `10.10.5.10`). Minted
-  by hand through the Grafana API: kube-infra `CLAUDE.md` § Post-bootstrap
-  operator tasks. ⚠ Grafana's database is not backed up, so **every from-zero
-  rebuild of a cluster loses its account**: re-mint, then `manage.sh phase
-  apps --only cluster-agent --apply`. Until then annotations fail soft (the
-  finding still files; `ClusterAgentDispatchErrors` fires for
-  `grafana_annotation`). Both keys are in `_DOPPLER_KEYS_PER_APP`, so they
-  MUST exist in Doppler or `manage.sh phase apps` fails loud.
-  *(Until #1366 the annotations went through the apiserver proxy with an
-  `X-WEBAUTH-USER: cluster-agent` header. Grafana's auth.proxy trusted that
-  header from any pod-CIDR address, which the proxy arrives from, and it could
-  name any user: the read-only SA could act as Grafana `admin`. Header trust
-  itself ended with kube-infra#1399 step 2 (2026-10-10): Grafana logs in through
-  its own Pocket-ID client on both clusters. The older
-  `GRAFANA_API_TOKEN_{DEV,PRD}` keys, listed here until 2026-09-28, were dead
-  since 2026-05-26 (PR #42); delete them from Doppler if they are still
-  there.)*
-- `DIGEST_SUMMARY` (CSV, `email,issue` currently) /
-  `DIGEST_SUMMARY_EMAIL_TO` — per-day summary delivery config (see
-  "Daily summary delivery" subsection above).
-- `SES_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` /
-  `SES_FROM_DEFAULT` — SES SMTP creds, mirrored from
-  `infrastructure/shr` `SHARED_SES_W1_*`. Rotate in lockstep with the
-  canonical copy.
-- `FINDINGS_REPO` / `DIGEST_REPO` / `FINDINGS_MIN_SEVERITY` — Mode A routing
-  (2026-07-06 graduation): findings→`kube-infra`, summary→`cluster-agent-digest`,
-  inert severity floor (empty = all). Both repos fall back to `SANDBOX_REPO`
-  in code. All 3 are in `_DOPPLER_KEYS_PER_APP[cluster-agent]`, so they MUST
-  exist in Doppler (empty is fine) or `manage.sh phase apps` fails loud.
-- `SANDBOX_REPO` / `LLM_MODEL` — legacy fallback repo (redirects to
-  `cluster-agent-digest` post-rename) + model name for `_MODEL_RATES_PER_1M`.
-- `ENABLED` / `DISABLED_MODES` / `MODE_A_CLUSTERS` — kill switches, read
-  when a job fires (`MODE_A_CLUSTERS` at start). Like every key, a change
-  reaches the container only with `manage.sh phase apps --only
-  cluster-agent --apply`, which recreates it.
-
-**Reserved-for-future keys (paused after 2026-05-27 wrap):**
-- `MINIO_NAS_KEY_ID` / `MINIO_NAS_SECRET_KEY` — for Mode G
-  (backup verification, deferred — see roadmap-reshape spec)
-- `B2_KEY_ID` / `B2_APP_KEY` — same, for off-site verification
-- `KUBECONFIG_TEST_RESTORE_DEV` — for Mode G's ephemeral test-restore
-  namespace SA token
-
-**Removed 2026-05-27** (post-P3 cleanup; re-add if reviving the
-related mode): `AUTOMERGE_DISABLED_REPOS` (Mode J never spec'd),
-`MODE_A_BUDGET_USD` (P1 5-min legacy, replaced by
-`DAILY_DIGEST_BUDGET_USD`).
+It was a NAS app here from 2026-05 to 2026-10-17. Its NAS side was retired on 2026-10-17: the
+TrueNAS app, its directories, the `cluster-agent` bucket on both MinIO instances, the Doppler
+project `cluster-agent` and the NAS-era ServiceAccount tokens are all gone. The NAS-era
+operations this section held until then are in git: `git show ad7ec0d:CLAUDE.md`.
 
 ---
 
@@ -1350,20 +669,28 @@ TTY (no `-t`) returns `sudo: a password is required`. Even `sudo -n`
 must add specific command paths to the "No Password" field via the
 TrueNAS UI → Credentials → Users → `truenas_admin` → Edit.
 
+The API does the same, and it is what worked on 2026-10-17, when a UI save of
+this field did not take: `sudo midclt call user.update <id> '{"sudo_commands_nopasswd": [...]}'`
+with the WHOLE new list (it replaces the field; `<id>` from `user.query` with
+`{"select": ["id"]}`), then read it back with
+`sudo midclt call user.query '[["username","=","truenas_admin"]]' '{"select":["sudo_commands_nopasswd"]}'`.
+⚠ `user.update` prints the whole user record, password hashes included: send
+its stdout to `/dev/null`, never to a terminal or a log.
+
 **Granted NOPASSWD sudo commands** (in TrueNAS UI under "Allowed Sudo
 Commands (No Password)"):
 
 ```
-/usr/bin/docker restart cluster-agent
-/usr/bin/docker exec cluster-agent *
 /usr/bin/midclt
 /usr/bin/upscmd
 /usr/bin/upsrw
 ```
 
+(Until 2026-10-17 the list also held `/usr/bin/docker restart cluster-agent`
+and `/usr/bin/docker exec cluster-agent *`. Both were removed on 2026-10-17,
+when the agent left the NAS.)
+
 This lets passwordless:
-- **Restart + exec into the cluster-agent container** (code-change
-  deployment, manual digest fires, health checks).
 - **midclt** — any TrueNAS API call from a non-TTY SSH session. Used
   for `ups.config` reads, `service.control`, etc. Without this,
   every API-driven check requires a TTY + password prompt.
@@ -1375,35 +702,14 @@ This lets passwordless:
   without typing the upsadmin password each time.
 
 Scope is intentionally tight — only the specific binaries listed,
-nothing else. To extend (e.g. for a new app that needs the same
-pattern), add a new line per command — never blanket
+nothing else. To extend, add a new line per command — never blanket
 `/usr/bin/docker *` or wildcard everything.
-
-**What this enables from automation / future Claude sessions:**
-
-```sh
-# Restart cluster-agent (after merging code-only changes — bind-mounted
-# source is on disk but uvicorn caches the loaded module).
-ssh truenas_admin@10.10.5.10 'sudo docker restart cluster-agent'
-
-# Manual digest fire (verify end-to-end pipeline + costs ~$0.20):
-ssh truenas_admin@10.10.5.10 \
-  'sudo docker exec cluster-agent /venv/bin/python -c "
-import asyncio
-from cluster_agent.modes.daily_digest import run_async
-print(asyncio.run(run_async(cluster=\"dev\")))
-  "'
-
-# Verify in-container code matches latest commit:
-ssh truenas_admin@10.10.5.10 \
-  'sudo docker exec cluster-agent grep -c "<expected-string>" /app/<file>'
-```
 
 **What is NOT granted** (still requires interactive password):
 
-- `sudo` for any other docker container (minio-prd, minio-dev, plex, etc.)
+- `sudo docker …` for any container (minio-prd, minio-dev, traefik, wiki, etc.)
 - `sudo` for file ops outside docker (`vi`, `systemctl`, package install, etc.)
-- `sudo` for inspecting other apps' source/data
+- `sudo` for inspecting any app's source/data
 
 For those, fall back to `ssh -t truenas_admin@... 'sudo …'` from the
 operator's terminal — TTY lets sudo prompt for password.
@@ -1418,7 +724,6 @@ wildcards.
 
 - `minio-prd` → `MINIO_ROOT_USER_PRD`, `MINIO_ROOT_PASSWORD_PRD`, `MINIO_KMS_SECRET_KEY_PRD`, `MINIO_AISTOR_LICENSE`
 - `minio-dev` → `MINIO_ROOT_USER_DEV`, `MINIO_ROOT_PASSWORD_DEV`, `MINIO_KMS_SECRET_KEY_DEV`, `MINIO_AISTOR_LICENSE` (one shared, org-scoped license key)
-- `cluster-agent` → its own Doppler project `cluster-agent/prd` (`_DOPPLER_PROJECT_PER_APP`), not `infrastructure/ops` — key list in § cluster-agent ops
 
 **Inspect / edit:**
 
@@ -1837,11 +1142,6 @@ scripts/
   setup-minio-{buckets,users,lifecycle,encryption}.sh  # one-shot MinIO bootstrap
                                               # (buckets/encryption/lifecycle: guarded by
                                               #  tests/test_minio_setup_scripts.py)
-  render-cluster-agent-kubeconfigs.sh         # rotate the agent's SA tokens
-                                              # (mint + verify granted expiry
-                                              #  + prove services/proxy works;
-                                              #  per-key source kubeconfig,
-                                              #  defaults: the msa2 clusters)
 ```
 
 ---

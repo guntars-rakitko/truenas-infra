@@ -17,13 +17,7 @@
       "versioning": "regex:^RELEASE\\.(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})T(?<build>\\d{2}-\\d{2}-\\d{2})Z$"
     },
     {
-      "description": "apps/cluster-agent/requirements.lock.txt is GENERATED (`uv export` of apps/cluster-agent/uv.lock) and is what the container installs. Bump the lock (pep621/uv manager), never this file: a direct bump would diverge from the lock. After a lock PR, re-export it (command in apps/cluster-agent/pyproject.toml); apps/cluster-agent/tests/test_requirements_lock.py fails until you do.",
-      "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["apps/cluster-agent/requirements.lock.txt"],
-      "enabled": false
-    },
-    {
-      "description": "`requires-python` is set by hand, never by Renovate. In apps/cluster-agent/pyproject.toml it follows the image's Python minor (the compose `image:` tag), changed in the same PR as `uv lock` + the requirements.lock.txt re-export. At the root it is the laptop floor (`>=3.10`; manage.sh builds its venv with `uv venv --python 3.11`). With `rangeStrategy: bump` Renovate's pep621 manager raised both to `>=3.14.8` in #180, which made the root project unresolvable for that venv on a fresh clone.",
+      "description": "`requires-python` is set by hand, never by Renovate. It is the laptop floor (`>=3.10`; manage.sh builds its venv with `uv venv --python 3.11`). With `rangeStrategy: bump` Renovate's pep621 manager raised it to `>=3.14.8` in #180, which made the project unresolvable for that venv on a fresh clone.",
       "matchManagers": ["pep621"],
       "matchDepTypes": ["requires-python"],
       "enabled": false

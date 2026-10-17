@@ -65,13 +65,11 @@ set -euo pipefail
 # prefixes, so a single --expire-days rule applies uniformly. Doing better
 # needs a prune step in the CronJob, not an ILM rule.
 RULES=(
-    "nas-dev/cluster-agent 30"
     "nas-dev/etcd-snapshots 7"
     "nas-dev/mssql-backups 90"
     "nas-dev/postgres-backups 14"
     "nas-dev/postgres-backups-w1 14"
     "nas-dev/sms-gateway-backups 30"
-    "nas-prd/cluster-agent 30"
     "nas-prd/etcd-snapshots 14"
     "nas-prd/mssql-backups 90"
     "nas-prd/postgres-backups 90"

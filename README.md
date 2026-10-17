@@ -52,7 +52,7 @@ doppler setup --project infrastructure --config ops
 | 6 | `storage-tasks` | SMART, scrub, snapshots |
 | 7 | `shares` | NFS (prd/dev) + SMB (home) |
 | 8 | `nut` | Built-in UPS service |
-| 9 | `apps` | the enabled apps in `config/apps.yaml` (minio-prd, minio-dev, traefik, wiki, cluster-agent) |
+| 9 | `apps` | the enabled apps in `config/apps.yaml` (minio-prd, minio-dev, traefik, wiki) |
 | 10 | `verify` | Run the verification matrix |
 
 ## Related repositories
@@ -61,4 +61,5 @@ doppler setup --project infrastructure --config ops
 |---|---|
 | [kube-infra](https://github.com/guntars-rakitko/kube-infra) | Talos + Kube clusters, Flux, workloads |
 | [mikrotik-infra](https://github.com/guntars-rakitko/mikrotik-infra) | Router/switch/VLAN/firewall config |
+| [cluster-agent](https://github.com/guntars-rakitko/cluster-agent) | LLM SRE assistant: runs in each cluster since 2026-10-17 (before that, a NAS app deployed from this repo) |
 | [bios-config](https://github.com/guntars-rakitko/bios-config) | **Archived 2026-10-06**: ASUS Q170S1 BIOS for the retired Kube nodes |
