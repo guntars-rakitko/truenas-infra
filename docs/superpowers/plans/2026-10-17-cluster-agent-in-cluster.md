@@ -588,7 +588,7 @@ Values the files pin:
     | `FINDINGS_REPO` | `guntars-rakitko/kube-infra` |
     | `FINDINGS_MIN_SEVERITY` | empty |
     | `DIGEST_SUMMARY` | `email,issue` |
-    | `DIGEST_SUMMARY_EMAIL_TO` | `guntars@rakitko.lv` |
+    | `DIGEST_SUMMARY_EMAIL_TO` | today's value of the Doppler key of the same name (kube-infra is private; this public plan doesn't repeat it) |
     | `ENABLED` | `true` |
     | `DISABLED_MODES` | empty |
     | `STATE_DB_PATH` | `/data/state.db` |
