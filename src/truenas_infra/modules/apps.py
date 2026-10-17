@@ -5,9 +5,12 @@ Live apps (authoritative list is config/apps.yaml, NOT this docstring):
   * minio-dev     → 10.10.15.10 (S3 for Velero/Longhorn/backups, dev)
   * traefik       → 10.10.5.20  (mgmt-VLAN ingress for the NAS admin UIs)
   * wiki          → nginx serving the MkDocs site
-  * cluster-agent → LLM-driven SRE assistant (both data VLANs)
 
 Declared but `enabled: false`: plex, qbittorrent.
+
+cluster-agent left the NAS on 2026-10-17 for its own repo
+(guntars-rakitko/cluster-agent) and the clusters; its code upload, its uv-export
+guard and the per-app Doppler project override were deleted here with it.
 
 ⚠ Six apps were RETIRED with the 2026-09-23 pool rebuild — pxe, meshcentral,
 amtctl, homepage, stress-dashboard and iperf3 — and their ~930 lines of
@@ -21,9 +24,7 @@ docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md.
 from __future__ import annotations
 
 import base64
-import os
 import re
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -40,9 +41,7 @@ from truenas_infra.util import Diff
 
 # Per-app Doppler key map: { app_name: { compose_var: doppler_key } }.
 #
-# Default source: Doppler `infrastructure/ops`. Per-app overrides are
-# declared in _DOPPLER_PROJECT_PER_APP below (currently only cluster-agent,
-# which migrated to its own dedicated project in Task 22.5).
+# Source: Doppler `infrastructure/ops`, for every app.
 #
 # The compose-var → doppler-key indirection lets the compose file keep its
 # conventional env-var names (e.g. `MINIO_ROOT_USER` per the MinIO
@@ -52,91 +51,6 @@ from truenas_infra.util import Diff
 # Adding a new app with secrets: append a new entry here. The compose
 # file uses `${VAR}` placeholders for the keys on the LEFT of each entry.
 _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
-    "cluster-agent": {
-        # Secrets source: cluster-agent/prd (see _DOPPLER_PROJECT_PER_APP).
-        # Env var names match Doppler key names exactly — project is the
-        # namespace, no CLUSTER_AGENT_ prefix needed.
-        #
-        # LLM auth — active path. Agent SDK reads CLAUDE_CODE_OAUTH_TOKEN
-        # (sk-ant-oat01-* from `claude setup-token`) natively. Bills against
-        # Max subscription; pool-shares with interactive Claude Code until
-        # 2026-06-15 when it moves to a separate $100/mo bucket.
-        # ANTHROPIC_API_KEY stays registered as documented fallback — NOT
-        # passed into the container env (see docker-compose.yaml header).
-        # Operator swaps compose line if API key needed (silent-shadow footgun
-        # means both must never be set simultaneously — main.py fail-fast).
-        #
-        # (Previously had a file-based path via Compose configs: + a
-        # CLAUDE_OAUTH_CREDENTIALS_B64DECODED entry — dropped 2026-05-25
-        # after empirical research showed CLAUDE_CODE_OAUTH_TOKEN env var
-        # is the canonical headless mechanism.)
-        # LLM auth — both tokens are always passed; LLM_AUTH_MODE
-        # ("oauth" or "api_key") decides which one main.py keeps in
-        # os.environ at startup. Flip with `doppler secrets set
-        # LLM_AUTH_MODE=oauth` + container restart.
-        "LLM_AUTH_MODE":                 "LLM_AUTH_MODE",
-        "CLAUDE_CODE_OAUTH_TOKEN":       "CLAUDE_CODE_OAUTH_TOKEN",
-        "ANTHROPIC_API_KEY":             "ANTHROPIC_API_KEY",
-        "GH_APP_ID":                     "GH_APP_ID",
-        "GH_APP_PRIVATE_KEY":            "GH_APP_PRIVATE_KEY",
-        "GH_APP_INSTALLATION_ID":        "GH_APP_INSTALLATION_ID",
-        "KUBECONFIG_DEV":                "KUBECONFIG_DEV",
-        "KUBECONFIG_PRD":                "KUBECONFIG_PRD",
-        # Loki/Prom/AM use the apiserver proxy via the kubeconfig SA token.
-        # Grafana annotations use a Grafana service-account token per key,
-        # posted to the key's `grafana-nas` NodePort (kube-infra#1366,
-        # 2026-09-28; clusters.py GRAFANA_URLS). They replaced the
-        # X-WEBAUTH-USER header through the apiserver proxy, which let the
-        # read-only SA act as any Grafana user. Minted by hand per cluster
-        # (kube-infra CLAUDE.md § Post-bootstrap operator tasks), and
-        # re-minted after every from-zero rebuild (Grafana's DB is not
-        # backed up). (The older GRAFANA_API_TOKEN_{DEV,PRD} entries were
-        # removed 2026-05-26 with cluster-agent PR #42.)
-        "GRAFANA_SA_TOKEN_DEV":          "GRAFANA_SA_TOKEN_DEV",
-        "GRAFANA_SA_TOKEN_PRD":          "GRAFANA_SA_TOKEN_PRD",
-        "ENABLED":                       "ENABLED",
-        "DISABLED_MODES":                "DISABLED_MODES",
-        # Removed 2026-05-27 (post-P3 wrap):
-        #   - AUTOMERGE_DISABLED_REPOS  (Mode J reservation, never spec'd)
-        #   - MODE_A_BUDGET_USD          (P1 5-min legacy, replaced by
-        #                                 DAILY_DIGEST_BUDGET_USD)
-        #   - MINIO_NAS_KEY_ID/SECRET_KEY (Mode G reservation, paused)
-        #   - B2_KEY_ID/APP_KEY           (Mode G off-site, paused)
-        #   - KUBECONFIG_TEST_RESTORE_DEV (Mode G test-restore SA, paused)
-        # The cluster-agent `cluster-agent-tests` ns + Role on dev was
-        # also removed in kube-infra at the same time. Re-provision via
-        # P0 Task 2 + 4 + truenas-infra/scripts/setup-minio-users.sh
-        # if/when Mode G is revived.
-        # Mode A (P2 daily-digest)
-        "SANDBOX_REPO":                  "SANDBOX_REPO",
-        # Findings/summary routing (2026-07-06 graduation spec).
-        # FINDINGS_REPO → ops repo (kube-infra); DIGEST_REPO → renamed
-        # digest repo; FINDINGS_MIN_SEVERITY = inert floor (empty = every
-        # finding files). All fall back to SANDBOX_REPO in code.
-        "DIGEST_REPO":                   "DIGEST_REPO",
-        "FINDINGS_REPO":                 "FINDINGS_REPO",
-        "FINDINGS_MIN_SEVERITY":         "FINDINGS_MIN_SEVERITY",
-        "LLM_MODEL":                     "LLM_MODEL",
-        "MODE_A_CLUSTERS":               "MODE_A_CLUSTERS",
-        # Daily-digest (P2 — 2026-05-26 pivot from 5-min polling)
-        "DAILY_DIGEST_HOUR":             "DAILY_DIGEST_HOUR",     # default "6"
-        "DAILY_DIGEST_MINUTE":           "DAILY_DIGEST_MINUTE",   # default "0"
-        "DAILY_DIGEST_WINDOW_HOURS":     "DAILY_DIGEST_WINDOW_HOURS",   # default "24"
-        "DAILY_DIGEST_BUDGET_USD":       "DAILY_DIGEST_BUDGET_USD",     # default "0.50"
-        # Summary delivery (P3+ — 2026-05-27). CSV destinations:
-        # "" disabled, "issue", "email", or "email,issue".
-        "DIGEST_SUMMARY":                "DIGEST_SUMMARY",
-        "DIGEST_SUMMARY_EMAIL_TO":       "DIGEST_SUMMARY_EMAIL_TO",
-        # SES SMTP credentials (mirrored from infrastructure/shr
-        # SHARED_SES_W1_* — same creds Alertmanager + everything else
-        # uses for w1.lv outbound). Rotate in lockstep with the
-        # canonical copy in infrastructure/shr.
-        "SES_SMTP_HOST":                 "SES_SMTP_HOST",
-        "SES_SMTP_PORT":                 "SES_SMTP_PORT",
-        "SES_SMTP_USERNAME":             "SES_SMTP_USERNAME",
-        "SES_SMTP_PASSWORD":             "SES_SMTP_PASSWORD",
-        "SES_FROM_DEFAULT":              "SES_FROM_DEFAULT",
-    },
     # MINIO_AISTOR_LICENSE is a single shared Doppler key (no _PRD/_DEV
     # suffix) — the AIStor Free license is org-scoped, the same token
     # works for both single-node instances.
@@ -154,20 +68,9 @@ _DOPPLER_KEYS_PER_APP: dict[str, dict[str, str]] = {
     },
 }
 
-# Per-app Doppler project overrides: { app_name: (project, config) }.
-# Apps NOT listed here default to ("infrastructure", "ops").
-# cluster-agent was migrated to its own dedicated Doppler project in Task 22.5
-# to isolate its secrets from the broader infrastructure service token.
-_DOPPLER_PROJECT_PER_APP: dict[str, tuple[str, str]] = {
-    "cluster-agent": ("cluster-agent", "prd"),
-}
-
 
 def _load_doppler_for_app(app_name: str) -> dict[str, str]:
-    """Fetch the secrets needed for `app_name` from Doppler.
-
-    The Doppler project/config defaults to infrastructure/ops; apps in
-    _DOPPLER_PROJECT_PER_APP use their own project instead.
+    """Fetch the secrets needed for `app_name` from Doppler `infrastructure/ops`.
 
     Returns a `{compose_var: value}` dict ready for `_render_compose`
     substitution. Empty dict if the app isn't in `_DOPPLER_KEYS_PER_APP`
@@ -179,12 +82,11 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
     mapping = _DOPPLER_KEYS_PER_APP.get(app_name)
     if not mapping:
         return {}
-    project, config = _DOPPLER_PROJECT_PER_APP.get(app_name, ("infrastructure", "ops"))
     out: dict[str, str] = {}
     for compose_var, doppler_key in mapping.items():
         result = subprocess.run(
             ["doppler", "secrets", "get", doppler_key,
-             "--project", project, "--config", config,
+             "--project", "infrastructure", "--config", "ops",
              "--plain", "--silent"],
             check=False, capture_output=True, text=True,
         )
@@ -689,32 +591,6 @@ TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
 WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
-# cluster-agent — LLM-driven SRE assistant. Stock python:3.13-alpine base
-# image, app code on the pool, bind-mounted into /app. We upload main.py,
-# requirements.lock.txt and the GIT-TRACKED files of src/ and prompts/ (never
-# the laptop's __pycache__/ or other ignored/untracked files); data/ (SQLite
-# state) and venv/ (built on the NAS from requirements.lock.txt) are excluded
-# deliberately. Every file is content-verified, not just size-checked.
-# ⚠ This comment used to say "same deploy pattern as amtctl / stress-dashboard".
-# Both were retired 2026-09-23, so cluster-agent is now the ONLY app using the
-# code-on-pool bind-mount pattern — there is no sibling left to copy from.
-CLUSTER_AGENT_LOCAL_DIR = Path("apps/cluster-agent")
-CLUSTER_AGENT_SRC_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "src"
-CLUSTER_AGENT_PROMPTS_LOCAL_DIR = CLUSTER_AGENT_LOCAL_DIR / "prompts"
-CLUSTER_AGENT_MAIN_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "main.py"
-# `uv export` of apps/cluster-agent/uv.lock (hashed). The container's startup
-# script pip-installs exactly this file into /venv and rebuilds /venv when its
-# sha256 changes — see the compose `command:` block.
-CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE = CLUSTER_AGENT_LOCAL_DIR / "requirements.lock.txt"
-# The EXACT `uv export` that produces requirements.lock.txt. uv writes this
-# command into the file's header, and apps/cluster-agent/tests/
-# test_requirements_lock.py (EXPORT_ARGS) regenerates with the same flags;
-# tests/test_apps.py fails if this tuple and the committed header disagree.
-CLUSTER_AGENT_UV_EXPORT_ARGS = (
-    "export", "--frozen", "--no-dev", "--no-emit-project", "--format", "requirements-txt",
-)
-CLUSTER_AGENT_CODE_REMOTE_DIR = "/mnt/tank/system/apps-config/cluster-agent/code"
-
 
 def run(
     cli: Any,
@@ -757,7 +633,7 @@ def run(
     # talos-updater nightly at 03:00, and pxe-download on Sunday at 02:30,
     # re-downloading the 15 GB of ISOs the rebuild had deliberately deleted.
     # The dead code for all six was deleted in the same pass; `_want()` is what
-    # keeps the remaining five honest.
+    # keeps the remaining four honest.
     #
     # Gating on `_want()` makes the module self-correcting: remove an app from
     # apps.yaml and its config stops being uploaded, with no code change.
@@ -768,8 +644,6 @@ def run(
 
     if _want("wiki"):
         _ensure_wiki_config_via_ctx(cli, ctx, log)
-    if _want("cluster-agent"):
-        _ensure_cluster_agent_config_via_ctx(cli, ctx, log)
     for spec in cfg.apps:
         if only and spec.name != only:
             continue
@@ -871,256 +745,6 @@ def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     log.info("wiki_config_ensured", path=remote,
              action=diff.action, changed=diff.changed,
              content_verified=(diff.after or {}).get("content_verified"))
-
-
-
-
-
-def _requirement_pins(text: bytes) -> set[str]:
-    """`name==version[ ; marker]` lines of a `uv export` (hash lines dropped)."""
-    return {
-        line.rstrip(" \\")
-        for line in text.decode("utf-8", "replace").splitlines()
-        if line and line[0] not in "# "
-    }
-
-
-def _verify_cluster_agent_requirements_export(log: Any) -> None:
-    """Refuse to deploy a requirements.lock.txt that is not `uv export` of uv.lock.
-
-    The container installs EXACTLY requirements.lock.txt, so the lock only
-    reaches production through a re-export. Renovate lock PRs bump uv.lock but
-    cannot re-export, and this repo has no CI: apps/cluster-agent/tests/
-    test_requirements_lock.py catches a stale export only when someone runs
-    pytest by hand. Merged without the re-export, a lock bump would deploy the
-    OLD hash-pinned versions while uv.lock — and the Dependabot alerts it
-    closes — claim the new ones: the same silent runtime-deps drift the move
-    to the lock was meant to end. Every production change of cluster-agent
-    goes through this deploy step, so the drift fails loudly here instead.
-
-    Runs `uv` with the committed CLUSTER_AGENT_UV_EXPORT_ARGS in
-    apps/cluster-agent/ and compares BYTES with the committed file (the bytes
-    are what gets uploaded). `--frozen` reads uv.lock as-is: no resolution, no
-    network, ~50 ms. uv comes from $UV (set by `uv run`) or PATH; manage.sh
-    adds ~/.local/bin and ~/.cargo/bin to PATH when uv lives there. No uv is
-    an error, never a skip — a skipped drift check reads as a passing one.
-    """
-    req_file = CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
-    regen = (
-        f"from {CLUSTER_AGENT_LOCAL_DIR}/: "
-        f"`uv {' '.join(CLUSTER_AGENT_UV_EXPORT_ARGS)} > {req_file.name}`"
-    )
-    uv = os.environ.get("UV") or shutil.which("uv")
-    if not uv:
-        raise RuntimeError(
-            f"uv not found (checked $UV and PATH). Deploying cluster-agent needs "
-            f"it to prove {req_file} is `uv export` of uv.lock before uploading "
-            f"it. Install uv (https://docs.astral.sh/uv/getting-started/"
-            f"installation/ — it lands in ~/.local/bin, which manage.sh puts on "
-            f"PATH) and re-run."
-        )
-    cmd = [uv, *CLUSTER_AGENT_UV_EXPORT_ARGS]
-    try:
-        out = subprocess.run(
-            cmd, cwd=CLUSTER_AGENT_LOCAL_DIR,
-            capture_output=True, check=False, timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(
-            f"`{' '.join(cmd)}` could not run in {CLUSTER_AGENT_LOCAL_DIR}: {exc}"
-        ) from exc
-    if out.returncode != 0:
-        raise RuntimeError(
-            f"`{' '.join(cmd)}` failed in {CLUSTER_AGENT_LOCAL_DIR} "
-            f"(exit {out.returncode}), so {req_file} cannot be checked against "
-            f"uv.lock:\n{out.stderr.decode('utf-8', 'replace').strip()}"
-        )
-    committed = req_file.read_bytes()
-    if out.stdout != committed:
-        have, want = _requirement_pins(committed), _requirement_pins(out.stdout)
-        detail = (
-            f"committed file pins {sorted(have - want)}; the lock exports "
-            f"{sorted(want - have)}"
-            if have != want else
-            "same pins, different hashes or header"
-        )
-        raise RuntimeError(
-            f"{req_file} is STALE — it is not `uv export` of uv.lock ({detail}). "
-            f"Deploying it would keep the NAS on the old versions while uv.lock "
-            f"(and Dependabot) claim the new ones; typically a Renovate lock PR "
-            f"merged without the re-export. Nothing was uploaded. Re-export "
-            f"{regen}, commit it via a PR, merge, and re-run this phase."
-        )
-    log.info("cluster_agent_requirements_export_verified",
-             path=str(req_file), uv=uv, pins=len(_requirement_pins(committed)))
-
-
-def _ensure_cluster_agent_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
-    """Upload the cluster-agent app source to the pool.
-
-    Layout on the pool:
-        .../apps-config/cluster-agent/code/   — bind-mounted /app (ro)
-            ├── main.py                        — FastAPI entrypoint (Task 18)
-            ├── requirements.lock.txt          — hashed `uv export` of uv.lock;
-            │                                    /venv is built from exactly this
-            ├── src/                           — Python package (Tasks 9-19)
-            └── prompts/                       — Jinja2 prompt templates (Task 14)
-
-    Files NOT uploaded:
-      - docker-compose.yaml   (owned by ensure_custom_app)
-      - data/                 (SQLite state.db — must persist across redeploys)
-      - venv/                 (built on the NAS from requirements.lock.txt;
-                               rebuilt when that file's sha256 or the image's
-                               Python minor changes)
-
-    ⚠ requirements.lock.txt is MANDATORY once any code is present: the compose
-    startup script refuses to start without it. A missing file raises here,
-    BEFORE ensure_custom_app can roll out a compose that depends on it.
-    ⚠ It must also BE `uv export` of uv.lock: a stale export raises here too
-    (see `_verify_cluster_agent_requirements_export`). Both checks run before
-    the first upload, dry-run included, so a failure leaves the NAS untouched.
-
-    ⚠ EVERY file is uploaded with CONTENT verification (`read_fn`: sha256 of
-    the NAS copy when the sizes match; a size mismatch still short-circuits
-    to "changed" with no download). Until 2026-09-29 only
-    requirements.lock.txt was, and every source file was SIZE-ONLY: an
-    equal-length edit to llm.py, a prompt or main.py (`<`->`>`, a threshold
-    `0.50`->`0.75`, a model id `-4-5`->`-4-6`) reported `noop` and never
-    reached the NAS — the 2026-09-13 PXE Dockerfile false clean. A lock bump
-    is the routine case (`==1.7.0` -> `==1.8.0`, and sha256 hashes are
-    fixed-width). ~37 small downloads per run, dry-run included — the price
-    of a `noop` that means something.
-
-    ⚠ src/ and prompts/ upload their GIT-TRACKED files only (`git ls-files`),
-    not whatever the checkout holds. The old `rglob("*")` shipped the laptop's
-    `__pycache__/*.cpython-3XX.pyc` (pytest writes them) — 37 of them sit on
-    the NAS today, including bytecode for modes/alert_triage and tools/mc,
-    deleted from git in May 2026; a 3.13 laptop venv writes the container's
-    own cache tag. The repo's .gitignore files already define "not source";
-    a second deny-list here would drift from them (.DS_Store, editor swap
-    files, `*.orig`, a scratch module). Untracked-but-not-ignored files are
-    NOT uploaded and are logged as `cluster_agent_untracked_not_uploaded`, so
-    a forgotten `git add` is visible, not silent. No git (or not a work tree)
-    is an error raised before the first upload, never a fallback to the old
-    walk. Remote leftovers stay: TrueNAS 25.10 has no file-delete API.
-
-    Source dirs (src/ and prompts/) and main.py are created by Tasks 9-19.
-    This helper runs in the phase-apps pre-upload block so the operator can
-    validate the registration with `manage.sh phase apps` before those tasks
-    are done. It skips gracefully if the files/dirs don't exist yet rather
-    than failing — the real code upload happens automatically once they appear.
-
-    Deploy pattern: stock python base image, code on the pool, bind-mounted
-    into /app in the container (the only app left using it — see the module
-    constants above).
-    docker-compose.yaml's command block invokes `uvicorn main:app` which
-    resolves to /app/main.py — so main.py must be at the code/ root.
-    """
-    src_dir = CLUSTER_AGENT_SRC_LOCAL_DIR
-    prompts_dir = CLUSTER_AGENT_PROMPTS_LOCAL_DIR
-    main_file = CLUSTER_AGENT_MAIN_LOCAL_FILE
-
-    any_present = src_dir.is_dir() or prompts_dir.is_dir() or main_file.is_file()
-    if not any_present:
-        log.info(
-            "cluster_agent_config_skipped",
-            reason="source_dirs_missing",
-            src=str(src_dir),
-            prompts=str(prompts_dir),
-            main=str(main_file),
-            note="build them in Tasks 9-19",
-        )
-        return
-
-    # requirements.lock.txt — what /venv is built from. Present AND equal to
-    # `uv export` of uv.lock, checked BEFORE the first upload: a failure must
-    # leave the NAS untouched and stop the phase before ensure_custom_app.
-    req_file = CLUSTER_AGENT_REQUIREMENTS_LOCAL_FILE
-    if not req_file.is_file():
-        raise RuntimeError(
-            f"{req_file} is missing. The cluster-agent container builds /venv "
-            f"from it and will not start without it. Regenerate it from "
-            f"apps/cluster-agent/: `uv export --frozen --no-dev --no-emit-project "
-            f"--format requirements-txt > requirements.lock.txt`."
-        )
-    _verify_cluster_agent_requirements_export(log)
-
-    # The full file list is built BEFORE the first upload, like the checks
-    # above: a git failure must not leave main.py + requirements uploaded and
-    # src/ half-done.
-    # main.py sits at the top level of code/ (uvicorn `main:app` entrypoint).
-    files: list[Path] = []
-    if main_file.is_file():
-        files.append(main_file)
-    else:
-        log.info(
-            "cluster_agent_main_skipped",
-            reason="not_present_yet",
-            path=str(main_file),
-        )
-    files.append(req_file)   # validated above
-
-    # src/ and prompts/: git-tracked files only (see the docstring).
-    for subdir in (src_dir, prompts_dir):
-        if not subdir.is_dir():
-            log.info(
-                "cluster_agent_subdir_skipped",
-                reason="not_present_yet",
-                path=str(subdir),
-            )
-            continue
-        untracked = _git_ls_files(subdir, "--others", "--exclude-standard")
-        if untracked:
-            log.warning(
-                "cluster_agent_untracked_not_uploaded",
-                paths=[p.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix() for p in untracked],
-                hint="git add + commit via a PR to deploy them",
-            )
-        for local in _git_ls_files(subdir):
-            if local.is_file():
-                files.append(local)
-            else:   # tracked but deleted in this checkout: the NAS copy stays
-                log.warning("cluster_agent_tracked_file_missing", path=str(local))
-
-    upload, read = _nas_transport(cli, ctx)
-    for local in files:
-        # Preserve the path under apps/cluster-agent/ (main.py, src/…, prompts/…).
-        rel = local.relative_to(CLUSTER_AGENT_LOCAL_DIR).as_posix()
-        remote = f"{CLUSTER_AGENT_CODE_REMOTE_DIR}/{rel}"
-        diff = ensure_file_on_nas(
-            cli, upload,
-            local_path=local, remote_path=remote,
-            mode=0o644, apply=ctx.apply, read_fn=read,
-        )
-        log.info("cluster_agent_file_ensured", path=remote,
-                 action=diff.action, changed=diff.changed,
-                 content_verified=(diff.after or {}).get("content_verified"))
-
-
-def _git_ls_files(directory: Path, *flags: str) -> list[Path]:
-    """`git ls-files <flags> -- .` run in `directory`, as sorted paths in it.
-
-    No flags = the tracked files. A failure RAISES — never an empty list,
-    which would upload nothing and read as a clean `noop`.
-    """
-    cmd = ["git", "ls-files", "-z", *flags, "--", "."]
-    try:
-        out = subprocess.run(
-            cmd, cwd=directory, capture_output=True, check=False, timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(
-            f"`{' '.join(cmd)}` could not run in {directory}: {exc}. Deploying "
-            f"cluster-agent needs git to upload only tracked files; run "
-            f"manage.sh from a truenas-infra clone. Nothing was uploaded."
-        ) from exc
-    if out.returncode != 0:
-        raise RuntimeError(
-            f"`{' '.join(cmd)}` failed in {directory} (exit {out.returncode}): "
-            f"{out.stderr.decode('utf-8', 'replace').strip()}. Nothing was uploaded."
-        )
-    return sorted(directory / name for name in out.stdout.decode("utf-8").split("\0") if name)
-
 
 
 def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:

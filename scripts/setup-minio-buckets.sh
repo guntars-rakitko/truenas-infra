@@ -28,10 +28,10 @@ set -euo pipefail
 ALIASES=(nas-dev nas-prd)
 # longhorn, velero and pvc-backups were DELETED at the Q170S1 teardown (2026-10-06,
 # kube-infra#1443): their only writers were the retired kub-* clusters, and pvc-backups'
-# restic design was declined. Don't re-add them; tests/test_minio_setup_scripts.py fails
-# if this list creates one.
+# restic design was declined. cluster-agent was DELETED 2026-10-17, when the agent left
+# the NAS: an orphan, its state.db copies were never built. Don't re-add them;
+# tests/test_minio_setup_scripts.py fails if this list creates one.
 BUCKETS=(
-    cluster-agent        # cluster-agent — state.db nightly backups
     etcd-snapshots       # CronJob — talosctl etcd snapshot
     loki-chunks          # Loki — log chunks (compressed log streams + index)
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets

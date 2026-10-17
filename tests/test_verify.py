@@ -196,7 +196,6 @@ def _all_pass_cli() -> MagicMock:
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
-        [{"name": "cluster-agent", "state": "RUNNING"}],
         # cert expiry
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
@@ -380,7 +379,6 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"name": "minio-dev", "state": "RUNNING"}],
         [{"name": "traefik", "state": "RUNNING"}],
         [{"name": "wiki", "state": "RUNNING"}],
-        [{"name": "cluster-agent", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
     ])
 
