@@ -670,12 +670,20 @@ must add specific command paths to the "No Password" field via the
 TrueNAS UI → Credentials → Users → `truenas_admin` → Edit.
 
 The API does the same, and it is what worked on 2026-10-17, when a UI save of
-this field did not take: `sudo midclt call user.update <id> '{"sudo_commands_nopasswd": [...]}'`
-with the WHOLE new list (it replaces the field; `<id>` from `user.query` with
-`{"select": ["id"]}`), then read it back with
-`sudo midclt call user.query '[["username","=","truenas_admin"]]' '{"select":["sudo_commands_nopasswd"]}'`.
-⚠ `user.update` prints the whole user record, password hashes included: send
-its stdout to `/dev/null`, never to a terminal or a log.
+this field did not take. Look up the user's id, write the WHOLE new list (it
+replaces the field), then read it back:
+
+```sh
+# In an SSH session on the NAS (ssh truenas_admin@10.10.5.10); midclt is NOPASSWD.
+sudo midclt call user.query '[["username","=","truenas_admin"]]' '{"select":["id"]}'
+sudo midclt call user.update <id> '{"sudo_commands_nopasswd": [...]}' >/dev/null
+sudo midclt call user.query '[["username","=","truenas_admin"]]' '{"select":["sudo_commands_nopasswd"]}'
+```
+
+⚠ Keep the `>/dev/null`: `user.update` prints the whole user record, password
+hashes included, so its stdout must never reach a terminal or a log. (The
+recipe's first version, in truenas-infra#211, showed the command without the
+redirect and the warning only in the text.)
 
 **Granted NOPASSWD sudo commands** (in TrueNAS UI under "Allowed Sudo
 Commands (No Password)"):
