@@ -669,6 +669,14 @@ TTY (no `-t`) returns `sudo: a password is required`. Even `sudo -n`
 must add specific command paths to the "No Password" field via the
 TrueNAS UI → Credentials → Users → `truenas_admin` → Edit.
 
+The API does the same, and it is what worked on 2026-10-17, when a UI save of
+this field did not take: `sudo midclt call user.update <id> '{"sudo_commands_nopasswd": [...]}'`
+with the WHOLE new list (it replaces the field; `<id>` from `user.query` with
+`{"select": ["id"]}`), then read it back with
+`sudo midclt call user.query '[["username","=","truenas_admin"]]' '{"select":["sudo_commands_nopasswd"]}'`.
+⚠ `user.update` prints the whole user record, password hashes included: send
+its stdout to `/dev/null`, never to a terminal or a log.
+
 **Granted NOPASSWD sudo commands** (in TrueNAS UI under "Allowed Sudo
 Commands (No Password)"):
 
@@ -679,8 +687,8 @@ Commands (No Password)"):
 ```
 
 (Until 2026-10-17 the list also held `/usr/bin/docker restart cluster-agent`
-and `/usr/bin/docker exec cluster-agent *`. The operator removed both in the
-TrueNAS UI when the agent left the NAS.)
+and `/usr/bin/docker exec cluster-agent *`. Both were removed on 2026-10-17,
+when the agent left the NAS.)
 
 This lets passwordless:
 - **midclt** — any TrueNAS API call from a non-TTY SSH session. Used
