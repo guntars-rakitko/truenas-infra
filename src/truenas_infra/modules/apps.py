@@ -23,7 +23,6 @@ docs/superpowers/plans/2026-09-23-nas-pool-rebuild.md.
 
 from __future__ import annotations
 
-import base64
 import re
 import subprocess
 import time
@@ -98,19 +97,6 @@ def _load_doppler_for_app(app_name: str) -> dict[str, str]:
         # `--plain` outputs the value followed by a newline; strip the trailing
         # newline only (preserve any internal newlines for multi-line values).
         raw = result.stdout.rstrip("\n")
-        # Convention: a compose-var whose name ends in _B64DECODED means the
-        # Doppler value is base64-encoded and must be decoded before injection.
-        # No current consumer (was used by CLAUDE_OAUTH_CREDENTIALS_B64DECODED
-        # before that file-based path was dropped 2026-05-25 in favor of
-        # CLAUDE_CODE_OAUTH_TOKEN). Kept as a general-purpose hook for future
-        # apps that need binary credentials surfaced via Compose configs:.
-        if compose_var.endswith("_B64DECODED"):
-            try:
-                raw = base64.b64decode(raw).decode("utf-8")
-            except Exception:
-                # Placeholder value (not yet a real base64 blob) — inject
-                # as-is; downstream consumer must handle the placeholder.
-                pass
         out[compose_var] = raw
     return out
 
