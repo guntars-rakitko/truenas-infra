@@ -690,7 +690,10 @@ Values the files pin:
     answers `yes`. The same with `get secrets -n cluster-agent` and with
     `create pods -n cluster-agent` answers `no`.
   - In dev's Prometheus, `up{job="cluster-agent"} == 1` holds, and
-    `cluster_agent_run_total{job="cluster-agent"}` exists: the positive control for every rule.
+    `cluster_agent_dispatch_errors_total{job="cluster-agent"}` exists: the positive control for
+    the job label, since the code starts every surface's counter at 0. (Not
+    `cluster_agent_run_total`: a labelled counter has no series before its first increment, so it
+    appears only with the first scheduled run, Step 7.)
   - `kubectl -n monitoring get prometheusrule cluster-agent-alerts -o yaml | grep -c 'absent(up{job="cluster-agent"})'`
     prints `1`, and Prometheus evaluates `absent(up{job="cluster-agent-x"})` to `1` (Review
     Focus 1).
@@ -702,15 +705,28 @@ Values the files pin:
     prints `200`.
   - `import smtplib, os; s = smtplib.SMTP(os.environ["SES_SMTP_HOST"], int(os.environ["SES_SMTP_PORT"]), timeout=10); s.starttls(); print(s.noop()[0])`
     prints `250`. No login, no mail.
-- [ ] **Step 6:** A digest run: the 06:00 one, or
+- [ ] **Step 6:** A manual digest run:
   `… python -c "import asyncio; from cluster_agent.modes.daily_digest import run_async; print(asyncio.run(run_async(cluster='dev')))"`.
-  Expected: a digest-summary issue labelled `msa2-dev` in `cluster-agent-digest`, and no error in
-  `kubectl -n cluster-agent logs deploy/cluster-agent`.
-- [ ] **Step 7:** Loki `{namespace="cluster-agent"} |= "agent_run_id"` returns the run's audit
-  lines, and some of them contain `panic` (the positive control). The next summary lists no log
-  pattern in `cluster-agent` (Review Focus 3).
-- [ ] **Step 8:** Once the pod has run for more than an hour, a second fire or the next scheduled
-  run succeeds (Review Focus 2). Record the evidence in the PR.
+  Expected: the printed `DigestResult` has `error=None` (its first step checked
+  `flux-system/cluster-env` against the key), and a digest-summary issue labelled `msa2-dev` is
+  in `cluster-agent-digest`. ⚠ A manual run is a second process: its log lines go to the exec
+  session, never to `kubectl logs` or Loki, and its counters never reach `/metrics`. So read the
+  printed result, and leave the logs, Loki and the metrics to the scheduled run (Step 7).
+  (Corrected at the final review, 2026-10-17: this step read "no error in `kubectl logs`", which
+  a failed manual run also passes.)
+- [ ] **Step 7:** After the scheduled 06:00 run:
+  - `cluster_agent_run_total{job="cluster-agent",status=~"success|success_quiet"}` exists;
+  - Loki `{namespace="cluster-agent"} |= "agent_run_id"` returns that run's audit lines, and some
+    of them contain `panic` (the positive control);
+  - its summary lists no log pattern in `cluster-agent` (Review Focus 3).
+- [ ] **Step 8:** Token rotation (Review Focus 2). kube-apiserver accepts a kubelet token for a year
+  past its nominal hour (`--service-account-extend-token-expiration`, the default, which Talos
+  leaves on), so "a run after an hour succeeds" would pass with a cached token too. The check that
+  can fail: once the pod has run for more than an hour and a run has happened since, Loki
+  `{pod=~"kube-apiserver-.*"} |= "system:serviceaccount:cluster-agent:cluster-agent" |= "stale-token"`
+  returns nothing. The same query without `|= "stale-token"` is the positive control: the audit
+  policy's catch-all Metadata rule logs this ServiceAccount's requests, with their annotations.
+  Record the evidence in the PR. (Corrected at the final review, 2026-10-17.)
 
 ### Task 16: msa2-prd — its twins, the promotion, the checks
 

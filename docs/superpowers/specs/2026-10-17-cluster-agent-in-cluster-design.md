@@ -368,7 +368,11 @@ Everything else stays as it is.
     `KUBERNETES_SERVICE_PORT` and the CA from
     `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. It reads the token from
     `/var/run/secrets/kubernetes.io/serviceaccount/token` **on every call**: the kubelet rotates
-    it, and a cached token would bring back the expiry outage hourly.
+    it, and a cached token would bring back the expiry outage hourly. *(Correction, final review
+    2026-10-17: with kube-apiserver's default `--service-account-extend-token-expiration`, a
+    cached kubelet token keeps working for a year, so caching would not fail hourly. Re-reading
+    stays right: the extension is a migration aid, and each use of a stale token is marked
+    `stale-token` in the audit log, which the plan's Task 15 checks.)*
   - `tools/kubectl.py` runs kubectl without `--kubeconfig`, in its in-cluster mode, which reads
     the same files.
   - The base64 kubeconfig code goes from both.
