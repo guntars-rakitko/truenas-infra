@@ -282,14 +282,21 @@ selects on `job`, so this relabel is load-bearing (§ 4.7). The agent's Promethe
 stay in `infra-configs` where they are.
 
 **Network policy**, the sms-gateway split:
-- The app ships a namespaced CNP: default deny, DNS, egress to the kube-apiserver on 6443 (the
-  services proxy and kubectl), egress to the world on 443 (the Anthropic and GitHub APIs) and 587
-  (SES SMTP, `email-smtp.eu-north-1.amazonaws.com`).
-- The two cross-namespace flows are CiliumClusterwideNetworkPolicy pairs, egress on the source
-  and ingress on the destination (`per-cluster/msa2-{dev,prd}/ciliumclusterwidenp-cluster-agent.yaml`,
-  like `ciliumclusterwidenp-sms-gateway.yaml`):
-  - `cluster-agent` → Grafana `:3000`, for annotations;
-  - Prometheus → `cluster-agent` `:9595`, the scrape.
+- The app ships a namespaced CNP with:
+  - default deny;
+  - DNS;
+  - egress to the kube-apiserver on 6443, for the services proxy and kubectl (monitoring's rule 3
+    shape);
+  - egress to the world on 443 (the Anthropic and GitHub APIs) and 587 (SES SMTP,
+    `email-smtp.eu-north-1.amazonaws.com`);
+  - ingress from Prometheus (`monitoring`, `app.kubernetes.io/name: prometheus`) on 9595, the
+    shape of sms-gateway's `allow-app-ingress`. Prometheus's egress half already exists:
+    monitoring's rule 4, `allow-prometheus-scrape-cluster`, reaches every pod.
+- The one cross-namespace flow is a CiliumClusterwideNetworkPolicy pair, egress on the source and
+  ingress on the destination: `cluster-agent` → Grafana (`app.kubernetes.io/name: grafana`) on
+  `:3000`, the port behind the Service's 80, for annotations. It goes in
+  `per-cluster/msa2-{dev,prd}/ciliumclusterwidenp-cluster-agent.yaml`, like
+  `ciliumclusterwidenp-sms-gateway.yaml`.
 - ⚠ Check Grafana's ingress against monitoring's rule 21 when writing the pair. Its `ingressDeny`
   keeps monitoring pods other than Prometheus off Grafana `:3000`, and a deny always beats an
   allow.
@@ -397,10 +404,17 @@ Everything else stays as it is.
 - **Alert rules** (kube-infra `prometheus-rules-cluster-agent.yaml`). All four alerts select
   `job="cluster-agent-nas"`: `ClusterAgentDown`, `ClusterAgentNoSuccessfulRun`,
   `ClusterAgentRunsFailing` and `ClusterAgentDispatchErrors`.
-  - That becomes `job="cluster-agent"`. During the transition (dev moved, prd still on the NAS)
-    the selectors match both, `job=~"cluster-agent|cluster-agent-nas"`; the NAS alternative goes
-    at § 5.4. A selector that matches nothing never fires, which is the failure the rules file's
-    own header warns about.
+  - That becomes `job="cluster-agent"`, in the dev PR. It reaches each cluster when that cluster
+    moves, because msa2-dev reconciles kube-infra's `dev` branch and msa2-prd reconciles `main`:
+    - dev's rules switch with dev's agent;
+    - prd keeps watching the NAS agent, then switches with the promotion that brings its own
+      agent.
+  - ⚠ The rules must **not** match both job labels. Until § 5.4, dev's Prometheus still scrapes
+    the NAS agent, which then runs prd's digest. A selector over both jobs would count those prd
+    successes on dev, and hide a failing dev agent.
+  - `ClusterAgentDown` gains `or absent(up{job="cluster-agent"})`. A PodMonitor has no target when
+    the Deployment is gone (pruned, or scaled to 0), and a rule over a series that doesn't exist
+    can't fire. The NAS scrape's static target never had this gap.
   - **The rules assume one process with two runs a day.** Their wording ("2 runs/day, dev 06:00 /
     prd 06:01"; `ClusterAgentRunsFailing`'s "2 = every run failed, 1 = one cluster") and the
     header's "one process scraped by both clusters" become one run a day per process. Each
@@ -444,7 +458,8 @@ Everything else stays as it is.
    - the Kyverno pair;
    - the CCNP pairs;
    - the app (namespaced CNP, PodMonitor, dev's image pin);
-   - the rules and the dashboard matching both job labels.
+   - the rules and the dashboard on `job="cluster-agent"`, which reach prd only with its
+     promotion (§ 4.7).
 5. At the merge, take dev off the NAS: `MODE_A_CLUSTERS=prd` in Doppler and
    `./manage.sh phase apps --only cluster-agent --apply`, so dev is not digested twice. Confirm
    that `process_start_time_seconds` changed (a `/health` reply alone proves nothing).
@@ -507,8 +522,8 @@ Everything else stays as it is.
     - Delete the `flux-system/cluster-agent-readonly` ServiceAccount and its subject in both
       bindings.
     - Delete the `grafana-nas` NodePort and monitoring's rule 18d `allow-grafana-ingress-from-nas`.
-    - Delete the NAS scrape, the `CLUSTER_NAS_DATA_IP` keys, monitoring's rule 18 (§ 4.7) and the
-      `cluster-agent-nas` alternative in the rules and the dashboard. Rule 18a stays (§ 3.5).
+    - Delete the NAS scrape, the `CLUSTER_NAS_DATA_IP` keys and monitoring's rule 18 (§ 4.7).
+      Rule 18a stays (§ 3.5).
     - Prove the old tokens are dead: a read with one of the NAS kubeconfigs answers 401.
 14. **Doppler:** delete the `cluster-agent` project. Its last useful keys now live in
     `infrastructure` (§ 4.5).
@@ -550,7 +565,7 @@ specs, issue references) stay as they are and are not listed.
   - `infrastructure.yaml`: `CLUSTER_NAS_DATA_IP` goes.
   - `apps.yaml`: the new Kustomization.
 - **`flux-cd/infrastructure/configs/per-cluster/msa2-{dev,prd}/`**, new files: the namespace,
-  `ciliumclusterwidenp-cluster-agent.yaml`, `kyverno-policy-verify-cluster-agent.yaml` (and dev's
+  `ciliumclusterwidenp-cluster-agent.yaml` (the Grafana pair), `kyverno-policy-verify-cluster-agent.yaml` (and dev's
   Audit twin), `secrets/cluster-agent-{shr,<env>}.yaml` and
   `secrets/ghcr-readonly-cluster-agent-<env>.yaml`. Changed: the kustomization entries,
   `doppler-rbac-scoped.yaml`, and `secrets/kustomization.yaml`. Prose only:
@@ -676,8 +691,9 @@ Each cross-repo PR links the others, as the workspace's documentation rule asks.
   be admitted. The new legacy ClusterPolicy also adds one entry to kube-infra#1335's migration
   ahead of Kyverno 1.21. § 5.2 step 6 proves admission on dev before prd.
 - **A wrong job label silences the agent's alerts.** A PodMonitor's default job is
-  `cluster-agent/<name>`, not `cluster-agent`. § 4.4's relabel and § 4.7's two-label transition
-  cover it, and § 8's positive control checks the series exists.
+  `cluster-agent/<name>`, not `cluster-agent`. § 4.4's relabel and § 4.7's per-cluster switch
+  cover it, and § 8's positive control checks the series exists. So does an agent with no target
+  at all, which `ClusterAgentDown`'s `absent()` clause covers.
 - **The agent's secrets join shr** (§ 3.7). What the shr token can read, the agent's API key and
   GitHub App key now are too.
 - **The new repo is a fourth cosign signer.** A cosign bump in any one of the four repos breaks
