@@ -937,8 +937,8 @@ sha256 (`63796603…`), `Client: Talos v1.14.2`, and both boxes answered
 
 ⚠ **The staged `talosctl` does NOT track the node version — re-verify after
 every Talos upgrade.** `/mnt/tank/system/talos/talosctl` is its own pinned binary
-(the setup script's `TALOSCTL_VERSION`, default **v1.14.2**, both MS-A2 boxes'
-version since 2026-10-10; v1.14.1 before). Same-minor compatibility was **empirically confirmed** on 2026-07-29
+(the setup script's `TALOSCTL_VERSION`, default **v1.14.4**, both MS-A2 boxes'
+version since 2026-10-18; v1.14.2 from 2026-10-10, v1.14.1 before). Same-minor compatibility was **empirically confirmed** on 2026-07-29
 (a v1.13.2 client plus the real `os:operator` credential authenticating to a
 v1.13.7 node), but a major/minor gap would break the UPS shutdown path
 **silently**, surfacing only during a real outage. The printed check's second
