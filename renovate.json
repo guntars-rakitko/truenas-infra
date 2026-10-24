@@ -21,6 +21,12 @@
       "matchManagers": ["pep621"],
       "matchDepTypes": ["requires-python"],
       "enabled": false
+    },
+    {
+      "description": "`.python-version` (the interpreter `uv run` / `uv sync` pick for the tests; manage.sh builds its own 3.11 venv) is held below 3.15, like kube-infra's CI Python (kube-infra#1580) and cluster-agent's image: PyYAML 6.0.3, its newest release and a direct dependency here, ships no cp315 wheel, so on 3.15 uv builds it from source with unpinned build tools (#217, held 2026-10-24). EXIT: lift this when PyYAML publishes cp315 wheels (yaml/pyyaml#981).",
+      "matchManagers": ["pyenv"],
+      "matchDepNames": ["python"],
+      "allowedVersions": "<3.15"
     }
   ]
 }
