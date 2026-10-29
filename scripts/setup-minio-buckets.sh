@@ -32,6 +32,7 @@ ALIASES=(nas-dev nas-prd)
 # the NAS: an orphan, its state.db copies were never built. Don't re-add them;
 # tests/test_minio_setup_scripts.py fails if this list creates one.
 BUCKETS=(
+    archive              # Long-term archive, NO ILM on purpose: the final GIKS v1 database backup (2026-10-29) and anything else kept for good
     etcd-snapshots       # CronJob — talosctl etcd snapshot
     loki-chunks          # Loki — log chunks (compressed log streams + index)
     mssql-backups        # SQL Server — BACKUP DATABASE TO URL targets

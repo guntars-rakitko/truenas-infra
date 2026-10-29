@@ -441,7 +441,7 @@ in Doppler `infrastructure/ops`).
 **Order of operations after a fresh MinIO bootstrap:**
 
 ```sh
-./scripts/setup-minio-buckets.sh      # 7 buckets per instance (incl. the orphan loki-chunks)
+./scripts/setup-minio-buckets.sh      # 8 buckets per instance (incl. the orphan loki-chunks)
 ./scripts/setup-minio-users.sh        # service user + readwrite policy
 ./scripts/setup-minio-lifecycle.sh    # ILM rules
 ./scripts/setup-minio-encryption.sh   # SSE-S3 default encryption (needs KMS — see script header)
@@ -451,8 +451,8 @@ All four are idempotent and safe to re-run.
 
 #### setup-minio-buckets.sh
 
-Creates the backup buckets on each MinIO instance — **seven** today, one of
-them (`loki-chunks`) an orphan with no consumer (authoritative list = the
+Creates the backup buckets on each MinIO instance — **eight** today, one of
+them (`loki-chunks`) an orphan, plus `archive` (2026-10-29) for things kept for good, with no consumer (authoritative list = the
 `BUCKETS` array in the script; its header deliberately states no count: it said
 "nine" for two buckets after that stopped being true). `tests/test_minio_setup_scripts.py`
 runs `setup-minio-{buckets,encryption,lifecycle}.sh` against a stub `mc` and fails if it creates a
@@ -463,6 +463,7 @@ ILM row targets a bucket whose client prunes it (`loki-chunks`, `pocket-id-lites
 
 | Bucket | Consumer |
 |---|---|
+| `archive` | Long-term archive, kept for good. Holds the final GIKS v1 `GiksDb` backup (`giks-v1/`, taken 2026-10-29 before the v1 box was shut down). ⚠ **No ILM, on purpose**: never add this bucket to `setup-minio-lifecycle.sh` |
 | `etcd-snapshots` | CronJob — `talosctl etcd snapshot` |
 | `loki-chunks` | ⚠ **ORPHAN — no consumer.** Loki has kept chunks and index on its local filesystem PVC since 2026-05-26 and never touches S3 (kube-infra `flux-cd/infrastructure/helmreleases/loki.yaml` header). Still in `BUCKETS`, so every MinIO bootstrap recreates it (the 2026-09-23 rebuild did). Removal pending: drop it from `setup-minio-{buckets,encryption}.sh`, confirm the bucket is empty on both instances, then `mc rb`. |
 | `mssql-backups` | **Legacy GIKS-v1 box** (docker-prd-01) — MSSQL `BACKUP DATABASE TO URL` targets. **Not a K8s-cluster track** — the cluster MSSQL was decommissioned 2026-06-17 (GIKS is on Postgres); only the v1 box still writes here. |
@@ -528,6 +529,7 @@ Current ILM rules:
 
 | Bucket | Expiration | Why |
 |---|---|---|
+| `archive` (both clusters) | **none** | Deliberate: the bucket exists to keep things after their source is gone (the final GIKS v1 backup). An expiry rule here would delete the only copy. |
 | `etcd-snapshots` (dev) | **7 days** | Hourly `talosctl etcd snapshot`. 168 snapshots. Dev cluster state is re-creatable, so a week of hourly granularity is generous. Added 2026-08-07 — see the warning below. |
 | `etcd-snapshots` (prd) | **14 days** | 336 snapshots. Production gets the longer window so a problem noticed a week late still has pre-incident snapshots. |
 | `mssql-backups` (both clusters) | 90 days | Auto-discovered backup chains for dropped DBs would otherwise accumulate forever. 90d is enough for the "I deleted a DB last quarter, need to recover" case while keeping bucket size bounded. |
