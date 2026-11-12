@@ -53,7 +53,7 @@ apps:
     enabled: true
     compose: apps/traefik/docker-compose.yaml
     bind_ip: 10.10.5.20
-    description: "Mgmt-plane reverse proxy (minio-prd/minio-dev consoles, wiki)"
+    description: "Mgmt-plane reverse proxy (minio-prd/minio-dev consoles, wiki, bambuddy)"
 
   - name: wiki
     enabled: true
