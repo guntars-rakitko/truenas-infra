@@ -169,7 +169,7 @@ device-name comparison would have looked like a missing drive when nothing was w
 | NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (every backup bucket, :9000) |
 | NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (every backup bucket, :9000) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
-| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088). PXE/TFTP retired 2026-09-23. |
+| NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088), Bambuddy (:8000). PXE/TFTP retired 2026-09-23. |
 
 Connected to CRS310:
 - `ether7` — tagged trunk, VLANs 10/15/20 (data, NIC1)
@@ -188,6 +188,7 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 | MinIO dev console | S3 admin (dev) | https://minio-dev.w1.lv/ (via Traefik, backend on mgmt VLAN) |
 | MinIO prd S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, SMS-gateway dumps **+ the GIKS v1 MSSQL chain (`mssql-backups/box-prd`)**. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443, and the orphan `cluster-agent` on 2026-10-17: § setup-minio-buckets.sh) | https://s3-prd.w1.lv:9000 (10.10.10.10:9000, direct HTTPS) |
 | MinIO dev S3 API | Cluster backup store (buckets: § setup-minio-buckets.sh) — CNPG Barman WAL+base (giks-db, w1-db), etcd snapshots, Pocket-ID Litestream, SMS-gateway dumps. (`velero`, `longhorn` and `pvc-backups` were deleted at the Q170S1 teardown, 2026-10-06, kube-infra#1443, and the orphan `cluster-agent` on 2026-10-17: § setup-minio-buckets.sh) | https://s3-dev.w1.lv:9000 (10.10.15.10:9000, direct HTTPS) |
+| Bambuddy | Bambu Lab printer control + spool inventory (since 2026-11-12). Docs, workflow and its Git backups: private repo [`3d-printing`](https://github.com/guntars-rakitko/3d-printing). ⚠ The hostname is in every spool's QR label: never rename it | https://bambuddy.w1.lv/ (via Traefik, backend 10.10.5.10:8000) |
 | NUT server | UPS monitoring (1x APC Smart-UPS) | 10.10.5.10:3493 |
 | SMB general share | Home file storage | 10.10.20.10 |
 | Plex / Torrent | (deferred) | VLAN 20 |
@@ -205,7 +206,7 @@ Service-to-interface binding is enforced in TrueNAS. Kube backup targets are Min
 > homelab was removed **2026-09-13**, so `traefik-nas.w1.lv` has not existed
 > since then. It sat here for ten days and caused a permanent false failure in
 > the verify matrix.
-> Surviving apps: **minio-prd, minio-dev, traefik, wiki.** cluster-agent, the fifth until
+> Surviving apps: **minio-prd, minio-dev, traefik, wiki** (+ **bambuddy**, added 2026-11-12). cluster-agent, the fifth until
 > 2026-10-17, left the NAS for the clusters (§ cluster-agent).
 
 All browser-facing services serve a valid Let's Encrypt `*.w1.lv` cert.
@@ -287,10 +288,12 @@ Live design — source of truth is `config/storage.yaml` (consumed by
   `tank/kube/{prd,dev}/minio` is tracked in #152, after the MS-A2 cutover. (Longhorn
   datasets **removed 2026-04-27** — Longhorn → MinIO S3, kube-infra #26),
   `tank/media/{plex,torrent}`, `tank/shared/general`, and `tank/system/*`
-  (apps-config/{nut,traefik,wiki}, tls). ⚠ `pxe` and `stress-results` were
+  (apps-config/{nut,traefik,wiki,bambuddy}, tls). ⚠ `pxe` and `stress-results` were
   removed 2026-09-23 with their apps.
 - **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
   `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
+  ⚠ **Not live:** none of these tasks exists since the 2026-09-23 rebuild, and `tank` has
+  no snapshots (read 2026-11-12). The block left `config/storage.yaml` in e3d5663: #222.
 - **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
 
 ---

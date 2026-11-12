@@ -40,6 +40,15 @@ http:
       service: wiki
       entryPoints: [websecure]
       tls: {}
+    # Bambuddy — Bambu Lab printer control + spool inventory (apps/bambuddy).
+    # ⚠ The hostname is printed in every spool's QR label: never rename it.
+    # HTTPS is what lets its live QR scanner open on a phone. Traefik passes
+    # WebSocket upgrades through by default, which the UI needs.
+    bambuddy:
+      rule: "Host(`bambuddy.w1.lv`)"
+      service: bambuddy
+      entryPoints: [websecure]
+      tls: {}
   services:
     minio-prd-console:
       loadBalancer:
@@ -63,6 +72,11 @@ http:
           # nginx:alpine in the `wiki` Custom App. Host port 8088 chosen
           # clear of every other service bound on 10.10.5.10.
           - url: "http://10.10.5.10:8088"
+    bambuddy:
+      loadBalancer:
+        servers:
+          # Plain HTTP; host port 8000, mgmt-VLAN bind only.
+          - url: "http://10.10.5.10:8000"
   serversTransports:
     insecure-backend:
       insecureSkipVerify: true

@@ -5,6 +5,7 @@ Live apps (authoritative list is config/apps.yaml, NOT this docstring):
   * minio-dev     → 10.10.15.10 (S3 for Velero/Longhorn/backups, dev)
   * traefik       → 10.10.5.20  (mgmt-VLAN ingress for the NAS admin UIs)
   * wiki          → nginx serving the MkDocs site
+  * bambuddy      → 10.10.5.10:8000 (Bambu Lab printer control + spool inventory)
 
 Declared but `enabled: false`: plex, qbittorrent.
 
@@ -759,7 +760,3 @@ def _ensure_tls_rotate_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
              content_verified=(rotate_diff.after or {}).get("content_verified"))
     log.info("tls_rotate_cronjob_ensured",
              action=cron_diff.action, changed=cron_diff.changed)
-
-
-
-

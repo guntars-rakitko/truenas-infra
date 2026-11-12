@@ -1,0 +1,49 @@
+# Bambuddy — self-hosted control, monitoring and spool inventory for the Bambu Lab
+# printer (LAN Only Mode, no Bambu cloud). Upstream: https://github.com/maziggy/bambuddy,
+# docs https://wiki.bambuddy.cool. Everything about the printer side (workflow, backups,
+# the printer-arrival checklist) is in the PRIVATE repo guntars-rakitko/3d-printing;
+# ⚠ this repo is public, so nothing from Bambuddy (backups, serials, access codes) goes here.
+#
+# Fronted by Traefik (bambuddy.w1.lv → http://10.10.5.10:8000), see
+# apps/traefik/routes.yaml. HTTPS is required, not optional: Bambuddy's live QR scanner
+# (Inventory → Assign by QR) only opens over HTTPS. ⚠ The hostname is printed in every
+# spool's QR label, so it must never change.
+#
+# ⚠ BRIDGE, NOT HOST NETWORKING (upstream's compose uses host). Host networking would put
+# the UI and the virtual-printer ports on every NAS address, prd and dev VLANs included.
+# The cost is no SSDP printer discovery: the printer is added by IP (fixed DHCP lease).
+# Outbound to the printer on the home VLAN leaves through the NAS's own 10.10.20.10 leg
+# (same network segment), so no router rule is involved.
+# The virtual printer (ports 990/8883/3000/3002/6000/322/50000+) is NOT published; add
+# ports here if it is ever turned on.
+#
+# Image: stable releases only, pinned by version AND digest (Renovate keeps both in step).
+# Never `:daily`. The entrypoint starts as root, chowns /app/data and /app/logs to
+# PUID:PGID, then drops to that user; 568 is TrueNAS's `apps` user.
+services:
+  bambuddy:
+    image: ghcr.io/maziggy/bambuddy:1.3.1@sha256:3b63f6b02ab77075716a6295d6f8ca27b98283580753b911b3841dcd9972a110
+    container_name: bambuddy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      # Mgmt VLAN bind only. 8000 is Bambuddy's default, clear of :8088 wiki,
+      # :9001/:9011 MinIO consoles and the TrueNAS UI's 80/443.
+      - "10.10.5.10:8000:8000"
+    environment:
+      - TZ=Europe/Riga
+      - PUID=568
+      - PGID=568
+      - PORT=8000
+    volumes:
+      # Dataset tank/system/apps-config/bambuddy (config/storage.yaml). Holds
+      # bambuddy.db (SQLite), the 3MF archive and Bambuddy's own scheduled backups
+      # (data/backups/). ⚠ No ZFS snapshot task covers tank today (#222).
+      - /mnt/tank/system/apps-config/bambuddy/data:/app/data
+      - /mnt/tank/system/apps-config/bambuddy/logs:/app/logs
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
