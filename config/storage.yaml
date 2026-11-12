@@ -147,8 +147,9 @@ datasets:
   - name: tank/system/apps-config/bambuddy
     # Bambuddy's /app/data (SQLite DB, 3MF archive, its own scheduled backups
     # in data/backups/) and /app/logs, bind-mounted read-write by the
-    # `bambuddy` Custom App. Covered by the tank/system snapshot task; the
-    # off-NAS copy is Bambuddy's Git backup to the private 3d-printing repo.
+    # `bambuddy` Custom App. ⚠ No ZFS snapshot task covers it (or anything on
+    # tank) today: #222. The off-NAS copy is Bambuddy's Git backup to the
+    # private 3d-printing repo.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.

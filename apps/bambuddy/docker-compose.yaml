@@ -36,9 +36,9 @@ services:
       - PGID=568
       - PORT=8000
     volumes:
-      # Dataset tank/system/apps-config/bambuddy (config/storage.yaml), inside the
-      # tank/system snapshot task. Holds bambuddy.db (SQLite), the 3MF archive and
-      # Bambuddy's own scheduled backups (data/backups/).
+      # Dataset tank/system/apps-config/bambuddy (config/storage.yaml). Holds
+      # bambuddy.db (SQLite), the 3MF archive and Bambuddy's own scheduled backups
+      # (data/backups/). ⚠ No ZFS snapshot task covers tank today (#222).
       - /mnt/tank/system/apps-config/bambuddy/data:/app/data
       - /mnt/tank/system/apps-config/bambuddy/logs:/app/logs
     networks:

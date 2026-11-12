@@ -292,6 +292,8 @@ Live design — source of truth is `config/storage.yaml` (consumed by
   removed 2026-09-23 with their apps.
 - **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
   `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
+  ⚠ **Not live:** none of these tasks exists since the 2026-09-23 rebuild, and `tank` has
+  no snapshots (read 2026-11-12). The block left `config/storage.yaml` in e3d5663: #222.
 - **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
 
 ---
