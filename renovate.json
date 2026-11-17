@@ -50,7 +50,8 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "MinIO AIStor uses non-semver RELEASE.<ISO8601> tags. Map year->major, month->minor, day->patch and the time as build so newer releases sort higher. ⚠ HELD BEHIND DASHBOARD APPROVAL since 2026-10-10: from RELEASE.2026-09-19 the Free tier refuses every write to a bucket with SSE-S3 configured (all our backup buckets) and stores other writes in plaintext (tested with our licence, CLAUDE.md § Object store). Renovate lists new releases on the Dependency Dashboard and opens a PR only when ticked there. pinDigests keeps the @sha256 in sync.",
+      "description": "MinIO AIStor uses non-semver RELEASE.<ISO8601> tags. Map year->major, month->minor, day->patch and the time as build so newer releases sort higher. ⚠ HELD BEHIND DASHBOARD APPROVAL since 2026-10-10: from RELEASE.2026-09-19 the Free tier refuses every write to a bucket with SSE-S3 configured (all our backup buckets) and stores other writes in plaintext (tested with our licence, CLAUDE.md § Object store). Renovate lists new releases on the Dependency Dashboard and opens a PR only when ticked there. pinDigests keeps the @sha256 in sync. Its own groupName keeps it out of the weekly routine group: Renovate holds a whole group for approval when one update in it needs approval, so without it the routine PR never opened (truenas-infra#227).",
+      "groupName": "minio aistor",
       "dependencyDashboardApproval": true,
       "matchDatasources": ["docker"],
       "matchPackageNames": ["quay.io/minio/aistor/minio"],
