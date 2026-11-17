@@ -17,15 +17,15 @@ dependencies = [
     "truenas-api-client @ git+https://github.com/truenas/api_client.git@TS-25.10.3",
     "structlog>=26.1.0",
     "PyYAML>=6.0.3",
-    "click>=8.5.0",
+    "click>=8.5.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.0",
-    "ruff>=0.17.2",
-    "mypy>=2.4.0",
-    "types-PyYAML>=6.0.12.20260906",
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
+    "mypy>=2.4.1",
+    "types-PyYAML>=6.0.12.20261113",
 ]
 
 [project.scripts]

@@ -571,14 +571,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.5.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.4.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.0" },
+    { name = "click", specifier = ">=8.5.1" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.4.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.2.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.17.2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.17.5" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "truenas-api-client", git = "https://github.com/truenas/api_client.git?rev=TS-25.10.3" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20260906" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20261113" },
 ]
 provides-extras = ["dev"]
 
