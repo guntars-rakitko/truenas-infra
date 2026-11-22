@@ -21,7 +21,8 @@ serving everything it should, and nothing it shouldn't.
 | All datasets present | `ssh truenas_admin@10.10.5.10 zfs list -r tank` | every dataset in `config/storage.yaml` present (20 under `tank`) |
 | SMART | not verifiable via the API on 25.10 (`smart.*` was removed; `phase storage-tasks` logs a skip) — `ssh -t truenas_admin@10.10.5.10 'sudo smartctl -H /dev/nvmeX'` for each of the 4 NVMe drives (match by serial). `-t` because `smartctl` is not on the NOPASSWD sudo allowlist, so sudo prompts for the password (CLAUDE.md § SSH + sudo on NAS) | `PASSED` on all 4 |
 | Scrub schedule | `midclt call pool.scrub.query` | 1 task, weekly |
-| Snapshot schedule | `midclt call pool.snapshottask.query` | 7 tasks |
+| Snapshot schedule | `midclt call pool.snapshottask.query` (also checked by `phase verify`) | 5 tasks, all enabled: one per `snapshots:` entry in `config/storage.yaml` |
+| Snapshots taken | `zfs list -H -t snapshot -o name -r tank \| grep -c @auto-` | > 0 the day after an apply, none of them under `tank/system/apps-config/wiki` |
 
 ## Shares
 

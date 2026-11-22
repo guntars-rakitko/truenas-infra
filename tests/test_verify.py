@@ -142,6 +142,53 @@ def test_check_datasets_fails_when_missing() -> None:
     assert "tank/kube/dev" in r.message
 
 
+# ─── check_snapshot_tasks (#222) ─────────────────────────────────────────────
+
+
+def test_check_snapshot_tasks_passes_when_each_dataset_has_an_enabled_task() -> None:
+    from truenas_infra.modules.verify import check_snapshot_tasks
+
+    cli = _mk_cli([[
+        {"dataset": "tank/kube/prd", "enabled": True},
+        {"dataset": "tank/system", "enabled": True},
+    ]])
+    r = check_snapshot_tasks(cli, expected=("tank/kube/prd", "tank/system"))
+    assert r.passed is True
+
+
+def test_check_snapshot_tasks_fails_when_none_exist() -> None:
+    """#222: the live state for two months after the 2026-09-23 rebuild."""
+    from truenas_infra.modules.verify import check_snapshot_tasks
+
+    cli = _mk_cli([[]])
+    r = check_snapshot_tasks(cli, expected=("tank/kube/prd", "tank/system"))
+    assert r.passed is False
+    assert "tank/kube/prd" in r.message and "tank/system" in r.message
+
+
+def test_check_snapshot_tasks_fails_when_a_task_is_disabled() -> None:
+    from truenas_infra.modules.verify import check_snapshot_tasks
+
+    cli = _mk_cli([[
+        {"dataset": "tank/kube/prd", "enabled": True},
+        {"dataset": "tank/system", "enabled": False},
+    ]])
+    r = check_snapshot_tasks(cli, expected=("tank/kube/prd", "tank/system"))
+    assert r.passed is False
+    assert "tank/system" in r.message
+
+
+def test_check_snapshot_tasks_fails_when_nothing_is_declared() -> None:
+    """An empty declaration is how #222 happened: the block left the YAML,
+    so a check derived from it must not pass vacuously."""
+    from truenas_infra.modules.verify import check_snapshot_tasks
+
+    cli = _mk_cli([[{"dataset": "tank/kube/prd", "enabled": True}]])
+    r = check_snapshot_tasks(cli, expected=())
+    assert r.passed is False
+    assert "declared" in r.message
+
+
 # ─── run() orchestration ─────────────────────────────────────────────────────
 
 
@@ -169,6 +216,11 @@ _ROUTER_RECORDS: dict[str, str] = {
     "router.w1.lv": "10.10.0.1",
     "admin-dev.giks.lv": "10.10.15.20",
 }
+
+
+_SNAPSHOT_DATASETS = (
+    "tank/kube/prd", "tank/kube/dev", "tank/media", "tank/shared/general", "tank/system",
+)
 
 
 def _all_pass_cli() -> MagicMock:
@@ -199,6 +251,9 @@ def _all_pass_cli() -> MagicMock:
         [{"name": "bambuddy", "state": "RUNNING"}],
         # cert expiry
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
+        # snapshot tasks — one enabled task per `snapshots:` dataset in
+        # config/storage.yaml (#222)
+        [{"dataset": d, "enabled": True} for d in _SNAPSHOT_DATASETS],
     ])
 
 
@@ -237,6 +292,7 @@ def test_run_returns_zero_when_all_pass(monkeypatch, tmp_path) -> None:
     rc, events = _run_and_capture(_all_pass_cli())
 
     assert rc == 0
+    assert events["snapshot tasks"]["event"] == "check_passed"
     dns = events["dns records"]
     assert dns["event"] == "check_passed"
     n = len(_ROUTER_RECORDS)
@@ -382,6 +438,7 @@ def test_run_returns_nonzero_when_any_fail(monkeypatch) -> None:
         [{"name": "wiki", "state": "RUNNING"}],
         [{"name": "bambuddy", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
+        [{"dataset": d, "enabled": True} for d in _SNAPSHOT_DATASETS],
     ])
 
     rc = run(cli, _Ctx(apply=False), only=None)
@@ -546,6 +603,7 @@ def test_run_fails_when_a_new_app_is_missing(monkeypatch) -> None:
         [{"name": "homepage", "state": "RUNNING"}],
         [{"name": "amtctl", "state": "RUNNING"}],
         [{"id": 3, "name": "w1-wildcard", "parsed": {"days_left": 70}}],
+        [{"dataset": d, "enabled": True} for d in _SNAPSHOT_DATASETS],
     ])
 
     rc = run(cli, _Ctx(apply=False), only=None)

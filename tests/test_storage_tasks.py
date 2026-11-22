@@ -87,6 +87,15 @@ def test_parse_cron_day_range() -> None:
     }
 
 
+def test_schedule_matches_ignores_zero_padding() -> None:
+    """TrueNAS's own default scrub task stores minute "00"; "0" is the same."""
+    from truenas_infra.modules.storage_tasks import _parse_cron, _schedule_matches
+
+    live = {"minute": "00", "hour": "04", "dom": "*", "month": "*", "dow": "7"}
+    assert _schedule_matches(live, _parse_cron("0 4 * * 7")) is True
+    assert _schedule_matches(live, _parse_cron("0 0 * * 7")) is False
+
+
 # ─── ensure_scrub_task ───────────────────────────────────────────────────────
 
 
@@ -297,3 +306,132 @@ def test_run_orchestrates_all_three(tmp_path: Path) -> None:
     assert "pool.scrub.create" in names
     assert names.count("smart.test.create") == 2
     assert "pool.snapshottask.create" in names
+
+
+# ─── exclude (recursive tasks) ───────────────────────────────────────────────
+
+
+def test_load_parses_snapshot_exclude(tmp_path: Path) -> None:
+    from truenas_infra.modules.storage_tasks import load_storage_tasks_config
+
+    yaml_file = tmp_path / "storage.yaml"
+    yaml_file.write_text(
+        textwrap.dedent(
+            """
+            snapshots:
+              - dataset: tank/system
+                recursive: true
+                exclude:
+                  - tank/system/apps-config/wiki
+                schedule: "30 2 * * *"
+                retention_days: 7
+            """
+        ).strip()
+    )
+    cfg = load_storage_tasks_config(yaml_file)
+    assert cfg.snapshots[0].exclude == ("tank/system/apps-config/wiki",)
+
+
+def _system_spec(exclude: tuple[str, ...] = ("tank/system/apps-config/wiki",)):
+    from truenas_infra.modules.storage_tasks import SnapshotTaskSpec
+
+    return SnapshotTaskSpec(
+        dataset="tank/system",
+        schedule="30 2 * * *",
+        lifetime_value=7,
+        lifetime_unit="DAY",
+        recursive=True,
+        exclude=exclude,
+    )
+
+
+def _live_system(exclude: list[str]) -> dict:
+    return {
+        "id": 5,
+        "dataset": "tank/system",
+        "recursive": True,
+        "exclude": exclude,
+        "lifetime_value": 7,
+        "lifetime_unit": "DAY",
+        "schedule": {"minute": "30", "hour": "2", "dom": "*", "month": "*", "dow": "*"},
+    }
+
+
+def test_ensure_snapshot_task_sends_exclude_on_create() -> None:
+    from truenas_infra.modules.storage_tasks import ensure_snapshot_task
+
+    cli = _mk_cli([[], {"id": 5}])
+    ensure_snapshot_task(cli, spec=_system_spec(), apply=True)
+    create = next(c for c in cli.call.call_args_list if c.args[0] == "pool.snapshottask.create")
+    assert create.args[1]["exclude"] == ["tank/system/apps-config/wiki"]
+
+
+def test_ensure_snapshot_task_updates_when_exclude_differs() -> None:
+    from truenas_infra.modules.storage_tasks import ensure_snapshot_task
+
+    live = _live_system([])
+    cli = _mk_cli([[live], {**live, "exclude": ["tank/system/apps-config/wiki"]}])
+    diff = ensure_snapshot_task(cli, spec=_system_spec(), apply=True)
+    assert diff.changed is True
+    update = next(c for c in cli.call.call_args_list if c.args[0] == "pool.snapshottask.update")
+    assert update.args[2]["exclude"] == ["tank/system/apps-config/wiki"]
+
+
+def test_ensure_snapshot_task_noop_when_exclude_matches() -> None:
+    from truenas_infra.modules.storage_tasks import ensure_snapshot_task
+
+    cli = _mk_cli([[_live_system(["tank/system/apps-config/wiki"])]])
+    diff = ensure_snapshot_task(cli, spec=_system_spec(), apply=True)
+    assert diff.changed is False
+
+
+# ─── The repo's own config/storage.yaml (#222) ───────────────────────────────
+#
+# ⚠ The whole storage-tasks block (scrub, SMART, snapshots) left
+# config/storage.yaml in e3d5663 during the 2026-09-23 pool rebuild. The
+# rebuild recreated `tank`, so the old tasks went with it, and `phase
+# storage-tasks --apply` then had nothing to recreate: tank went two months
+# with no snapshot at all. These tests fail if the block goes again.
+
+REPO_STORAGE_YAML = Path(__file__).resolve().parent.parent / "config" / "storage.yaml"
+
+# What #222 restores. Each must have a task, not just be covered by a parent's.
+_SNAPSHOTTED = (
+    "tank/kube/prd",
+    "tank/kube/dev",
+    "tank/media",
+    "tank/shared/general",
+    "tank/system",
+)
+
+# Datasets another tool creates, renames and DELETES with a non-recursive
+# pool.dataset.delete: ZFS refuses to destroy a dataset that has snapshots, so
+# a recursive task covering one of these breaks that tool. The wiki deploy
+# swaps tank/system/apps-config/wiki/{site,site-next,site-prev} (wiki#295).
+_TOOL_OWNED = ("tank/system/apps-config/wiki",)
+
+
+def test_repo_config_declares_tank_snapshot_tasks() -> None:
+    from truenas_infra.modules.storage_tasks import load_storage_tasks_config
+
+    cfg = load_storage_tasks_config(REPO_STORAGE_YAML)
+    declared = {s.dataset for s in cfg.snapshots}
+    missing = [d for d in _SNAPSHOTTED if d not in declared]
+    assert not missing, f"no snapshot task for {missing} (#222)"
+    assert cfg.scrub is not None, "no scrub schedule declared for tank (#222)"
+
+
+def test_repo_config_recursive_tasks_exclude_tool_owned_datasets() -> None:
+    from truenas_infra.modules.storage_tasks import load_storage_tasks_config
+
+    cfg = load_storage_tasks_config(REPO_STORAGE_YAML)
+    for spec in cfg.snapshots:
+        for owned in _TOOL_OWNED:
+            covers = owned == spec.dataset or (
+                spec.recursive and owned.startswith(spec.dataset + "/")
+            )
+            if covers:
+                assert owned in spec.exclude, (
+                    f"the {spec.dataset} task snapshots {owned}, whose tool deletes "
+                    "datasets non-recursively; add it to that task's exclude"
+                )

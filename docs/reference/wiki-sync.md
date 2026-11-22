@@ -29,7 +29,7 @@ cd ~/github/wiki && ./tools/deploy.sh --verify
 ```
 
 The verify matrix (`./manage.sh phase verify`) catches structural drift
-(DNS resolution, TLS SAN coverage, cert expiry, app state). Its DNS check
+(DNS resolution, TLS SAN coverage, cert expiry, app state, snapshot tasks). Its DNS check
 vets **every record the router declares**: it reads mikrotik-infra
 `configs/dns.yaml` at `origin/main` from the sibling clone
 (`~/github/mikrotik-infra`, override `MIKROTIK_INFRA_DIR` / `MIKROTIK_DNS_REF`)

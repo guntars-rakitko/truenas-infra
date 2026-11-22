@@ -38,7 +38,7 @@ services:
     volumes:
       # Dataset tank/system/apps-config/bambuddy (config/storage.yaml). Holds
       # bambuddy.db (SQLite), the 3MF archive and Bambuddy's own scheduled backups
-      # (data/backups/). ⚠ No ZFS snapshot task covers tank today (#222).
+      # (data/backups/). The tank/system snapshot task covers it (7 d, #222).
       - /mnt/tank/system/apps-config/bambuddy/data:/app/data
       - /mnt/tank/system/apps-config/bambuddy/logs:/app/logs
     networks:
