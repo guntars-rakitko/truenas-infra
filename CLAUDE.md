@@ -70,7 +70,8 @@ each, is in [docs/README.md](docs/README.md).
   site down). Only the NAS's own upsmon holds it: never put it in `shr`, a cluster or a remote client. The nut-exporters
   read anonymously; a remote client that needs a login gets its own `nut.extra_users` entry
   ([secrets.md](docs/reference/secrets.md), [ups-nut.md](docs/reference/ups-nut.md)).
-- **The NOPASSWD sudo allowlist stays tight**: one line per binary, never a wildcard. `midclt call user.update`
+- **The NOPASSWD sudo allowlist stays tight**: one line per command, scoped to one binary (and one app), never a
+  blanket wildcard such as `/usr/bin/docker *`. `midclt call user.update`
   prints password hashes, so its output goes to `>/dev/null` ([secrets.md](docs/reference/secrets.md)).
 - **UPS orchestrator: merged ≠ live.** The NAS runs the copy staged under `/mnt/tank/system/talos/`. Re-stage with
   `scripts/setup-talos-shutdown-orchestrator.sh` from an up-to-date `main`, and check that the staged sha256 equals the
