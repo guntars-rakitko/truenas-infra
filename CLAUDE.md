@@ -24,7 +24,7 @@ each, is in [docs/README.md](docs/README.md).
 | § Related Repositories, § Related Repos | deleted: the workspace `CLAUDE.md` owns the repo list |
 | § Wiki maintenance | [docs/reference/wiki-sync.md](docs/reference/wiki-sync.md) |
 | § Version Policy, § The REST API is removed in 26.0 | [docs/reference/versions.md](docs/reference/versions.md) |
-| § 25.10.3.1 → 25.10.7 | [docs/history/upgrade-25.10.7.md](docs/history/upgrade-25.10.7.md) |
+| § 25.10.3.1 → 25.10.7, the nvme1/nvme2 swap (cited as § Version Policy) | [docs/history/upgrade-25.10.7.md](docs/history/upgrade-25.10.7.md) |
 | § Hardware | [docs/reference/hardware.md](docs/reference/hardware.md) |
 | § Network | [docs/reference/network.md](docs/reference/network.md) |
 | § Planned Services (the retired-services note: [docs/history/retired-services.md](docs/history/retired-services.md)) | [docs/reference/services.md](docs/reference/services.md) |
@@ -48,9 +48,10 @@ each, is in [docs/README.md](docs/README.md).
 - **Match drives by serial, never by `nvmeN`**: enumeration reshuffles across reboots, upgrades and rebuilds
   ([hardware.md](docs/reference/hardware.md), [storage.md](docs/reference/storage.md)).
 - **NVMe dropouts: read [nvme-dropout-forensics.md](docs/nvme-dropout-forensics.md) before acting.** A warm reboot
-  does not clear a hung controller; only a full power-off does. The rail mitigations reduce the odds and are not a
-  cure, so an upgrade or other write burst is an elevated-risk operation, done with physical power access
-  ([nvme-rail.md](docs/reference/nvme-rail.md)).
+  is not enough, because the M.2 rail stays energised. Its § Recovery procedure gives the order: PCI remove and
+  rescan, then a full power-off, then a reseat. The rail mitigations reduce the odds and are not a cure
+  ([nvme-rail.md](docs/reference/nvme-rail.md)). So an upgrade or another write burst is an elevated-risk operation,
+  done with physical power access ([upgrade-25.10.7.md](docs/history/upgrade-25.10.7.md)).
 - **MinIO: no upgrade to RELEASE.2026-09-19 or later on the Free tier.** It ends the Free tier's encryption, and PUTs
   into encrypted buckets fail. Renovate holds it behind approval; the way forward is a decision
   ([minio.md](docs/reference/minio.md)). AIStor needs its licence file even on the Free tier; naming stays `minio-*`.
@@ -89,7 +90,7 @@ each, is in [docs/README.md](docs/README.md).
 
 - Branch work in `~/github/_worktrees/truenas-infra/<topic>` (the workspace `/worktree`), then a PR into `main`.
   `main` is squash-only and requires `agent-review`; merge with `/ship`. There is no CI workflow: run the tests
-  yourself (`uv run pytest`, plus `ruff` and `mypy` for `src/`).
+  yourself (`uv run --extra dev pytest`, plus `ruff` and `mypy` for `src/`, from the same `dev` extra).
 - A phase change: run `./manage.sh preflight` and `./manage.sh phase <name>` (a dry run) before the PR, and put the
   diff in its test plan. `--apply` runs after the merge, from an up-to-date `main`, in the main session (workspace
   rule: subagents are read-only on the NAS). Then run `./manage.sh phase verify`.
@@ -124,8 +125,9 @@ docs/                 # reference/, runbooks/, history/, plus the wiki-mapped ru
 ## Where new content goes
 
 Current state goes in the matching `docs/reference/` file, procedures in `docs/runbooks/`, and history in
-`docs/history/` or git. None of it goes back into this file. The `docs/*.md` files at the top level are mapped into
-the wiki one by one. Delete or rename one only together with its wiki mapping, and merge the wiki side first
+`docs/history/` or git. None of it goes back into this file. Most top-level `docs/*.md` files (`runbook.md`, `recovery.md`, …;
+not the index `docs/README.md`) are mapped into the wiki one by one, in the wiki's `sync-map.yaml`. Delete or rename a
+mapped one only together with its wiki mapping, and merge the wiki side first
 ([wiki-sync.md](docs/reference/wiki-sync.md)).
 
 ## Verification bar
