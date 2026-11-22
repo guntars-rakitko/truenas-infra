@@ -1,0 +1,76 @@
+# truenas-infra#233: the CLAUDE.md slim's manifest, read by dotfiles claude/bin/claude-md-slim.py (workspace
+# restructure Phase 4, epic dotfiles#146; recipe: dotfiles docs/superpowers/plans/2026-10-10-workspace-restructure-
+# roadmap.md § Per-repo slimming recipe). Generated from CLAUDE.md at origin/main 51daa2d; a rebase re-runs it.
+# Every section moves verbatim. Rewrites of stale text wait for the trial week (operator, 2026-11-22).
+ref: truenas-infra#233
+date: 2026-11-22
+new: [README.md, docs/history/slim-2026-11/*.json, docs/history/slim-2026-11/manifest*.yaml]   # README.md: one hand-edited line, commit 2
+entries:
+  - heading: "CLAUDE.md — truenas-infra"
+    core: true
+  - heading: "Overview"
+    core: true
+  - heading: "Related Repositories"
+    delete: true
+    reason: "the workspace CLAUDE.md owns the repo list and who owns which facts (roadmap 0.2)"
+  - heading: "Wiki maintenance"
+    to: docs/reference/wiki-sync.md
+    title: "Wiki sync reference"
+  - heading: "Version Policy"
+    to: docs/reference/versions.md
+    title: "TrueNAS version reference"
+  - heading: "25.10.3.1 → 25.10.7 (2026-09-13)"
+    to: docs/history/upgrade-25.10.7.md
+    title: "TrueNAS 25.10.7 upgrade, history"
+  - heading: "Hardware"
+    to: docs/reference/hardware.md
+    title: "Hardware reference"
+  - heading: "Network"
+    # Moved, not deleted: mikrotik-infra (the IP plan's owner) lacks the NAS's three data-VLAN addresses,
+    # mikrotik-infra#127 (owner check 2026-11-22). The binding columns are NAS facts.
+    to: docs/reference/network.md
+    title: "Network reference"
+  - heading: "Planned Services"
+    to: docs/reference/services.md
+    title: "Services reference"
+  - heading: "Planned Services"
+    blocks: ["> ⚠ **RETIRED 2026-09-23"]
+    to: docs/history/retired-services.md
+    title: "Retired NAS services, history"
+  - heading: "Policy for adding new services"
+    to: docs/runbooks/add-a-service.md
+    title: "Runbook: add a service"
+  - heading: "Storage Design"
+    to: docs/reference/storage.md
+    title: "Storage reference"
+  - heading: "NVMe 3.3V-rail mitigations"
+    to: docs/reference/nvme-rail.md
+    title: "NVMe rail reference"
+  - heading: "API Configuration Approach"
+    to: docs/reference/api.md
+    title: "API approach reference"
+  - heading: "Object store: MinIO AIStor Free"
+    to: docs/reference/minio.md
+    title: "MinIO reference"
+  - heading: "MinIO bucket internals (buckets, users, lifecycle, encryption)"
+    to: docs/reference/minio.md
+  - heading: "cluster-agent: moved to its own repo (2026-10-17)"
+    to: docs/history/cluster-agent.md
+    title: "cluster-agent on the NAS, history"
+  - heading: "Secrets — Doppler `infrastructure/ops`"
+    # Takes its sub-section § SSH + sudo on NAS, and the per-app keys, inspect and recovery paragraphs that
+    # sit below that sub-heading in the old file.
+    to: docs/reference/secrets.md
+    title: "Secrets reference"
+  - heading: "UPS / NUT (canonical home for cluster-wide UPS state)"
+    to: docs/reference/ups-nut.md
+    title: "UPS and NUT reference"
+  - heading: "UPS / NUT (canonical home for cluster-wide UPS state)"
+    blocks: ["**HISTORY — superseded:**", "**2026-05-31 (history)"]
+    to: docs/history/ups-nut.md
+    title: "UPS and NUT, history"
+  - heading: "File Structure"
+    core: true
+  - heading: "Related Repos"
+    delete: true
+    reason: "a pointer to § Related Repositories, which the workspace CLAUDE.md now owns"

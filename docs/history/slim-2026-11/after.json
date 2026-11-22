@@ -1,0 +1,79 @@
+{
+ "note": "truenas-infra#233 slim after-runs, 2026-11-22. repo: tasks 2, 3 and 5 on the PR's branch (recall-check.py --repo-dir, the slim's worktree), first at 2ac8c85 and again at 18f45d5 after the pre-review fixes to the core (repo_final). root and subagent run after the merge, once the main checkout is fast-forwarded (operator's go, 2026-11-22); their results go on truenas-infra#233. Grades only, as at baseline. The SHAs are the rebased ones (the branch was rebased onto 3da662b, whose only change is one link in docs/nvme-dropout-forensics.md; CLAUDE.md is byte-identical).",
+ "context_cost": {
+  "method": "as baseline.json, reading the worktree's README.md",
+  "repo_tokens": 47774,
+  "control_tokens": 43441,
+  "added_on_first_touch": 4333
+ },
+ "repo": {
+  "model": "opus",
+  "at": "20261122T121031Z",
+  "mode": "repo",
+  "repo_dir": "the slim's worktree",
+  "runs": [
+   {
+    "id": "2",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 87573,
+    "seconds": 27.2
+   },
+   {
+    "id": "3",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 88754,
+    "seconds": 24.3
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 128525,
+    "seconds": 25.4
+   }
+  ]
+ },
+ "context_cost_final": {
+  "method": "as context_cost, at 18f45d5",
+  "repo_tokens": 47906,
+  "control_tokens": 43441,
+  "added_on_first_touch": 4465
+ },
+ "repo_final": {
+  "model": "opus",
+  "at": "20261122T122108Z",
+  "mode": "repo",
+  "repo_dir": "the slim's worktree",
+  "runs": [
+   {
+    "id": "2",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 91318,
+    "seconds": 23.8
+   },
+   {
+    "id": "3",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 120771,
+    "seconds": 27.7
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 88936,
+    "seconds": 25.5
+   }
+  ]
+ }
+}
