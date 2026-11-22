@@ -4,7 +4,7 @@
 # Every section moves verbatim. Rewrites of stale text wait for the trial week (operator, 2026-11-22).
 ref: truenas-infra#233
 date: 2026-11-22
-new: [docs/history/slim-2026-11/*.json, docs/history/slim-2026-11/manifest*.yaml]
+new: [README.md, docs/history/slim-2026-11/*.json, docs/history/slim-2026-11/manifest*.yaml]   # README.md: one hand-edited line, commit 2
 entries:
   - heading: "CLAUDE.md — truenas-infra"
     core: true

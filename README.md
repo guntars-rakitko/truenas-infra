@@ -28,7 +28,7 @@ doppler setup --project infrastructure --config ops
 
 ## Documentation
 
-- `CLAUDE.md` — architecture, hardware, network layout, cross-repo contract.
+- `CLAUDE.md` — the rules and a map. The facts are in `docs/reference/`, procedures in `docs/runbooks/`, history in `docs/history/`; `docs/README.md` says where each old `CLAUDE.md` section went.
 - `docs/plans/zesty-drifting-castle.md` (in `~/.claude/plans/`) — approved bring-up plan.
 - `docs/superpowers/specs/` — decision records (storage topology, etc.).
 - `docs/runbook.md` — operator guide.

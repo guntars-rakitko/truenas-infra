@@ -1,0 +1,165 @@
+{
+ "note": "truenas-infra#233 slim baseline, 2026-11-22, before any move. Recall kit: dotfiles claude/recall/truenas-infra.yaml. All modes read the main checkout ~/github/truenas-infra at 8bea553 (1,159-line CLAUDE.md; origin/main 51daa2d has 1,164). subagent_first was graded with the first verdict regex, which failed the parent's wrapper ('The subagent's answer is **no**'); subagent is the re-run with the fixed regex. This repo is public: grades only, no answers or paths (they quote private workspace files).",
+ "context_cost": {
+  "method": "fresh claude -p from ~/github reads truenas-infra/README.md; input plus cache tokens over 2 turns, against the same file copied outside the repo",
+  "repo_tokens": 77198,
+  "control_tokens": 43441,
+  "added_on_first_touch": 33757
+ },
+ "root": {
+  "model": "opus",
+  "at": "20261122T113858Z",
+  "mode": "root",
+  "repo_dir": null,
+  "runs": [
+   {
+    "id": "1",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 78379,
+    "seconds": 26.8
+   },
+   {
+    "id": "2",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 182363,
+    "seconds": 36.0
+   },
+   {
+    "id": "3",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 80158,
+    "seconds": 28.3
+   },
+   {
+    "id": "4",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 180553,
+    "seconds": 47.9
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 113069,
+    "seconds": 32.9
+   },
+   {
+    "id": "6",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 281890,
+    "seconds": 39.8
+   }
+  ]
+ },
+ "repo": {
+  "model": "opus",
+  "at": "20261122T114007Z",
+  "mode": "repo",
+  "repo_dir": null,
+  "runs": [
+   {
+    "id": "2",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 116729,
+    "seconds": 22.0
+   },
+   {
+    "id": "3",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 117552,
+    "seconds": 22.1
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 175679,
+    "seconds": 24.9
+   }
+  ]
+ },
+ "subagent_first": {
+  "model": "opus",
+  "at": "20261122T114302Z",
+  "mode": "subagent",
+  "repo_dir": null,
+  "runs": [
+   {
+    "id": "2",
+    "passed": false,
+    "missing": [
+     "\\A\\W*no\\b(?![ \\t]+[a-z])"
+    ],
+    "error": null,
+    "input_tokens": 53826,
+    "seconds": 60.4
+   },
+   {
+    "id": "3",
+    "passed": false,
+    "missing": [
+     "\\A\\W*no\\b(?![ \\t]+[a-z])"
+    ],
+    "error": null,
+    "input_tokens": 54469,
+    "seconds": 62.8
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 53777,
+    "seconds": 51.1
+   }
+  ]
+ },
+ "subagent": {
+  "model": "opus",
+  "at": "20261122T120347Z",
+  "mode": "subagent",
+  "repo_dir": null,
+  "runs": [
+   {
+    "id": "2",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 53092,
+    "seconds": 48.8
+   },
+   {
+    "id": "3",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 54291,
+    "seconds": 54.6
+   },
+   {
+    "id": "5",
+    "passed": true,
+    "missing": [],
+    "error": null,
+    "input_tokens": 53334,
+    "seconds": 49.6
+   }
+  ]
+ }
+}
