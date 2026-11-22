@@ -200,7 +200,7 @@ Just do not read it as a third failure mechanism.
    reboot**. The box booted 03:40:23; the drop was 03:03:25. The "all zero"
    therefore describes ~1 h 45 m of healthy post-recovery running, not the
    event. A textbook false clean — a real measurement of the wrong window.
-   Only [[#140]]'s capture, which snapshots `08-pcie-aer-counters.txt` *at
+   Only [truenas-infra#140](https://github.com/guntars-rakitko/truenas-infra/pull/140)'s capture, which snapshots `08-pcie-aer-counters.txt` *at
    incident time*, can answer this. Next drop, not this one.
 
 Both were the established repeat offenders — `…357` (Jul 19, Jul 22) and `…392`
