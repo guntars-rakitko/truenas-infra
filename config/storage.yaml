@@ -168,9 +168,9 @@ datasets:
 # checks every task below is live and enabled.
 #
 # Day-of-week uses the API's convention: "1" Monday … "7" Sunday.
-# Everything runs clear of the ~03:00 nightly write burst (docs/reference/
-# hardware.md): creating a snapshot is metadata-only, and with autotrim off,
-# expiring one issues no TRIM burst.
+# The snapshots and the scrub run clear of the ~03:00 nightly write burst
+# (docs/reference/hardware.md): creating a snapshot is metadata-only, and
+# with autotrim off, expiring one issues no TRIM burst.
 scrub:
   schedule: "0 4 * * 7"   # Sunday 04:00
 
@@ -180,7 +180,10 @@ smart:
     schedule: "0 2 * * 7"        # Sunday 02:00
     disks: all
   long_test:
-    schedule: "0 3 1-7 * 7"      # first Sunday of the month, 03:00
+    # ⚠ Cron ORs day-of-month and day-of-week: this is days 1-7 AND every
+    # Sunday, not "first Sunday". Moot while 25.10 skips SMART; fix both
+    # (and the 03:00 slot) if SMART is ever scheduled again.
+    schedule: "0 3 1-7 * 7"
     disks: all
 
 snapshots:
