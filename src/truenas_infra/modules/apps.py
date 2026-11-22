@@ -573,8 +573,9 @@ TRAEFIK_ROUTES_PATH = Path("apps/traefik/routes.yaml")
 TRAEFIK_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/traefik"
 
 # Wiki nginx server config — static, mounted read-only into the `wiki`
-# Custom App. The site/ content itself is pushed by wiki/tools/deploy.sh
-# from the operator laptop (rsync over SSH), not by this phase.
+# Custom App. The site content itself (the `wiki/site` dataset) is uploaded
+# and swapped in by wiki/tools/deploy.sh through the API (wiki#295), not by
+# this phase.
 WIKI_NGINX_CONF_PATH = Path("apps/wiki/nginx.conf")
 WIKI_CONFIG_REMOTE_DIR = "/mnt/tank/system/apps-config/wiki"
 
