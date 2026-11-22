@@ -715,8 +715,9 @@ def _ensure_traefik_routes_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
 
 def _ensure_wiki_config_via_ctx(cli: Any, ctx: Any, log: Any) -> None:
     """Upload apps/wiki/nginx.conf to the pool so the `wiki` Custom App can
-    bind-mount it read-only. Site content (site/) is pushed separately from
-    the wiki repo via rsync and is NOT this phase's concern."""
+    bind-mount it read-only. Site content (the `wiki/site` dataset) is
+    uploaded and swapped in by the wiki repo's deploy (wiki#295) and is NOT
+    this phase's concern."""
     if not WIKI_NGINX_CONF_PATH.exists():
         log.warning("wiki_config_skipped",
                     reason="source_missing", path=str(WIKI_NGINX_CONF_PATH))
