@@ -39,9 +39,13 @@ Live design — source of truth is `config/storage.yaml` (consumed by
   (apps-config/{nut,traefik,wiki,bambuddy}, tls). ⚠ `pxe` and `stress-results` were
   removed 2026-09-23 with their apps.
 - **Snapshots** — per-env recursive tasks (prd 14 d / dev 7 d on
-  `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d).
-  ⚠ **Not live:** none of these tasks exists since the 2026-09-23 rebuild, and `tank` has
-  no snapshots (read 2026-11-12). The block left `config/storage.yaml` in e3d5663: #222.
-- **Scrub** Sun 04:00; **SMART** short Sun 02:00 + long first-Sun 03:00.
+  `tank/kube/*`, media weekly ×4 w, shared 14 d, system 7 d), all UTC and clear of the
+  ~03:00 write burst. The `tank/system` task **excludes `tank/system/apps-config/wiki`**:
+  the wiki deploy deletes its release datasets non-recursively, which ZFS refuses for a
+  dataset with snapshots. `phase verify` fails when a declared task is missing or disabled.
+  ⚠ From the 2026-09-23 rebuild until #222 (2026-11-22) none of these tasks existed: the
+  block had left `config/storage.yaml` in e3d5663, and a test now guards it.
+- **Scrub** Sun 04:00 (until #222, TrueNAS's own default, Sun 00:00); **SMART** short
+  Sun 02:00 + long first-Sun 03:00, declared but skipped on 25.10 (no `smart.*` API).
 
 ---

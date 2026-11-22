@@ -93,6 +93,47 @@ def check_datasets(cli: Any, *, expected: tuple[str, ...]) -> CheckResult:
     )
 
 
+def check_snapshot_tasks(cli: Any, *, expected: tuple[str, ...]) -> CheckResult:
+    """Every dataset declared under `snapshots:` has an enabled snapshot task.
+
+    ⚠ #222: the declaration itself vanished in the 2026-09-23 pool rebuild and
+    tank went two months with no snapshot, unseen, because nothing here
+    looked. An EMPTY declaration therefore fails rather than passing vacuously.
+    """
+    if not expected:
+        return CheckResult(
+            "snapshot tasks", False,
+            "no snapshot task declared in config/storage.yaml (#222)",
+        )
+    live = cli.call("pool.snapshottask.query")
+    enabled = {t.get("dataset") for t in live if t.get("enabled")}
+    missing = [d for d in expected if d not in enabled]
+    ok = not missing
+    return CheckResult(
+        "snapshot tasks",
+        ok,
+        f"all enabled ({len(expected)})" if ok
+        else f"missing or disabled: {', '.join(missing)}",
+    )
+
+
+def _declared_snapshot_datasets() -> tuple[str, ...]:
+    """Datasets with a `snapshots:` entry in config/storage.yaml.
+
+    ⚠ Returns () if the file is unreadable, which check_snapshot_tasks
+    reports as a failure (same shape as _enabled_app_names).
+    """
+    try:
+        from truenas_infra.modules.storage_tasks import (
+            DEFAULT_CONFIG_PATH,
+            load_storage_tasks_config,
+        )
+        cfg = load_storage_tasks_config(DEFAULT_CONFIG_PATH)
+        return tuple(s.dataset for s in cfg.snapshots)
+    except Exception:
+        return ()
+
+
 # ─── TLS / DNS / cert checks (phase 3 glue) ──────────────────────────────────
 
 
@@ -352,6 +393,8 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         *(check_app(cli, app_name=n) for n in _enabled_app_names()),
         # TLS + DNS checks (phase 3 added these)
         check_cert_expiry(cli, cert_name="w1-wildcard"),
+        # Derived from config/storage.yaml, like the app list above (#222).
+        check_snapshot_tasks(cli, expected=_declared_snapshot_datasets()),
     ]
 
     # DNS records — the router's own declaration in mikrotik-infra (see

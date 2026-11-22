@@ -7,8 +7,11 @@ Planned:
     all NVMe drives. (NOTE: TrueNAS 25.10 Community removed the smart.* API;
     orchestrator catches SmartApiUnavailable and skips with a warning.)
   * Scrub: weekly Sunday 04:00 (per approved storage spec).
-  * Snapshot tasks: per-env recursive under `tank/kube/{prd,dev}` so
-    longhorn+velero snapshot atomically. Plus media, shared, system trees.
+  * Snapshot tasks: per-env recursive under `tank/kube/{prd,dev}` so each
+    env's MinIO data snapshots atomically. Plus media, shared, system trees.
+    A recursive task can `exclude` child datasets another tool deletes
+    non-recursively (ZFS refuses to destroy a dataset that has snapshots):
+    `tank/system` excludes the wiki's release datasets (#222).
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ class SnapshotTaskSpec:
     lifetime_value: int
     lifetime_unit: str       # "HOUR" | "DAY" | "WEEK" | "MONTH" | "YEAR"
     recursive: bool = False
+    exclude: tuple[str, ...] = ()   # child datasets a recursive task skips
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,7 @@ def load_storage_tasks_config(path: Path) -> StorageTasksConfig:
                 lifetime_value=lifetime_value,
                 lifetime_unit=lifetime_unit,
                 recursive=bool(s.get("recursive", False)),
+                exclude=tuple(s.get("exclude") or ()),
             )
         )
 
@@ -134,10 +139,20 @@ def load_storage_tasks_config(path: Path) -> StorageTasksConfig:
 # ─── ensure_scrub_task ───────────────────────────────────────────────────────
 
 
+def _cron_field(value: Any) -> str:
+    """Normalise one cron field: "00" and "0" are the same minute.
+
+    TrueNAS stores zero-padded numbers ("00") in tasks it creates itself (the
+    pool's default scrub), so a plain string compare reads them as drift.
+    """
+    text = str(value).strip()
+    return str(int(text)) if text.isdigit() else text
+
+
 def _schedule_matches(live: dict[str, Any], desired: dict[str, str]) -> bool:
     """A TrueNAS schedule dict matches the desired 5-field schedule."""
     for k in ("minute", "hour", "dom", "month", "dow"):
-        if str(live.get(k, "")) != str(desired[k]):
+        if _cron_field(live.get(k, "")) != _cron_field(desired[k]):
             return False
     return True
 
@@ -252,7 +267,7 @@ def ensure_snapshot_task(cli: Any, *, spec: SnapshotTaskSpec, apply: bool) -> Di
             return False
         if bool(live.get("recursive")) != spec.recursive:
             return False
-        return True
+        return sorted(live.get("exclude") or []) == sorted(spec.exclude)
 
     match = next((l for l in existing if _same(l)), None)
     if match:
@@ -261,6 +276,7 @@ def ensure_snapshot_task(cli: Any, *, spec: SnapshotTaskSpec, apply: bool) -> Di
     payload = {
         "dataset": spec.dataset,
         "recursive": spec.recursive,
+        "exclude": list(spec.exclude),
         "lifetime_value": spec.lifetime_value,
         "lifetime_unit": spec.lifetime_unit,
         "naming_schema": "auto-%Y-%m-%d_%H-%M",
@@ -336,7 +352,7 @@ def run(
             "snapshot_task_ensured",
             dataset=snap.dataset, schedule=snap.schedule,
             lifetime=f"{snap.lifetime_value} {snap.lifetime_unit}",
-            recursive=snap.recursive,
+            recursive=snap.recursive, exclude=list(snap.exclude),
             action=diff.action, changed=diff.changed,
         )
 

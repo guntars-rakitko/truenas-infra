@@ -150,9 +150,65 @@ datasets:
   - name: tank/system/apps-config/bambuddy
     # Bambuddy's /app/data (SQLite DB, 3MF archive, its own scheduled backups
     # in data/backups/) and /app/logs, bind-mounted read-write by the
-    # `bambuddy` Custom App. ⚠ No ZFS snapshot task covers it (or anything on
-    # tank) today: #222. The off-NAS copy is Bambuddy's Git backup to the
+    # `bambuddy` Custom App. The tank/system snapshot task below covers it
+    # (7 d, on the NAS); the off-NAS copy is Bambuddy's Git backup to the
     # private 3d-printing repo.
   - name: tank/system/tls
     # Wildcard *.w1.lv cert exported here by apps/tls/tls-export.sh so
     # containers (Traefik, MinIO prd+dev) can bind-mount read-only.
+
+# Storage tasks: phase storage-tasks (modules/storage_tasks.py). All times UTC,
+# the NAS's timezone.
+#
+# ⚠ RESTORED 2026-11-22 (#222). This whole block left the file in e3d5663 during
+# the 2026-09-23 pool rebuild; recreating the pool dropped the old tasks, and
+# `phase storage-tasks --apply` then had nothing to recreate, so tank went two
+# months with no snapshot and the scrub ran on TrueNAS's default (Sun 00:00).
+# tests/test_storage_tasks.py fails if the block goes again, and `phase verify`
+# checks every task below is live and enabled.
+#
+# Day-of-week uses the API's convention: "1" Monday … "7" Sunday.
+# Everything runs clear of the ~03:00 nightly write burst (docs/reference/
+# hardware.md): creating a snapshot is metadata-only, and with autotrim off,
+# expiring one issues no TRIM burst.
+scrub:
+  schedule: "0 4 * * 7"   # Sunday 04:00
+
+smart:
+  # ⚠ Not applied on 25.10: the smart.* API is gone, and the phase logs a skip.
+  short_test:
+    schedule: "0 2 * * 7"        # Sunday 02:00
+    disks: all
+  long_test:
+    schedule: "0 3 1-7 * 7"      # first Sunday of the month, 03:00
+    disks: all
+
+snapshots:
+  # Per-environment recursive tasks: one per env snapshots all of its
+  # datasets atomically (today only MinIO's data, misnamed …/velero: #152).
+  - dataset: tank/kube/prd
+    recursive: true
+    schedule: "0 1 * * *"         # daily 01:00
+    retention_days: 14
+  - dataset: tank/kube/dev
+    recursive: true
+    schedule: "0 1 * * *"
+    retention_days: 7
+  - dataset: tank/media
+    recursive: true
+    schedule: "0 5 * * 7"         # weekly, Sunday 05:00
+    retention_weeks: 4
+  - dataset: tank/shared/general
+    schedule: "0 2 * * *"
+    retention_days: 14
+  - dataset: tank/system
+    recursive: true
+    # ⚠ The wiki deploy creates, renames and deletes wiki/{site,site-next,
+    # site-prev} (wiki#295), and its pool.dataset.delete is not recursive:
+    # ZFS refuses to destroy a dataset that has snapshots, so snapshotting
+    # them would stop every deploy. The site is a build of the wiki repo,
+    # nothing to restore from here. Exclusion covers the children too.
+    exclude:
+      - tank/system/apps-config/wiki
+    schedule: "30 2 * * *"
+    retention_days: 7
