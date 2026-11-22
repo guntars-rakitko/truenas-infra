@@ -1,9 +1,13 @@
 # Static wiki host — serves the MkDocs-built `site/` from the wiki repo.
 #
-# Content pushed via rsync from the operator laptop:
-#   cd ~/github/wiki && ./tools/deploy.sh
-# which drops files at /mnt/tank/system/apps-config/wiki/site/. nginx
-# serves read-only from that dir; no credentials, no DB, no admin surface.
+# Content uploaded through the TrueNAS API from the operator laptop:
+#   cd ~/github/wiki && ./tools/deploy.sh --verify
+# Since 2026-11-22 (wiki#295) `site/` is its own dataset,
+# tank/system/apps-config/wiki/site: each deploy builds the next release in
+# wiki/site-next, then stops this app, renames site → site-prev and
+# site-next → site, and starts it again (the wiki repo's
+# docs/runbooks/wiki-deploy.md). nginx serves read-only from that dir; no
+# credentials, no DB, no admin surface.
 #
 # Fronted by Traefik (wiki.w1.lv → http://10.10.5.10:8088) — see
 # apps/traefik/routes.yaml. nginx only binds on mgmt-VLAN IP.
