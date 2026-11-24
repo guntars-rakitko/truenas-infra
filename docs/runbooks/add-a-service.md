@@ -16,6 +16,11 @@ Decision tree — **apply every time you add an HTTPS endpoint on this network**
      port** (`:443` on data-VLAN IPs is reserved for future growth).
      Mount wildcard cert from `/mnt/tank/system/tls/`. DNS record
      points at the service VLAN IP.
+     An app with no TLS of its own (Bambuddy): Traefik ends TLS on that
+     VLAN IP instead, on the app's native port, through an entry point
+     only its routers name (`devapi` on `10.10.15.10:8000` for
+     `bambuddy-api-dev.w1.lv`, API paths only). Never add a mgmt UI's
+     router to such an entry point.
 3. **Fundamental infra-plane UI (TrueNAS, MikroTik, switch)?**
    → Leave on the device's native port, **never proxy**. These must
      remain reachable when Traefik is down.

@@ -11,6 +11,10 @@ services:
     ports:
       - "10.10.5.20:443:443"
       - "10.10.5.20:80:80"         # HTTP entry point for HTTPS redirect
+      # The one data-plane entry: Bambuddy's API for an app on msa2-dev, on the NAS's dev-VLAN address at
+      # Bambuddy's native port (docs/runbooks/add-a-service.md, case 2: Bambuddy serves no TLS of its own, so Traefik
+      # ends it here). Only the `devapi` routers in routes.yaml answer on it: no admin UI is reachable from dev.
+      - "10.10.15.10:8000:8000"
     volumes:
       # Wildcard cert. ⚠ NOT hot-reloaded: the file provider below watches
       # only /etc/traefik/dynamic, so a renewed cert here is never re-read.
@@ -28,6 +32,8 @@ services:
       # Entry points
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
+      # Dev VLAN, data plane only (the bind above). Its routers name it; every mgmt router names `websecure`.
+      - --entrypoints.devapi.address=:8000
       # HTTP → HTTPS redirect (applied to every router on :web)
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
@@ -47,7 +53,8 @@ services:
       - --log.level=INFO
       - --accesslog=true
 
-# Policy: this Traefik fronts mgmt-plane web UIs on the NAS only. When
+# Policy: this Traefik fronts mgmt-plane web UIs on the NAS, and on its `devapi` entry point one data-plane API for
+# msa2-dev (Bambuddy's /api/), because Bambuddy has no TLS of its own. When
 # kube-infra gets its own Traefik(s) (prd + dev clusters), name them
 # traefik-prd / traefik-dev per the hostname convention in CLAUDE.md
 # § Policy for adding new services. Different IPs, different clusters,

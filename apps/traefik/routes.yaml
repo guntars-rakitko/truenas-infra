@@ -7,7 +7,8 @@
 # ⚠️  WIKI MIRROR: Adding/removing a route here ALSO requires updating:
 #       wiki/docs/architecture/hostnames.md  (admin plane table)
 #       wiki/docs/reference/links.md         (internal dashboards)
-#       mikrotik-infra/configs/dns.yaml      (new *.w1.lv → 10.10.5.20 record;
+#       mikrotik-infra/configs/dns.yaml      (new *.w1.lv → 10.10.5.20 record, or the dev-VLAN 10.10.15.10
+#                                             for a `devapi` route;
 #                                             the only DNS declaration — verify
 #                                             reads it from there)
 #     Then: ./manage.sh phase apps --apply (re-uploads this file) &&
@@ -48,6 +49,14 @@ http:
       rule: "Host(`bambuddy.w1.lv`)"
       service: bambuddy
       entryPoints: [websecure]
+      tls: {}
+    # Bambuddy's API for an app on msa2-dev (the operator's choice of 2026-11-24): on the NAS's dev-VLAN address
+    # 10.10.15.10:8000 (the `devapi` entry point), so the dev cluster reaches it without a router rule into the mgmt
+    # VLAN. API paths only: the UI stays on bambuddy.w1.lv. Every call still needs a Bambuddy API key.
+    bambuddy-api-dev:
+      rule: "Host(`bambuddy-api-dev.w1.lv`) && PathPrefix(`/api/`)"
+      service: bambuddy
+      entryPoints: [devapi]
       tls: {}
   services:
     minio-prd-console:

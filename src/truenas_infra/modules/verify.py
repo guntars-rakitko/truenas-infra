@@ -430,6 +430,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         ("minio-dev.w1.lv", 443),
         ("wiki.w1.lv", 443),
         ("bambuddy.w1.lv", 443),
+        ("bambuddy-api-dev.w1.lv", 8000),   # Traefik's devapi entry point (dev VLAN)
         ("s3-prd.w1.lv", 9000),
         ("s3-dev.w1.lv", 9000),
     ]:
