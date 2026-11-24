@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTES = ROOT / "apps" / "traefik" / "routes.yaml"
 COMPOSE = ROOT / "apps" / "traefik" / "docker-compose.yaml"
 
-DEVAPI_ROUTERS = {"bambuddy-api-dev"}
+DEVAPI_ROUTERS = {"bambuddy-api"}
+# The one Bambuddy's API name (a singleton: no environment), in mikrotik-infra's configs/dns.yaml too.
+DEVAPI_HOST = "bambuddy-api.w1.lv"
 
 
 def _routers() -> dict:
@@ -51,3 +53,8 @@ def test_websecure_is_the_default_entry_point():
     command = yaml.safe_load(COMPOSE.read_text())["services"]["traefik"]["command"]
     assert "--entrypoints.websecure.asDefault=true" in command
     assert not any(c.startswith("--entrypoints.devapi.asDefault") for c in command)
+
+
+def test_the_bambuddy_api_router_answers_its_name():
+    rule = _routers()["bambuddy-api"]["rule"]
+    assert rule.startswith(f"Host(`{DEVAPI_HOST}`) && "), rule

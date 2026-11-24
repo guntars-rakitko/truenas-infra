@@ -19,7 +19,7 @@ Decision tree — **apply every time you add an HTTPS endpoint on this network**
      An app with no TLS of its own (Bambuddy): Traefik ends TLS on that
      VLAN IP instead, on the app's native port, through an entry point
      only its routers name (`devapi` on `10.10.15.10:8000` for
-     `bambuddy-api-dev.w1.lv`, only the paths its app calls, never an
+     `bambuddy-api.w1.lv`, only the paths its app calls, never an
      app's key-less login or setup routes). Never add a mgmt UI's
      router to such an entry point.
 3. **Fundamental infra-plane UI (TrueNAS, MikroTik, switch)?**
