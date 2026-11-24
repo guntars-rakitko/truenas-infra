@@ -59,7 +59,8 @@ services:
       - --accesslog=true
 
 # Policy: this Traefik fronts mgmt-plane web UIs on the NAS, and on its `devapi` entry point one data-plane API for
-# msa2-dev (Bambuddy's /api/), because Bambuddy has no TLS of its own. When
+# msa2-dev (the Bambuddy API paths print-shop calls, never all of /api/), because Bambuddy has no TLS of its own.
+# When
 # kube-infra gets its own Traefik(s) (prd + dev clusters), name them
 # traefik-prd / traefik-dev per the hostname convention in CLAUDE.md
 # § Policy for adding new services. Different IPs, different clusters,

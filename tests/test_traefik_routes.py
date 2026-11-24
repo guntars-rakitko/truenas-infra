@@ -37,6 +37,8 @@ def test_only_the_bambuddy_api_router_is_on_devapi():
         assert "PathPrefix(`/api/v1/auth" not in rule, f"{name} must not open Bambuddy's auth routes"
         assert rule.count("/api/v1/auth/") == 1 and "Path(`/api/v1/auth/media-token`)" in rule, \
             f"{name}: of the auth routes, only the media token"
+        # Key-less paths inside the routed prefixes: the archive verdict and the token-in-path downloads.
+        assert "&& !PathRegexp(`/(confirm|dl|source-dl)/`)" in rule, f"{name} must keep Bambuddy's key-less paths off"
 
 
 def test_admin_routers_are_on_websecure_alone():
