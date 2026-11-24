@@ -5,9 +5,10 @@
 # hot-reloads on change — no redeploy needed when adding a route.
 #
 # ⚠️  WIKI MIRROR: Adding/removing a route here ALSO requires updating:
-#       wiki/docs/architecture/hostnames.md  (admin plane table)
+#       wiki/docs/architecture/hostnames.md  (admin plane table; a `devapi` route: the data-plane table)
 #       wiki/docs/reference/links.md         (internal dashboards)
-#       mikrotik-infra/configs/dns.yaml      (new *.w1.lv → 10.10.5.20 record;
+#       mikrotik-infra/configs/dns.yaml      (new *.w1.lv → 10.10.5.20 record, or the dev-VLAN 10.10.15.10
+#                                             for a `devapi` route;
 #                                             the only DNS declaration — verify
 #                                             reads it from there)
 #     Then: ./manage.sh phase apps --apply (re-uploads this file) &&
@@ -48,6 +49,17 @@ http:
       rule: "Host(`bambuddy.w1.lv`)"
       service: bambuddy
       entryPoints: [websecure]
+      tls: {}
+    # Bambuddy's API for an app on msa2-dev (the operator's choice of 2026-11-24): on the NAS's dev-VLAN address
+    # 10.10.15.10:8000 (the `devapi` entry point), so the dev cluster reaches it without a router rule into the mgmt
+    # VLAN. Only the paths that app calls: the queue, library files, archives (runs, photos, timelapses) and the
+    # media token, each needing a Bambuddy API key. Bambuddy's key-less routes stay off the dev VLAN: its login,
+    # setup, password reset and the rest of /api/v1/auth/, and, inside the routed prefixes, the archive verdict
+    # (/archives/confirm/) and the token-in-path slicer downloads (/dl/, /source-dl/, /media/dl/). So does the UI.
+    bambuddy-api-dev:
+      rule: "Host(`bambuddy-api-dev.w1.lv`) && (PathPrefix(`/api/v1/queue/`) || PathPrefix(`/api/v1/library/files`) || PathPrefix(`/api/v1/archives/`) || Path(`/api/v1/auth/media-token`)) && !PathRegexp(`/(confirm|dl|source-dl)/`)"
+      service: bambuddy
+      entryPoints: [devapi]
       tls: {}
   services:
     minio-prd-console:

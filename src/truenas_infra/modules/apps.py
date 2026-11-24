@@ -3,7 +3,8 @@
 Live apps (authoritative list is config/apps.yaml, NOT this docstring):
   * minio-prd     → 10.10.10.10 (S3 for Velero/Longhorn/backups, prd)
   * minio-dev     → 10.10.15.10 (S3 for Velero/Longhorn/backups, dev)
-  * traefik       → 10.10.5.20  (mgmt-VLAN ingress for the NAS admin UIs)
+  * traefik       → 10.10.5.20  (mgmt-VLAN ingress for the NAS admin UIs; plus `devapi` on
+                    10.10.15.10:8000, Bambuddy's API for msa2-dev)
   * wiki          → nginx serving the MkDocs site
   * bambuddy      → 10.10.5.10:8000 (Bambu Lab printer control + spool inventory)
 
