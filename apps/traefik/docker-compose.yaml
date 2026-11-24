@@ -3,10 +3,11 @@ services:
     image: traefik:v3.8@sha256:cd3078e07dfe0c551b1df6fca2697c52f35da0a18c7bd81da4d3b1f012405098
     container_name: traefik
     restart: unless-stopped
-    # Bind ONLY to the mgmt-VLAN sub-IP 10.10.5.20. The NAS's primary
-    # 10.10.5.10 already hosts the TrueNAS UI on :443; Traefik lives
+    # The admin UIs bind ONLY to the mgmt-VLAN sub-IP 10.10.5.20. The NAS's
+    # primary 10.10.5.10 already hosts the TrueNAS UI on :443; Traefik lives
     # on its own address so we can keep both portless URLs side by side
-    # without port-swapping games on the TrueNAS UI.
+    # without port-swapping games on the TrueNAS UI. The one other bind is
+    # the dev-VLAN data-plane entry below (`devapi`, Bambuddy's API only).
     network_mode: bridge
     ports:
       - "10.10.5.20:443:443"
@@ -32,6 +33,9 @@ services:
       # Entry points
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
+      # A router that names no entry point gets `websecure` alone, never `devapi` (Traefik v3 otherwise attaches it
+      # to every default entry point). tests/test_traefik_routes.py also requires every router to name its own.
+      - --entrypoints.websecure.asDefault=true
       # Dev VLAN, data plane only (the bind above). Its routers name it; every mgmt router names `websecure`.
       - --entrypoints.devapi.address=:8000
       # HTTP → HTTPS redirect (applied to every router on :web)

@@ -59,7 +59,8 @@ each, is in [docs/README.md](docs/README.md).
   for `archive`. `tests/test_minio_setup_scripts.py` guards the bucket, encryption and lifecycle lists
   ([minio.md](docs/reference/minio.md)).
 - **Exposing a service:** an admin UI goes through Traefik at `10.10.5.20` (a route in `apps/traefik/routes.yaml`), a
-  data-plane API binds on its own VLAN IP at its native port, an infra-plane UI is never proxied, and nothing
+  data-plane API binds on its own VLAN IP at its native port (one with no TLS of its own through a Traefik entry point
+  on that IP that no admin UI uses: `devapi`), an infra-plane UI is never proxied, and nothing
   internet-facing goes through mgmt Traefik ([add-a-service.md](docs/runbooks/add-a-service.md)).
 - **A new DNS record goes in mikrotik-infra `configs/dns.yaml` only**, plus its wiki `hostnames.md` row. This repo has
   no DNS file since 2026-09-26 ([wiki-sync.md](docs/reference/wiki-sync.md)).

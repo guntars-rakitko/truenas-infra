@@ -7,7 +7,7 @@
 | Interface | VLAN | IP | Purpose |
 |---|---|---|---|
 | NIC1 — tagged sub-iface | 10 | 10.10.10.10 | Prod Kube: MinIO S3 (every backup bucket, :9000) |
-| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (every backup bucket, :9000) |
+| NIC1 — tagged sub-iface | 15 | 10.10.15.10 | Dev Kube: MinIO S3 (every backup bucket, :9000); Traefik's `devapi` (:8000, Bambuddy's `/api/` as `bambuddy-api-dev.w1.lv`, since 2026-11-24) |
 | NIC1 — tagged sub-iface | 20 | 10.10.20.10 | Home: Plex, torrent UI, SMB general share |
 | NIC2 — untagged | 5 | 10.10.5.10 | TrueNAS API/UI, SSH, NUT, MinIO consoles (:9001 prd / :9011 dev), wiki (:8088), Bambuddy (:8000). PXE/TFTP retired 2026-09-23. |
 
