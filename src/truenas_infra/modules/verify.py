@@ -408,7 +408,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
 
     # HTTPS endpoint probes — the user-facing URLs our services expose.
     # Host headers go through Traefik (minio-prd/minio-dev/wiki/bambuddy on :443,
-    # bambuddy-api-dev on its devapi entry point :8000) or direct
+    # bambuddy-api on its devapi entry point :8000) or direct
     # (nas/traefik-nas/s3-prd/s3-dev). All must present a cert whose SAN
     # covers the host.
     # ⚠ TRIMMED 2026-09-23. This list was hardcoded and had drifted the same way
@@ -431,7 +431,7 @@ def run(cli: Any, ctx: Any, only: str | None = None) -> int:
         ("minio-dev.w1.lv", 443),
         ("wiki.w1.lv", 443),
         ("bambuddy.w1.lv", 443),
-        ("bambuddy-api-dev.w1.lv", 8000),   # Traefik's devapi entry point (dev VLAN)
+        ("bambuddy-api.w1.lv", 8000),   # Traefik's devapi entry point (dev VLAN)
         ("s3-prd.w1.lv", 9000),
         ("s3-dev.w1.lv", 9000),
     ]:

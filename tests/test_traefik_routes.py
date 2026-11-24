@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTES = ROOT / "apps" / "traefik" / "routes.yaml"
 COMPOSE = ROOT / "apps" / "traefik" / "docker-compose.yaml"
 
-DEVAPI_ROUTERS = {"bambuddy-api-dev"}
+DEVAPI_ROUTERS = {"bambuddy-api"}
 
 
 def _routers() -> dict:
