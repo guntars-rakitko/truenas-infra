@@ -7,7 +7,8 @@ services:
     # primary 10.10.5.10 already hosts the TrueNAS UI on :443; Traefik lives
     # on its own address so we can keep both portless URLs side by side
     # without port-swapping games on the TrueNAS UI. The one other bind is
-    # the dev-VLAN data-plane entry below (`devapi`, Bambuddy's API only).
+    # the dev-VLAN data-plane entry below (`devapi`, the paths of Bambuddy's API
+    # one app calls).
     network_mode: bridge
     ports:
       - "10.10.5.20:443:443"
